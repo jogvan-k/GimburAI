@@ -11,7 +11,7 @@ type StateTest() =
     let sampleState () = State(node (p1, 0, 0, 0))
 
     [<Test>]
-    member this.OnlyWin() =
+    member _.OnlyWin() =
         let state = sampleState ()
 
         for _ in [ 1 .. 10 ] do
@@ -21,7 +21,7 @@ type StateTest() =
         state.winRate |> should equal 1.
 
     [<Test>]
-    member this.OnlyLoss() =
+    member _.OnlyLoss() =
         let state = sampleState ()
 
         for _ in [ 1 .. 10 ] do
@@ -31,13 +31,12 @@ type StateTest() =
         state.winRate |> should equal 0.
 
     [<Test>]
-    member this.WinThenLosses() =
+    member _.WinThenLosses() =
         let state = sampleState ()
 
         state.registerWin ()
 
-        for _ in [ 1 .. 99 ] do
-            state.registerLoss ()
+        Seq.iter (fun _ -> state.registerLoss ()) [1..99]
 
         state.visitCount |> should equal 100
 

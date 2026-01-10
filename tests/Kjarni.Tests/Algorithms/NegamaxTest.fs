@@ -15,60 +15,60 @@ open FsUnit
 type NegamaxTest() =
 
     let basicTree =
-        nb (
+        node_builder (
             p1,
             0,
             0,
             0,
-            [ nb(p2, 1, -10, 1)
+            [ node_builder(p2, 1, -10, 1)
                 .addChild (
-                    nb(p1, 2, 20, 2)
+                    node_builder(p1, 2, 20, 2)
                         .addChild (
-                            nb(p2, 3, -40, 3)
-                                .addChildren ([ nb (p1, 4, 70, 4); nb (p1, 4, 80, 5) ])
+                            node_builder(p2, 3, -40, 3)
+                                .addChildren [ node_builder (p1, 4, 70, 4); node_builder (p1, 4, 80, 5) ]
                         )
                 )
-              nb(p2, 1, -20, 6)
+              node_builder(p2, 1, -20, 6)
                   .addChild (
-                      nb(p1, 2, 30, 7)
-                          .addChild (nb(p2, 3, -50, 8).addChild (nb (p1, 4, 75, 9)))
+                      node_builder(p1, 2, 30, 7)
+                          .addChild (node_builder(p2, 3, -50, 8).addChild (node_builder (p1, 4, 75, 9)))
                   ) ]
         )
 
     let twoDepthsPerTurnTree =
-        nb(
+        node_builder(
             p1,
             0,
             0,
             0,
-            [ nb (
+            [ node_builder (
                 p1,
                 0,
                 20,
                 1,
-                [ nb (p2, 1, 20, 2, [ nb(p2, 1, 0, 3).addChild (nb (p1, 2, -10, 4)) ])
-                  nb(p2, 1, 25, 5)
+                [ node_builder (p2, 1, 20, 2, [ node_builder(p2, 1, 0, 3).addChild (node_builder (p1, 2, -10, 4)) ])
+                  node_builder(p2, 1, 25, 5)
                       .addChild (
-                          nb(p2, 1, 20, 6)
+                          node_builder(p2, 1, 20, 6)
                               .addChild (
-                                  nb(p1, 2, -20, 7)
-                                      .addChild (nb(p1, 2, 0, 8).addChild (nb (p2, 3, 30, 9)))
+                                  node_builder(p1, 2, -20, 7)
+                                      .addChild (node_builder(p1, 2, 0, 8).addChild (node_builder (p2, 3, 30, 9)))
                               )
                       ) ]
               )
-              nb (p1, 0, 10, 10) ]
+              node_builder (p1, 0, 10, 10) ]
         )
             .build ()
 
     [<Test>]
-    member this.NoDepth_BasicTree() =
-        let d = Plies(0)
+    member _.NoDepth_BasicTree() =
+        let d = Plies 0
 
         let result =
             negamax
                 d
                 (basicTree.build ())
-                (accumulator (evaluatorFunc, searchTime.Unlimited, LoggingConfiguration.NoLogging))
+                (accumulator (evaluatorFunc, Unlimited, LoggingConfiguration.NoLogging))
                 []
 
         fst result |> should equal 0
@@ -78,14 +78,14 @@ type NegamaxTest() =
     [<TestCase(2, 30, [| 1; 0 |])>]
     [<TestCase(3, -40, [| 0; 0; 0 |])>]
     [<TestCase(4, 75, [| 1; 0; 0; 0 |])>]
-    member this.VariousDepth_BasicTree (depth: int) (expectedValue: int) (expectedPath: int []) =
-        let d = Plies(depth)
+    member _.VariousDepth_BasicTree (depth: int) (expectedValue: int) (expectedPath: int []) =
+        let d = Plies depth
 
         let result =
             negamax
                 d
                 (basicTree.build ())
-                (accumulator (evaluatorFunc, searchTime.Unlimited, LoggingConfiguration.NoLogging))
+                (accumulator (evaluatorFunc, Unlimited, LoggingConfiguration.NoLogging))
                 []
 
         fst result |> should equal expectedValue
@@ -98,15 +98,15 @@ type NegamaxTest() =
     [<TestCase(2, 20, [| 0; 0 |])>]
     [<TestCase(3, -50, [| 1; 0; 0 |])>]
     [<TestCase(4, 75, [| 1; 0; 0; 0 |])>]
-    member this.VariousDepth_InvertedBasicTree (depth: int) (expectedValue: int) (expectedPath: int []) =
+    member _.VariousDepth_InvertedBasicTree (depth: int) (expectedValue: int) (expectedPath: int []) =
         let invertedTree = invertTree basicTree
-        let d = Plies(depth)
+        let d = Plies depth
 
         let result =
             negamax
                 d
                 (invertedTree.build ())
-                (accumulator (evaluatorFunc, searchTime.Unlimited, LoggingConfiguration.NoLogging))
+                (accumulator (evaluatorFunc, Unlimited, LoggingConfiguration.NoLogging))
                 []
 
         fst result |> should equal -expectedValue
@@ -118,14 +118,14 @@ type NegamaxTest() =
     [<TestCase(1, 25, [| 0; 1 |])>]
     [<TestCase(2, 10, [| 1 |])>]
     [<TestCase(3, 30, [| 0; 1; 0; 0; 0; 0 |])>]
-    member this.TurnDepthSearch (untilTurn: int) (expectedValue: int) (expectedPath: int []) =
+    member _.TurnDepthSearch (untilTurn: int) (expectedValue: int) (expectedPath: int []) =
         let d = Turns(untilTurn, 0)
 
         let result =
             negamax
                 d
                 twoDepthsPerTurnTree
-                (accumulator (evaluatorFunc, searchTime.Unlimited, LoggingConfiguration.NoLogging))
+                (accumulator (evaluatorFunc, Unlimited, LoggingConfiguration.NoLogging))
                 []
 
         fst result |> should equal expectedValue

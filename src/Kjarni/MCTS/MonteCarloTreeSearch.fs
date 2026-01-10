@@ -1,8 +1,6 @@
 module Kjarni.MCTS.AI
 
 open System
-open System.Collections
-open System.Collections.Generic
 open System.Diagnostics
 open Kjarni
 open Kjarni.Algorithms
@@ -17,10 +15,10 @@ type configuration =
     | All = 0x3
 
 let tTable (config: configuration) =
-    if (config.HasFlag(configuration.TranspositionTable)) then
+    if config.HasFlag configuration.TranspositionTable then
         Some(TranspositionTable())
     else
-        option.None
+        None
 
 type MonteCarloTreeSearch(st: searchTime, maxSimulationCount, config: configuration) =
     let mutable _logInfos: LogInfo list = List.empty
@@ -28,7 +26,7 @@ type MonteCarloTreeSearch(st: searchTime, maxSimulationCount, config: configurat
     let extractWinChance (s: State) =
         let aiPlayer = s.state.PlayerTurn
 
-        if (s.leaves |> Array.isEmpty) then
+        if s.leaves |> Array.isEmpty then
             s.winRate
         else
             s.leaves
@@ -36,13 +34,16 @@ type MonteCarloTreeSearch(st: searchTime, maxSimulationCount, config: configurat
             |> Array.max
 
     interface IGameAI with
-        member this.DetermineAction(state) =
+        /// <summary></summary>
+        /// <param name="state"></param>
+        /// <returns></returns>
+        member _.DetermineAction state =
             let timer = Stopwatch.StartNew()
-            let root = State(state)
+            let root = State state
             let tTable = tTable config
 
             let result =
-                if config.HasFlag(configuration.AsyncExecution) then
+                if config.HasFlag configuration.AsyncExecution then
                     parallelSearch (root, maxSimulationCount, tTable, Utility.toMilliseconds st)
                 else
                     search (root, maxSimulationCount, timer, tTable, Utility.toStopwatchTics st)
@@ -61,4 +62,4 @@ type MonteCarloTreeSearch(st: searchTime, maxSimulationCount, config: configurat
             _logInfos <- logInfo :: _logInfos
             result
 
-    member this.LatestLogInfo() = List.head _logInfos
+    member _.LatestLogInfo() = List.head _logInfos

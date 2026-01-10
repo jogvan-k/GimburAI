@@ -2,7 +2,6 @@ module Kjarni.MCTS.Algorithm
 
 open System
 
-open System.Collections.Generic
 open System.Diagnostics
 open Kjarni
 open Kjarni.MCTS.Types
@@ -17,13 +16,13 @@ let isLeaf l =
     | Leaf _ -> true
     | _ -> false
 
-let explorationConstant = sqrt (2.)
+let explorationConstant = sqrt 2.
 
 let explorationRate (stateVisitCount: int, actionVisitCount: int) =
     explorationConstant
     * sqrt (
-        log (float (stateVisitCount))
-        / float (actionVisitCount)
+        log (float stateVisitCount)
+        / float actionVisitCount
     )
 
 let leafEvaluator (state: State, l: Leaf) =
@@ -35,30 +34,28 @@ let leafEvaluator (state: State, l: Leaf) =
     | Leaf a ->
         a.winRate
         + explorationRate (state.visitCount, a.visitCount)
-    | Duplicate -> 0.
 
 
 let rec recSelection (s: State, actionHistory: Action list, leafEvaluator) =
-    if (Array.isEmpty (s.leaves)) then
+    if Array.isEmpty s.leaves then
         Exhausted(actionHistory, s.playerTurn)
     else
         match s.leaves
               |> Array.indexed
               |> Array.maxBy (fun i -> leafEvaluator (s, snd i)) with
-        | (_, Terminal win) -> Exhausted(actionHistory, win)
-        | (i, Unexplored _) -> Candidate(actionHistory, i)
-        | (_, Leaf ls) -> recSelection (ls.state, ls :: actionHistory, leafEvaluator)
-        | (_, Duplicate) -> raise (Exception("TODO remove Duplicate"))
+        | _, Terminal win -> Exhausted(actionHistory, win)
+        | i, Unexplored _ -> Candidate(actionHistory, i)
+        | _, Leaf ls -> recSelection (ls.state, ls :: actionHistory, leafEvaluator)
 
 let selection (s: State, leafEvaluator) = recSelection (s, [], leafEvaluator)
 
 let expandUnexplored (parent: State, i, state: State) =
     let leaf =
         if Array.isEmpty state.leaves then
-            Terminal(state.playerTurn)
+            Terminal state.playerTurn
         else
             let a = Action(parent.playerTurn, state)
-            Leaf(a)
+            Leaf a
 
     parent.leaves.[i] <- leaf
     leaf
@@ -76,21 +73,21 @@ let expansion (s: State, i, tTable: TranspositionTable Option) =
             match t.Lookup stateHash with
             | Some r -> expandUnexplored (s, i, r)
             | None ->
-                let ex = State(nextState)
+                let ex = State nextState
                 t.Add(stateHash, ex)
                 expandUnexplored (s, i, ex)
-        | None -> expandUnexplored (s, i, State(nextState))
+        | None -> expandUnexplored (s, i, State nextState)
 
-    | _ -> raise (Exception("Target leaf is already expanded"))
+    | _ -> raise (Exception "Target leaf is already expanded")
 
 let simulation (s: State) =
-    let currentState = ref s.state
-    let actions = ref (currentState.Value.Actions())
+    let mutable currentState = ref s.state
+    let mutable actions = ref (currentState.Value.Actions())
 
-    while (not (Array.isEmpty (actions.Value))) do
+    while not (Array.isEmpty actions.Value) do
         let nextMove = actions.Value |> Seq.sort |> Seq.head
-        currentState := nextMove.DoCoreAction()
-        actions := currentState.Value.Actions()
+        currentState <- ref (nextMove.DoCoreAction())
+        actions <- ref (currentState.Value.Actions())
 
     currentState.Value.PlayerTurn
 
@@ -109,14 +106,13 @@ let backPropagating (root: State) (a: Action list) (playerWin: Player) =
 
 let extractionEvaluator (p: Player, l: Leaf) =
     match l with
-    | Terminal win -> if (p = win) then 1. else 0.
+    | Terminal win -> if p = win then 1. else 0.
     | Leaf a -> a.winRate
     | Unexplored _ -> 0.
-    | Duplicate -> 0.
 
 let extractBestPath (s: State) =
     let mutable path = List.empty
-    let currentState = ref s
+    let mutable currentState = ref s
     let mutable endReached = false
 
     while not endReached do
@@ -128,18 +124,18 @@ let extractBestPath (s: State) =
                 |> Array.indexed
                 |> Array.maxBy (fun l -> extractionEvaluator (currentState.Value.state.PlayerTurn, snd l))
 
-            path <- (fst (bestAction)) :: path
+            path <- fst bestAction :: path
 
             match snd bestAction with
-            | Leaf action -> currentState := action.state
+            | Leaf action -> currentState <- ref action.state
             | _ -> endReached <- true
 
     path |> List.rev
 
 let search (root: State, maxSimulationCount, timer: Stopwatch, tTable, evaluateUntil: Int64 option) =
-    while (root.visitCount < maxSimulationCount
-           && (not evaluateUntil.IsSome
-               || timer.ElapsedTicks < evaluateUntil.Value)) do
+    while root.visitCount < maxSimulationCount
+          && (not evaluateUntil.IsSome
+              || timer.ElapsedTicks < evaluateUntil.Value) do
         match selection (root, leafEvaluator) with
         | Exhausted (actionHistory, win) -> backPropagating root actionHistory win
         | Candidate (actionHistory, a) ->
@@ -154,19 +150,19 @@ let search (root: State, maxSimulationCount, timer: Stopwatch, tTable, evaluateU
                 let win = simulation a.state
                 backPropagating root (a :: actionHistory) win
             | Terminal win -> backPropagating root actionHistory win
-            | _ -> raise (Exception("Expanded to unexpected leaf type"))
+            | _ -> raise (Exception "Expanded to unexpected leaf type")
 
     extractBestPath root |> List.toArray
 
 let parallelSearch (root: State, maxSimulationCount, tTable, evaluateUntil: int) =
     let expression =
         async {
-            let (leaf, ah) =
+            let leaf, ah =
                 lock
                     root
                     (fun () ->
                         match selection (root, leafEvaluator) with
-                        | Exhausted a -> (Terminal(snd a), fst a)
+                        | Exhausted a -> Terminal(snd a), fst a
                         | Candidate (ah, i) ->
                             let s =
                                 if List.isEmpty ah then
@@ -174,12 +170,13 @@ let parallelSearch (root: State, maxSimulationCount, tTable, evaluateUntil: int)
                                 else
                                     ah.[0].state
 
-                            (expansion (s, i, tTable), ah))
+                            expansion (s, i, tTable), ah)
 
-            let (win, actionHistory) =
+            let win, actionHistory =
                 match leaf with
-                | Leaf a -> (simulation a.state, a :: ah)
-                | Terminal win -> (win, ah)
+                | Leaf a -> simulation a.state, a :: ah
+                | Terminal win -> win, ah                
+                | Unexplored _ -> failwith "Not Implemented"
 
             lock root (fun () -> backPropagating root actionHistory win)
         }

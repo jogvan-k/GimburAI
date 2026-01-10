@@ -13,31 +13,31 @@ and State(state: ICoreState) =
     let mutable _visitCount = 0
     let mutable _winRate = 0.
     let incrementVisitCount () = _visitCount <- _visitCount + 1
-    member this.state = state
+    member _.state = state
 
-    member this.leaves
+    member _.leaves
         with get () = _leaves
-        and set (value) = _leaves <- value
+        and set value = _leaves <- value
 
-    member this.registerWin() =
+    member _.registerWin() =
         incrementVisitCount ()
-        _winRate <- _winRate + (1. - _winRate) / float (_visitCount)
+        _winRate <- _winRate + (1. - _winRate) / float _visitCount
 
-    member this.registerLoss() =
+    member _.registerLoss() =
         incrementVisitCount ()
-        _winRate <- _winRate - _winRate / float (_visitCount)
+        _winRate <- _winRate - _winRate / float _visitCount
 
-    member this.winRate = _winRate
-    member this.visitCount = Math.Max(1, _visitCount)
-    member this.playerTurn = state.PlayerTurn
+    member _.winRate = _winRate
+    member _.visitCount = Math.Max(1, _visitCount)
+    member _.playerTurn = state.PlayerTurn
 
 and Action(activePlayer: Player, state: State) =
     let mutable _visitCount = 0
-    member this.incrementVisitCount() = _visitCount <- _visitCount + 1
-    member this.state = state
-    member this.visitCount = Math.Max(_visitCount, 1)
+    member _.incrementVisitCount() = _visitCount <- _visitCount + 1
+    member _.state = state
+    member _.visitCount = Math.Max(_visitCount, 1)
 
-    member this.winRate =
+    member _.winRate =
         if state.state.PlayerTurn = activePlayer then
             state.winRate
         else
@@ -51,9 +51,9 @@ type TranspositionTable() =
     let mutable _map = Map.empty
     let mutable _successfulLookups = 0
 
-    member this.Add(h: int, s: State) = _map <- _map.Add(h, s)
+    member _.Add(h: int, s: State) = _map <- _map.Add(h, s)
 
-    member this.Lookup h =
+    member _.Lookup h =
         let result = _map.TryFind h
 
         if result.IsSome then
@@ -61,8 +61,8 @@ type TranspositionTable() =
 
         result
 
-    member this.SuccessfulLookups = _successfulLookups
-    member this.Count = _map.Count
+    member _.SuccessfulLookups = _successfulLookups
+    member _.Count = _map.Count
 
 type LogInfo =
     struct

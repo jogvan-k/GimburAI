@@ -6,8 +6,6 @@ open Kjarni
 open Kjarni.MCTS.AI
 open KjarniTest.TestTypes
 
-let unlimited = 999999999
-
 [<TestFixture>]
 type BenchmarkCases() =
 
@@ -15,14 +13,14 @@ type BenchmarkCases() =
         let tree = complexTree evalFun n b
 
         let cal =
-            MonteCarloTreeSearch(Seconds(5), unlimited, configuration.AsyncExecution)
+            MonteCarloTreeSearch(Seconds 5, System.Int32.MaxValue, configuration.AsyncExecution)
 
         let bestPath =
             (cal :> IGameAI).DetermineAction(tree.build ())
 
         let logInfo = cal.LatestLogInfo()
 
-        let treeSize = ((pown b (n + 1)) - 1) / (b - 1)
+        let treeSize = (pown b (n + 1) - 1) / (b - 1)
         let leafNodes = pown b n
 
         printfn "Searched tree of depth %i, branch width %i, %i total nodes and %i branch nodes " n b treeSize leafNodes
@@ -38,12 +36,12 @@ type BenchmarkCases() =
         printfn
             "Best path: %s"
             (bestPath
-             |> Array.map (string)
-             |> Array.fold (fun s i -> if (s = "") then i else s + ", " + i) "")
+             |> Array.map string
+             |> Array.fold (fun s i -> if s = "" then i else s + ", " + i) "")
 
     [<Explicit>]
     [<Test>]
-    member this.AllUniqueNodes() =
+    member _.AllUniqueNodes() =
         let mutable nextHash = 0
 
         let genNextHash =
@@ -53,7 +51,7 @@ type BenchmarkCases() =
 
         let n, b = 10, 2
 
-        let totalEndNodes = (int32) (2. ** 10.)
+        let totalEndNodes = int32 (2. ** 10.)
 
         let evalFun (d, h) =
             let playerTurn =
@@ -64,6 +62,6 @@ type BenchmarkCases() =
                 else
                     p1
 
-            (playerTurn, d, 0, genNextHash ())
+            playerTurn, d, 0, genNextHash ()
 
         evaluate evalFun n b

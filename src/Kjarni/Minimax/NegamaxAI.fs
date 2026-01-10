@@ -17,4 +17,4 @@ type NegamaxAI
                    defaultArg searchConfig0 SearchConfiguration.NoRestrictions,
                    defaultArg loggingConfiguration0 LoggingConfiguration.LogAll)
 
-    override this.AICall d s acc pv = negamax d s acc pv
+    override _.AICall d s acc pv = negamax d s acc pv
