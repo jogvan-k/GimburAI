@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <RootNamespace>KjarniTest</RootNamespace>
+
+        <IsPackable>false</IsPackable>
+        <GenerateProgramFile>false</GenerateProgramFile>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="FsUnit" Version="4.0.4" />
+        <PackageReference Include="nunit" Version="3.13.0" />
+        <PackageReference Include="NUnit3TestAdapter" Version="3.17.0" />
+        <PackageReference Include="Microsoft.NET.Test.Sdk" Version="16.8.3" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="TestTypes.fs" />
+        <Compile Include="Algorithms\AlphaBetaPruningTest.fs" />
+        <Compile Include="Algorithms\BenchmarkTest.fs" />
+        <Compile Include="Algorithms\PrincipalVariationSearchTest.fs" />
+        <Compile Include="Algorithms\HashMapTest.fs" />
+        <Compile Include="Algorithms\NegamaxTest.fs" />
+        <Compile Include="MCTS\SelectionTest.fs" />
+        <Compile Include="MCTS\ExpansionTest.fs" />
+        <Compile Include="MCTS\BackPropagatingTest.fs" />
+        <Compile Include="MCTS\BenchmarkTest.fs" />
+        <Compile Include="MCTS\StateTest.fs" />
+        <Compile Include="program.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\..\src\Kjarni\Kjarni.fsproj" />
+    </ItemGroup>
+
+</Project>
