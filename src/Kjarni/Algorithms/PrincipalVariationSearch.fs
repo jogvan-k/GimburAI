@@ -6,7 +6,6 @@ open Kjarni.Algorithms.AISupportTypes
 open Kjarni.Algorithms.Accumulator
 open Kjarni.Algorithms.TranspositionTable
 open Kjarni.Algorithms.UtilityMethods
-open Kjarni.Algorithms.Negamax
 
 let noTranspositionTable = noTranspositionTable ()
 
@@ -20,14 +19,14 @@ let rec recPVS
     (tTable: ITranspositionTable)
     pv
     =
-    match (s, pv) with
+    match s, pv with
     | SearchLimit depth _
-    | Terminal _ -> (color * acc.eval s, [])
-    | Node (actions) ->
+    | Terminal _ -> color * acc.eval s, []
+    | Node actions ->
         let stateHash = s.GetHashCode()
         let hashMapLookup = tTable.lookup stateHash
 
-        if (hashMapLookup.IsSome) then
+        if hashMapLookup.IsSome then
             hashMapLookup.Value
         else
             match actions |> Seq.toList with
@@ -38,33 +37,33 @@ let rec recPVS
                     nextCandidate alpha beta color principalAction depth acc tTable principalPath
 
                 let mutable currentBest =
-                    (fst principal, principalIndex :: snd principal)
+                    fst principal, principalIndex :: snd principal
 
                 let mutable alpha' = max alpha (fst principal)
 
-                for (action, index, _) in tail do
-                    if (alpha' < beta) then
+                for action, index, _ in tail do
+                    if alpha' < beta then
                         let mutable candidate =
-                            if (doNullWindowSearch) then
+                          if doNullWindowSearch then
                                 nullWindowSearch alpha' beta color action depth acc tTable
                             else
                                 nextCandidate alpha' beta color action depth acc tTable []
 
-                        if (fst currentBest) < (fst candidate) then
-                            currentBest <- (fst candidate, index :: snd candidate)
+                        if fst currentBest < fst candidate then
+                            currentBest <- fst candidate, index :: snd candidate
                             alpha' <- max alpha' (fst candidate)
                     else
                         acc.incrementPrunedPaths ()
 
                 tTable.add stateHash currentBest
                 currentBest
-            | [] -> raise (SystemException("No available actions."))
+            | [] -> raise (SystemException "No available actions.")
 
 and nullWindowSearch alpha beta color (action: ICoreAction) depth acc tTable =
     let mutable candidate =
         nextCandidate alpha (alpha + 1) color action depth acc noTranspositionTable []
 
-    if (alpha < (fst candidate) && (fst candidate) < beta) then
+    if alpha < fst candidate && fst candidate < beta then
         candidate <- nextCandidate (fst candidate) beta color action depth acc tTable []
 
     candidate
@@ -73,7 +72,7 @@ and nextCandidate alpha beta color (action: ICoreAction) depth acc tTable p =
     let nextDepth = reduceRemainingSearch depth
     let nextState = acc.nextState action
 
-    if (changingPlayer action.Origin nextState) then
+    if changingPlayer action.Origin nextState then
         recPVS (-1 * beta) (-1 * alpha) (-color) nextDepth nextState acc tTable p
         |> flipValue
     else

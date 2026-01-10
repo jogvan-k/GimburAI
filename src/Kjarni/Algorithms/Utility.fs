@@ -7,8 +7,8 @@ module Utility =
     let toStopwatchTics (st: searchTime) =
         match st with
         | Minutes s -> Some(Stopwatch.Frequency * int64 (60 * s))
-        | Seconds s -> Some(Stopwatch.Frequency * int64 (s))
-        | MilliSeconds s -> Some(Stopwatch.Frequency / int64 (1000) * int64 (s))
+        | Seconds s -> Some(Stopwatch.Frequency * int64 s)
+        | MilliSeconds s -> Some(Stopwatch.Frequency / int64 1000 * int64 (s))
         | Unlimited -> None
 
     let toMilliseconds (st: searchTime) =

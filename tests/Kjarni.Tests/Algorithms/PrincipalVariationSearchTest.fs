@@ -22,19 +22,19 @@ type PrincipalVariationSearchTest() =
         let d, h = counter
 
         let playerTurn =
-            if (d % 2 = 0) then
+            if d % 2 = 0 then
                 Player.Player1
             else
                 Player.Player2
 
         hashIndex <- hashIndex + 1
-        (playerTurn, d, h, hashIndex)
+        playerTurn, d, h, hashIndex
 
     let state = (complexTree evalFun 4 2).build ()
     let bestPath = [ 1; 0; 1; 0 ]
 
     [<Test>]
-    member this.PrincipalPathIsBestPath() =
+    member _.PrincipalPathIsBestPath() =
         let mutable nodesEvaluated = 0
 
         let evalFuncWithEvalCount =
@@ -43,10 +43,10 @@ type PrincipalVariationSearchTest() =
                 evaluatorFunc s
 
         let tTable =
-            transpositionTable (LoggingConfiguration.LogAll)
+            transpositionTable LoggingConfiguration.LogAll
 
         let acc =
-            accumulator (evalFuncWithEvalCount, searchTime.Unlimited, LoggingConfiguration.LogAll)
+            accumulator (evalFuncWithEvalCount, Unlimited, LoggingConfiguration.LogAll)
 
         let result =
             recPVS -Int32.MaxValue Int32.MaxValue 1 (Plies 10) state acc tTable bestPath
@@ -57,7 +57,7 @@ type PrincipalVariationSearchTest() =
 
 
     [<Test>]
-    member this.PrincipalPathIsNotBestPath() =
+    member _.PrincipalPathIsNotBestPath() =
         let mutable nodesEvaluated = 0
 
         let evalFuncWithEvalCount =
@@ -66,12 +66,12 @@ type PrincipalVariationSearchTest() =
                 evaluatorFunc s
 
         let tTable =
-            transpositionTable (LoggingConfiguration.LogAll)
+            transpositionTable LoggingConfiguration.LogAll
 
         let pv = [ 0; 0; 1; 0 ]
 
         let acc =
-            accumulator (evalFuncWithEvalCount, searchTime.Unlimited, LoggingConfiguration.LogAll)
+            accumulator (evalFuncWithEvalCount, Unlimited, LoggingConfiguration.LogAll)
 
         let result =
             recPVS -Int32.MaxValue Int32.MaxValue 1 (Plies 10) state acc tTable pv

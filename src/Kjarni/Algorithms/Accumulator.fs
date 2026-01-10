@@ -5,10 +5,10 @@ open Kjarni
 open Kjarni.AI.MinimaxTypes
 
 let logPrunedPaths (logConfig: LoggingConfiguration) =
-    logConfig.HasFlag(LoggingConfiguration.LogPrunedPaths)
+    logConfig.HasFlag LoggingConfiguration.LogPrunedPaths
 
 let logCalculatedSteps (logConfig: LoggingConfiguration) =
-    logConfig.HasFlag(LoggingConfiguration.LogCalculatedSteps)
+    logConfig.HasFlag LoggingConfiguration.LogCalculatedSteps
 
 type accumulator
     (
@@ -28,13 +28,13 @@ type accumulator
     let _evaluateUntil = Utility.toStopwatchTics st
 
     let _incrementPrunedPaths =
-        if (logPrunedPaths logConfig) then
+        if logPrunedPaths logConfig then
             fun () -> _prunedPaths <- _prunedPaths + 1
         else
             fun () -> ()
 
     let _nextState =
-        if (logCalculatedSteps logConfig) then
+        if logCalculatedSteps logConfig then
             fun (a: ICoreAction) ->
                 _stepsCalculated <- _stepsCalculated + 1
                 a.DoCoreAction()
@@ -42,25 +42,25 @@ type accumulator
             fun (a: ICoreAction) -> a.DoCoreAction()
 
 
-    member this.incrementPrunedPaths() = _incrementPrunedPaths ()
-    member this.nextState a = _nextState a
-    member this.logConfig = logConfig
+    member _.incrementPrunedPaths() = _incrementPrunedPaths ()
+    member _.nextState a = _nextState a
+    member _.logConfig = logConfig
 
-    member this.eval(s: ICoreState) =
-        if (_evaluateUntil.IsSome
-            && _timer.ElapsedTicks > _evaluateUntil.Value) then
+    member _.eval(s: ICoreState) =
+        if _evaluateUntil.IsSome
+           && _timer.ElapsedTicks > _evaluateUntil.Value then
             _timeLimitReached <- true
 
         evaluator s
 
-    member this.prunedPaths = _prunedPaths
+    member _.prunedPaths = _prunedPaths
 
-    member this.successfulHashMapLookups
+    member _.successfulHashMapLookups
         with get () = _successfulHashMapLookups
-        and set (value) = _successfulHashMapLookups <- value
+        and set value = _successfulHashMapLookups <- value
 
-    member this.searchConfig = _searchConfig
-    member this.stepsCalculated = _stepsCalculated
+    member _.searchConfig = _searchConfig
+    member _.stepsCalculated = _stepsCalculated
 
-    member this.startTimer = _timer.Start()
-    member this.isTimeLimitReached = _timeLimitReached
+    member _.startTimer = _timer.Start()
+    member _.isTimeLimitReached = _timeLimitReached

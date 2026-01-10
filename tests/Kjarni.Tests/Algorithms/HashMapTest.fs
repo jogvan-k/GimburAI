@@ -12,18 +12,18 @@ open FsUnit
 type hashMapTest() =
 
     let tree =
-        nb(p1, 0, 0, 1234)
+        node_builder(p1, 0, 0, 1234)
             .addChildren(
-                [ nb (p2, 1, 0, 4321, [ nb (p1, 2, 100, 1111) ])
-                  nb (p2, 1, 0, 4321, [ nb (p1, 2, 100, 1111) ])
-                  nb (p2, 1, 0, 4321, [ nb (p1, 2, 100, 1111) ]) ]
+                [ node_builder (p2, 1, 0, 4321, [ node_builder (p1, 2, 100, 1111) ])
+                  node_builder (p2, 1, 0, 4321, [ node_builder (p1, 2, 100, 1111) ])
+                  node_builder (p2, 1, 0, 4321, [ node_builder (p1, 2, 100, 1111) ]) ]
             )
             .build ()
 
     [<Test>]
-    member this.SearchWithHashTableLookup() =
+    member _.SearchWithHashTableLookup() =
         let sut =
-            NegamaxAI(evaluator, searchLimit.Turn(4, searchTime.Unlimited))
+            NegamaxAI(evaluator, Turn(4, Unlimited))
 
         let path = (sut :> IGameAI).DetermineAction tree
 

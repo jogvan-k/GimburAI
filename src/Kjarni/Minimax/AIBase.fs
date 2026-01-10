@@ -16,18 +16,18 @@ type BaseAI
         loggingConfiguration: LoggingConfiguration
     ) =
     let logEvaulatedStates =
-        loggingConfiguration.HasFlag(LoggingConfiguration.LogEvaluatedEndStates)
+        loggingConfiguration.HasFlag LoggingConfiguration.LogEvaluatedEndStates
 
     let logTime =
-        loggingConfiguration.HasFlag(LoggingConfiguration.LogTime)
+        loggingConfiguration.HasFlag LoggingConfiguration.LogTime
 
     let incrementalSearch =
-        searchConfig.HasFlag(SearchConfiguration.IncrementalSearch)
+        searchConfig.HasFlag SearchConfiguration.IncrementalSearch
 
     let mutable _logInfos: LogInfo list = List.empty
     abstract AICall : remainingSearch -> ICoreState -> accumulator -> int list -> int * int list
 
-    member this.logInfos = _logInfos
+    member _.logInfos = _logInfos
     member this.LatestLogInfo = this.logInfos.Head
 
     interface IGameAI with
@@ -42,15 +42,15 @@ type BaseAI
             let mutable logInfo = LogInfo()
 
             let timer =
-                if (logTime) then
-                    Some(System.Diagnostics.Stopwatch.StartNew())
+                if logTime then
+                    Some(Diagnostics.Stopwatch.StartNew())
                 else
                     None
 
-            let (searchLimit, timeLimit) = toRemainingSearch depth s.TurnNumber
+            let searchLimit, timeLimit = toRemainingSearch depth s.TurnNumber
 
             let evaluate =
-                if (logEvaulatedStates) then
+                if logEvaulatedStates then
                     function
                     | i ->
                         logInfo.endNodesEvaluated <- logInfo.endNodesEvaluated + 1
@@ -62,7 +62,7 @@ type BaseAI
                 accumulator (evaluate, timeLimit, loggingConfiguration, searchConfig)
 
             let returnVal =
-                if (incrementalSearch) then
+                if incrementalSearch then
                     doIncrementalSearch this.AICall searchLimit s accumulator
                 else
                     snd (this.AICall searchLimit s accumulator (v |> Array.toList))
@@ -71,7 +71,7 @@ type BaseAI
 
             logInfo.elapsedTime <-
                 match timer with
-                | Some (timer) ->
+                | Some (Value = timer;) ->
                     timer.Stop()
                     timer.Elapsed
                 | None -> TimeSpan()

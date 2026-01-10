@@ -12,23 +12,22 @@ open FsUnit
 type alphaBetaPruningTest() =
 
     let leaf no =
-        nb(p2, 1, 0, 1 * no)
-            .addChildren (
-                [ nb (p1, 2, 10 + no, 10 * no)
-                  nb (p1, 2, 30 + no, 100 * no)
-                  nb (p1, 2, 20 + no, 1000 * no) ]
-            )
+        node_builder(p2, 1, 0, 1 * no)
+            .addChildren 
+                [ node_builder (p1, 2, 10 + no, 10 * no)
+                  node_builder (p1, 2, 30 + no, 100 * no)
+                  node_builder (p1, 2, 20 + no, 1000 * no) ]
 
     let alphaBetaPruningTree =
-        nb(p1, 0, 0, 0)
-            .addChildren ([ leaf 3; leaf 1; leaf 2 ])
+        node_builder(p1, 0, 0, 0)
+            .addChildren [ leaf 3; leaf 1; leaf 2 ]
 
     [<Test>]
-    member this.PruningOnMaximizingPlayer() =
+    member _.PruningOnMaximizingPlayer() =
         let sut =
             NegamaxAI(
                 evaluator,
-                searchLimit.Turn(4, searchTime.Unlimited),
+                Turn(4, Unlimited),
                 loggingConfiguration0 =
                     LoggingConfiguration.LogEvaluatedEndStates
                     + LoggingConfiguration.LogCalculatedSteps
@@ -47,11 +46,11 @@ type alphaBetaPruningTest() =
         |> should equal 5
 
     [<Test>]
-    member this.PruningOnMinimizingPlayer() =
+    member _.PruningOnMinimizingPlayer() =
         let sut =
             NegamaxAI(
                 evaluator,
-                searchLimit.Turn(4, searchTime.Unlimited),
+                Turn(4, Unlimited),
                 loggingConfiguration0 =
                     LoggingConfiguration.LogEvaluatedEndStates
                     + LoggingConfiguration.LogCalculatedSteps

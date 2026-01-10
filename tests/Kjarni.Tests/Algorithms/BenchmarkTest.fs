@@ -16,12 +16,12 @@ type BenchmarkCases() =
         let tree = complexTree evalFun n b
 
         let cal =
-            NegamaxAI(evaluator, searchLimit.Turn(n, searchTime.Unlimited))
+            NegamaxAI(evaluator, Turn(n, Unlimited))
 
         ignore ((cal :> IGameAI).DetermineAction(tree.build ()))
         let logInfo = cal.LatestLogInfo
 
-        let treeSize = ((pown b (n + 1)) - 1) / (b - 1)
+        let treeSize = (pown b (n + 1) - 1) / (b - 1)
         let leafNodes = pown b n
 
         printfn "Searched tree of depth %i, branch width %i, %i total nodes and %i branch nodes " n b treeSize leafNodes
@@ -44,7 +44,7 @@ type BenchmarkCases() =
 
     [<Explicit>]
     [<Test>]
-    member this.AllUniqueNodes() =
+    member _.AllUniqueNodes() =
         let mutable nextHash = 0
 
         let genNextHash =
@@ -52,12 +52,12 @@ type BenchmarkCases() =
                 nextHash <- nextHash + 1
                 nextHash
 
-        let evalFun (d, h) = (Player.Player1, d, h, genNextHash ())
+        let evalFun (d, h) = Player.Player1, d, h, genNextHash ()
         let n, b = 7, 6
 
         let logInfo = evaluate evalFun n b
 
-        let expectedStepsCalculated = ((pown b n) - 1) * b / (b - 1)
+        let expectedStepsCalculated = (pown b n - 1) * b / (b - 1)
         let expectedEndNodesEvaluated = pown b n
 
         logInfo.stepsCalculated
@@ -71,12 +71,12 @@ type BenchmarkCases() =
 
     [<Explicit>]
     [<Test>]
-    member this.PathsPruned() =
+    member _.PathsPruned() =
         let rng = Random()
 
         let evalFun (d, _) =
-            let playerTurn = if (d % 2 = 0) then p1 else p2
-            (playerTurn, d, rng.Next() / 100, rng.Next())
+            let playerTurn = if d % 2 = 0 then p1 else p2
+            playerTurn, d, rng.Next() / 100, rng.Next()
 
         let n, b = 8, 6
 
@@ -89,9 +89,9 @@ type BenchmarkCases() =
 
     [<Explicit>]
     [<Test>]
-    member this.HashMapUsed() =
+    member _.HashMapUsed() =
         let rng = Random()
-        let evalFun (d, h) = (p1, d, h, rng.Next() / 100)
+        let evalFun (d, h) = p1, d, h, rng.Next() / 100
         let n, b = 8, 6
 
         let logInfo = evaluate evalFun n b
