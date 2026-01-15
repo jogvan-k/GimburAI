@@ -17,11 +17,6 @@
 
     <ItemGroup>
         <Compile Include="TestTypes.fs" />
-        <Compile Include="Algorithms\AlphaBetaPruningTest.fs" />
-        <Compile Include="Algorithms\BenchmarkTest.fs" />
-        <Compile Include="Algorithms\PrincipalVariationSearchTest.fs" />
-        <Compile Include="Algorithms\HashMapTest.fs" />
-        <Compile Include="Algorithms\NegamaxTest.fs" />
         <Compile Include="MCTS\SelectionTest.fs" />
         <Compile Include="MCTS\ExpansionTest.fs" />
         <Compile Include="MCTS\BackPropagatingTest.fs" />
