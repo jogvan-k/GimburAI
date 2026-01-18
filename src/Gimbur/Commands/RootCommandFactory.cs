@@ -4,7 +4,7 @@ namespace Gimbur.Commands;
 
 internal static class RootCommandFactory
 {
-    private const string RootDescription = "Gimbur – Settlers of Catan simulations powered by Kjarni";
+    private const string RootDescription = "Gimbur – Settlers of Catan simulator,";
 
     internal static RootCommand Create()
     {
@@ -17,7 +17,7 @@ internal static class RootCommandFactory
 
         var verboseOption = new Option<bool>("--verbose")
         {
-          Description = "Increase logging verbosity"
+            Description = "Increase logging verbosity"
         };
 
         rootCommand.Options.Add(configOption);
@@ -25,8 +25,6 @@ internal static class RootCommandFactory
 
         rootCommand.Subcommands.Add(CreateSimulateCommand());
         rootCommand.Subcommands.Add(CreatePlayCommand());
-        rootCommand.Subcommands.Add(CreateEvaluateCommand());
-        rootCommand.Subcommands.Add(CreateBenchmarkCommand());
 
         rootCommand.SetAction(parserResults => Console.WriteLine("Gimbur CLI placeholder – use --help to explore commands."));
 
@@ -35,85 +33,148 @@ internal static class RootCommandFactory
 
     private static Command CreateSimulateCommand()
     {
-        var gamesOption = new Option<int>("--games")
+        var noOfGamesOption = new Option<uint>("--games", "-g")
         {
-          Description = "Number of games to simulate",
+            Description = "Number of games to simulate",
+            DefaultValueFactory = _ => 1
         };
-        var searchTimeOption = new Option<TimeSpan>("--search-time")
+        var searchTimeOption = new Option<TimeSpan>("--search-time", "-s")
         {
-          Description = "Time budget per move",
+            Description = "Time budget per move",
+            DefaultValueFactory = _ => TimeSpan.FromSeconds(2)
         };
-        var maxSimulationsOption = new Option<int>("--max-simulations")
+        var maxSimulationsOption = new Option<uint?>("--max-simulations", "-m")
         {
-          Description = "Maximum simulations per turn (0 = unlimited)",
+            Description = "Maximum simulations per turn (0 = unlimited)",
         };
         var seedOption = new Option<int?>("--seed")
         {
-          Description = "Random seed to ensure reproducibility",
+            Description = "Random seed to ensure reproducibility",
         };
-        var playersOption = new Option<int>("--players")
+        var noOfPlayersOption = new Option<int>("--players", "-p")
         {
-          Description = "Player count for the simulation",
+            Description = "Player count for the simulation",
         };
-        var mapOption = new Option<string?>("--map")
+        var mapConfigOption = new Option<string?>("--map-config")
         {
-          Description = "Map layout identifier",
+            Description = "Map layout identifier",
         };
-        var logLevelOption = new Option<string>("--log-level")
+        var verbosityOption = new Option<string>("--verbosity", "-v")
         {
-          Description = "Logging verbosity for simulation output",
+            Description = "Logging verbosity for simulation output",
         };
+
+        noOfPlayersOption.Validators.Add(result =>
+        {
+            if (result.Tokens.Count == 0)
+            {
+              return; // ALlow empty value
+            }
+
+            var value = result.GetValue(noOfPlayersOption);
+            if (!(1 <= value && value <= 4))
+            {
+              result.AddError($"Argument '{value}' must be between 1 and 4");
+            }
+        });
+        // Add -q as a separate option for quiet verbosity.
+        Option<bool> quietOption = new("-q")
+        {
+            Description = "Set verbosity to quiet (shorthand for --verbosity quiet)",
+            Recursive = true
+        };
+        // Handle both short and long forms.
+        verbosityOption.Validators.Add(result =>
+        {
+            if (result.Tokens.Count == 0)
+            {
+                return; // Allow default value.
+            }
+
+            string value = result.Tokens.Single().Value.ToLowerInvariant();
+            string[] validValues = new[] { "quiet", "q", "minimal", "m", "normal", "n", "detailed", "d", "diagnostic", "diag" };
+
+            if (!validValues.Contains(value))
+            {
+                result.AddError($"Argument '{value}' not recognized. Must be one of: 'q[uiet]', 'm[inimal]', 'n[ormal]', 'd[etailed]', 'diag[nostic]'");
+            }
+        });
+
         var exportOption = new Option<FileInfo?>("--export")
         {
-          Description = "Optional path to export game transcripts",
+            Description = "Optional path to export game transcripts",
         };
 
         var command = new Command("simulate", "Run Settlers of Catan AI self-play simulations.")
         {
-            gamesOption,
+            noOfGamesOption,
             searchTimeOption,
             maxSimulationsOption,
             seedOption,
-            playersOption,
-            mapOption,
-            logLevelOption,
+            noOfPlayersOption,
+            mapConfigOption,
+            verbosityOption,
             exportOption
         };
 
-        command.SetAction(parserResults => Console.WriteLine("TODO: implement simulation runner"));
+        command.SetAction(parseResult =>
+            {
+                uint noOfGames = parseResult.GetValue(noOfGamesOption);
+                TimeSpan searchTime = parseResult.GetValue(searchTimeOption);
+                uint? maxSimulations = parseResult.GetValue(maxSimulationsOption);
+                int seed = parseResult.GetValue(seedOption) ?? new Random().Next();
+                int noOfPlayers = parseResult.GetValue(noOfPlayersOption);
+                string? mapConfig = parseResult.GetValue(mapConfigOption);
+                string? verbosity;
+                FileInfo? export = parseResult.GetValue(exportOption);
+
+                // Check if -q was specified.
+                if (parseResult.GetValue(quietOption))
+                {
+                    verbosity = "quiet";
+                }
+                else
+                {
+                    verbosity = parseResult.GetValue(verbosityOption) ?? "diagnostic";
+                }
+                Console.WriteLine($"NoOfGames: {noOfGames}");
+                Console.WriteLine($"SearchTime: {searchTime}");
+                Console.WriteLine($"MaxSimulations: {maxSimulations}");
+                Console.WriteLine($"Seed: {seed}");
+                Console.WriteLine($"NoOfPlayers: {noOfPlayers}");
+                Console.WriteLine($"MapConfig: {mapConfig ?? "(null)"}");
+                Console.WriteLine($"Export: {export?.FullName ?? "(null)"}");
+                Console.WriteLine($"Verbosity: {verbosity}");
+                Console.WriteLine("TODO: implement simulation runner");
+            });
 
         return command;
     }
 
     private static Command CreatePlayCommand()
     {
-        var humanPositionOption = new Option<int?>("--human-position")
+        var humanPositionOption = new Option<int?>("--player-position", "-p")
         {
-          Description = "Board position (seat) for the human player",
+            Description = "Board position (seat) for the human player",
         };
 
-        var aiOption = new Option<string[]>("--ai")
+        var aiOption = new Option<string[]>("--ai", "-a")
         {
-          Description = "AI identifiers for automated players",
-          AllowMultipleArgumentsPerToken = true,
-          DefaultValueFactory = _ => Array.Empty<string>()
+            Description = "AI identifiers for automated players",
+            AllowMultipleArgumentsPerToken = true,
+            DefaultValueFactory = _ => ["R", "R", "R"]
         };
 
-        var searchTimeOption = new Option<TimeSpan>("--search-time")
+        var searchTimeOption = new Option<TimeSpan>("--search-time", "-s")
         {
-          Description = "Time budget per move for AI players",
-          DefaultValueFactory = _ => TimeSpan.FromSeconds(2),
+            Description = "Time budget per move for AI players",
+            DefaultValueFactory = _ => TimeSpan.FromSeconds(2),
         };
 
-        var maxSimulationsOption = new Option<int>("--max-simulations")
+        var maxSimulationsOption = new Option<int>("--max-simulations", "-m")
         {
-          Description = "Maximum simulations per AI turn (0 = unlimited)",
-          DefaultValueFactory = _ => 0, 
-        };
-
-        var interactiveOption = new Option<bool>("--interactive")
-        {
-          Description = "Enable interactive prompts during play",
+            Description = "Maximum simulations per AI turn (0 = unlimited)",
+            DefaultValueFactory = _ => 0,
         };
 
         var command = new Command("play", "Play a Settlers of Catan match with human and AI players.")
@@ -122,86 +183,9 @@ internal static class RootCommandFactory
             aiOption,
             searchTimeOption,
             maxSimulationsOption,
-            interactiveOption
         };
 
         command.SetAction(parserResults => Console.WriteLine("TODO: implement interactive play mode"));
-
-        return command;
-    }
-
-    private static Command CreateEvaluateCommand()
-    {
-        var stateFileOption = new Option<FileInfo>("--state-file")
-        {
-          Description = "Path to a serialized Catan game state",
-          Required = true
-        };
-
-        var searchTimeOption = new Option<TimeSpan>("--search-time")
-        {
-          Description = "Time budget per evaluation",
-          DefaultValueFactory = _ => TimeSpan.FromSeconds(2)
-        };
-
-        var maxSimulationsOption = new Option<int>("--max-simulations")
-        {
-          Description = "Maximum simulations per evaluation (0 = unlimited)",
-        };
-
-        var metricsOption = new Option<string[]>("--metrics")
-        {
-          Description = "One or more evaluation metrics to compute",
-          AllowMultipleArgumentsPerToken = true
-        };
-
-        var command = new Command("evaluate", "Evaluate saved game states using the Kjarni engine.")
-        {
-            stateFileOption,
-            searchTimeOption,
-            maxSimulationsOption,
-            metricsOption
-        };
-
-        command.SetAction(parserResults => Console.WriteLine("TODO: implement evaluation pipeline"));
-
-        return command;
-    }
-
-    private static Command CreateBenchmarkCommand()
-    {
-        var runsOption = new Option<int>("--runs")
-        {
-          Description = "Number of benchmark runs",
-          DefaultValueFactory = _ => 5,
-        };
-
-        var searchTimesOption = new Option<TimeSpan[]>("--search-times")
-        {
-          Description = "One or more search times to benchmark",
-          AllowMultipleArgumentsPerToken = true
-        };
-
-        var maxSimulationsOption = new Option<int[]>("--max-simulations")
-        {
-          Description = "One or more simulation caps to compare",
-          AllowMultipleArgumentsPerToken = true
-        };
-
-        var outputOption = new Option<FileInfo?>("--output")
-        {
-          Description = "Optional output file for benchmark results",
-        };
-
-        var command = new Command("benchmark", "Benchmark different search configurations using Kjarni.")
-        {
-            runsOption,
-            searchTimesOption,
-            maxSimulationsOption,
-            outputOption
-        };
-
-        command.SetAction(parserResults => Console.WriteLine("TODO: implement benchmarking suite"));
 
         return command;
     }
