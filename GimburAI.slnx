@@ -1,2 +1,10 @@
 <Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Gimbur.Cli/Gimbur.Cli.csproj" />
+    <Project Path="src/Kjarni/Kjarni.fsproj" />
+  </Folder>
+  <Folder Name="/tests/" />
+  <Folder Name="/tests/Kjarni.Tests/">
+    <Project Path="tests/Kjarni.Tests/Kjarni.Test.fsproj" />
+  </Folder>
 </Solution>
