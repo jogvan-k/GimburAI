@@ -1,4 +1,5 @@
 using System.CommandLine;
+using Gimbur.Cli;
 
 namespace Gimbur.Commands;
 
@@ -149,17 +150,20 @@ internal static class RootCommandFactory
             string? verbosity = ParseVerbosity(parseResult, globals);
             FileInfo? export = parseResult.GetValue(exportOption);
 
+            var options = new SimulationOptions
+            {
+                NumberOfGames = noOfGames,
+                SearchTime = searchTime,
+                MaxSimulations = maxSimulations,
+                Seed = seed,
+                NumberOfPlayers = noOfPlayers,
+                MapConfig = mapConfig,
+                ExportPath = export,
+                Verbosity = verbosity ?? "normal"
+            };
 
-            Console.WriteLine($"Config: {config?.FullName ?? "(null)"}");
-            Console.WriteLine($"NoOfGames: {noOfGames}");
-            Console.WriteLine($"SearchTime: {searchTime}");
-            Console.WriteLine($"MaxSimulations: {maxSimulations}");
-            Console.WriteLine($"Seed: {seed}");
-            Console.WriteLine($"NoOfPlayers: {noOfPlayers}");
-            Console.WriteLine($"MapConfig: {mapConfig ?? "(null)"}");
-            Console.WriteLine($"Export: {export?.FullName ?? "(null)"}");
-            Console.WriteLine($"Verbosity: {verbosity}");
-            Console.WriteLine("TODO: implement simulation runner");
+            var runner = new SimulationRunner(options);
+            runner.Run();
         });
 
         return command;

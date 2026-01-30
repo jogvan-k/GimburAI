@@ -155,3 +155,6 @@ dotnet clean && dotnet restore && dotnet build
 - Use `namespace` for types that are part of the public API (e.g., `namespace Kjarni`)
 - Use `module` for groupings of functions (e.g., `module Kjarni.MCTS.Algorithm`)
 - Keep module-level functions in logical groups
+
+# Dotnet CLI
+Use dotnet cli when adding or modifying the solution, e.g. when setting up new projects, use `dotnet new classlib --name <project_name>`. Don't forget to update the .slnx file, e.g. `dotnet sln add <project_path>`.
