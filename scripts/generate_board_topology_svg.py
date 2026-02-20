@@ -369,11 +369,16 @@ def generate_svg(tiles, vertices, v_index, edges, ports):
         xa, ya = vpos_by_idx[va]
         xb, yb = vpos_by_idx[vb]
         mx, my = (xa + xb) / 2, (ya + yb) / 2
-        # Direction outward from center
-        dist = math.hypot(mx, my) or 1
-        ox, oy = mx / dist * 22, my / dist * 22
-        # Port anchor point (outside the board)
-        px, py = mx + ox, my + oy
+        # Edge perpendicular (two candidates, pick the one pointing outward)
+        dx, dy = xb - xa, yb - ya
+        length = math.hypot(dx, dy) or 1
+        # Two perpendicular unit vectors
+        nx1, ny1 = -dy / length, dx / length
+        # Pick the one pointing away from the board center (dot with midpoint > 0)
+        if nx1 * mx + ny1 * my < 0:
+            nx1, ny1 = -nx1, -ny1
+        # Port anchor: midpoint pushed outward along the perpendicular
+        px, py = mx + nx1 * 22, my + ny1 * 22
         # Draw lines from port anchor to each vertex
         s.append(
             f"<line class='port'"
@@ -385,8 +390,8 @@ def generate_svg(tiles, vertices, v_index, edges, ports):
             f" x1='{tx(px):.1f}' y1='{ty(py):.1f}'"
             f" x2='{tx(xb):.1f}' y2='{ty(yb):.1f}'/>"
         )
-        # Label
-        lx, ly = px + ox * 0.6, py + oy * 0.6
+        # Label: further out along the same perpendicular
+        lx, ly = mx + nx1 * 35, my + ny1 * 35
         s.append(f"<text class='plbl' x='{tx(lx):.1f}' y='{ty(ly):.1f}'>P{pi}</text>")
 
     # Layer 4: vertices on top
