@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Kjarni\Kjarni.fsproj" />
+    <ProjectReference Include="..\Gimbur.Rules\Gimbur.Rules.csproj" />
   </ItemGroup>
 
 </Project>
