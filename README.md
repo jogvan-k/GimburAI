@@ -42,9 +42,10 @@ The goal is to train a neural network that evaluates board positions (state to w
 
 #### 2a: Board Representation
 
-- [ ] Board data structures (tiles, vertices, edges, ports) matching topology docs
-- [ ] Board setup: random tile/number/port placement with standard constraints
-- [ ] Mini map variant support (for faster training iterations)
+- [x] Board data structures (tiles, vertices, edges, ports) matching topology docs
+- [x] Board setup: random tile/number/port placement with standard constraints
+- [ ] Number token spiral placement (alphabetical letter order per official rules, skip desert)
+- [x] Mini map variant support (for faster training iterations)
 
 #### 2b: Game State
 
@@ -74,14 +75,21 @@ The goal is to train a neural network that evaluates board positions (state to w
 - [ ] Greedy action selection: evaluate each legal action's resulting state, pick highest score
 - [ ] Use as default simulation policy (replaces random legal moves for higher quality rollouts)
 
-#### 2e: Simulation Harness
+#### 2e: TUI for Manual Testing
+
+- [ ] Terminal-based game UI (board rendering, resource display, action selection)
+- [ ] Human-vs-AI mode
+- [ ] AI-vs-AI spectator mode
+- [ ] CLI `play` command wired to TUI
+
+#### 2f: Simulation Harness
 
 - [ ] Game simulation using greedy AI, run to completion
 - [ ] Game result recording (winner, final scores, turn count)
 - [ ] Batch simulation runner
 - [ ] CLI `simulate` command wired to real game logic
 
-#### 2f: Testing
+#### 2g: Testing
 
 - [ ] Unit tests for each rule subsystem
 - [ ] Integration tests: full random games complete without crashes
@@ -94,6 +102,7 @@ The goal is to train a neural network that evaluates board positions (state to w
 - [ ] Export game states as training examples (state, win probability label)
 - [ ] Random rollout labeling (play N random games from state, label = win%)
 - [ ] MCTS-informed labeling (MCTS search value as label)
+- [ ] Dihedral group D₆ expansion: augment each training example by applying all 12 symmetries (6 rotations + 6 reflections) of the hexagonal board, multiplying dataset size by 12
 - [ ] Large-scale batch generation (parallel simulation, output to files)
 
 #### 3b: Transformer Model (v1)
@@ -121,21 +130,14 @@ The goal is to train a neural network that evaluates board positions (state to w
 - [ ] Performance optimization (batch inference, caching)
 - [ ] Comparison: model-only vs. MCTS-backed vs. greedy baseline
 
-### Phase 5: TUI for Manual Testing
-
-- [ ] Terminal-based game UI (board rendering, resource display, action selection)
-- [ ] Human-vs-AI mode
-- [ ] AI-vs-AI spectator mode
-- [ ] CLI `play` command wired to TUI
-
-### Phase 6: Catanatron Benchmark Adapter
+### Phase 5: Catanatron Benchmark Adapter
 
 - [ ] Research Catanatron API for plugging in custom AI players
 - [ ] Adapter: translate Catanatron state/actions to GimburAI and back
 - [ ] Tournament runner: GimburAI vs. Catanatron built-in AIs
 - [ ] Elo / win-rate benchmarking
 
-### Phase 7: Model Architecture Experiments
+### Phase 6: Model Architecture Experiments
 
 - [ ] CNN/ConvNet layers over spatial board representation (hex grid as 2D input)
 - [ ] Hybrid architectures: convolutional feature extraction + transformer sequence modeling
@@ -143,7 +145,7 @@ The goal is to train a neural network that evaluates board positions (state to w
 - [ ] Retrain best architecture through self-play loop, compare to transformer v1 Elo
 - [ ] Ablation studies (layer count, embedding size, attention heads, kernel size)
 
-### Phase 8: Colonist.io Autonomous Player
+### Phase 7: Colonist.io Autonomous Player
 
 - [ ] Colonist.io client protocol integration (WebSocket/API)
 - [ ] Game state extraction and mapping to GimburAI state
