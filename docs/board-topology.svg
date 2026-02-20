@@ -191,33 +191,33 @@
 <text class='elbl' x='245.0' y='367.8'>70</text>
 <line class='edge' x1='292.5' y1='370.0' x2='327.1' y2='350.0'/>
 <text class='elbl' x='314.3' y='367.8'>71</text>
-<line class='port' x1='203.4' y1='38.1' x2='188.6' y2='70.0'/>
-<line class='port' x1='203.4' y1='38.1' x2='223.2' y2='50.0'/>
-<text class='plbl' x='201.8' y='25.0'>P0</text>
+<line class='port' x1='194.9' y1='40.9' x2='188.6' y2='70.0'/>
+<line class='port' x1='194.9' y1='40.9' x2='223.2' y2='50.0'/>
+<text class='plbl' x='188.4' y='29.7'>P0</text>
 <line class='port' x1='320.8' y1='40.9' x2='292.5' y2='50.0'/>
 <line class='port' x1='320.8' y1='40.9' x2='327.1' y2='70.0'/>
-<text class='plbl' x='327.4' y='29.5'>P1</text>
-<line class='port' x1='382.0' y1='141.3' x2='361.8' y2='130.0'/>
-<line class='port' x1='382.0' y1='141.3' x2='361.8' y2='170.0'/>
-<text class='plbl' x='394.1' y='136.0'>P2</text>
-<line class='port' x1='382.0' y1='278.7' x2='361.8' y2='250.0'/>
-<line class='port' x1='382.0' y1='278.7' x2='361.8' y2='290.0'/>
-<text class='plbl' x='394.1' y='284.0'>P3</text>
+<text class='plbl' x='327.3' y='29.7'>P1</text>
+<line class='port' x1='383.8' y1='150.0' x2='361.8' y2='130.0'/>
+<line class='port' x1='383.8' y1='150.0' x2='361.8' y2='170.0'/>
+<text class='plbl' x='396.8' y='150.0'>P2</text>
+<line class='port' x1='383.8' y1='270.0' x2='361.8' y2='250.0'/>
+<line class='port' x1='383.8' y1='270.0' x2='361.8' y2='290.0'/>
+<text class='plbl' x='396.8' y='270.0'>P3</text>
 <line class='port' x1='320.8' y1='379.1' x2='327.1' y2='350.0'/>
 <line class='port' x1='320.8' y1='379.1' x2='292.5' y2='370.0'/>
-<text class='plbl' x='327.4' y='390.5'>P4</text>
-<line class='port' x1='203.4' y1='381.9' x2='223.2' y2='370.0'/>
-<line class='port' x1='203.4' y1='381.9' x2='188.6' y2='350.0'/>
-<text class='plbl' x='201.8' y='395.0'>P5</text>
-<line class='port' x1='84.3' y1='313.1' x2='119.3' y2='310.0'/>
-<line class='port' x1='84.3' y1='313.1' x2='84.6' y2='290.0'/>
-<text class='plbl' x='73.7' y='321.0'>P6</text>
+<text class='plbl' x='327.3' y='390.3'>P4</text>
+<line class='port' x1='194.9' y1='379.1' x2='223.2' y2='370.0'/>
+<line class='port' x1='194.9' y1='379.1' x2='188.6' y2='350.0'/>
+<text class='plbl' x='188.4' y='390.3'>P5</text>
+<line class='port' x1='91.0' y1='319.1' x2='119.3' y2='310.0'/>
+<line class='port' x1='91.0' y1='319.1' x2='84.6' y2='290.0'/>
+<text class='plbl' x='84.5' y='330.3'>P6</text>
 <line class='port' x1='28.0' y1='210.0' x2='50.0' y2='230.0'/>
 <line class='port' x1='28.0' y1='210.0' x2='50.0' y2='190.0'/>
-<text class='plbl' x='14.8' y='210.0'>P7</text>
-<line class='port' x1='84.3' y1='106.9' x2='84.6' y2='130.0'/>
-<line class='port' x1='84.3' y1='106.9' x2='119.3' y2='110.0'/>
-<text class='plbl' x='73.7' y='99.0'>P8</text>
+<text class='plbl' x='15.0' y='210.0'>P7</text>
+<line class='port' x1='91.0' y1='100.9' x2='84.6' y2='130.0'/>
+<line class='port' x1='91.0' y1='100.9' x2='119.3' y2='110.0'/>
+<text class='plbl' x='84.5' y='89.7'>P8</text>
 <circle class='vert' cx='153.9' cy='50.0' r='4'/>
 <text class='vlbl' x='153.9' y='40.0'>0</text>
 <circle class='vert' cx='223.2' cy='50.0' r='4'/>
