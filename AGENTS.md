@@ -20,8 +20,12 @@
 ## Gimbur Project
 - Project file: `src/Gimbur/Gimbur.csproj` (assembly name: `Gimbur.Core`).
 - Contains both the Catan rules (under `Gimbur.Rules` namespace) and the Kjarni adapter layer (under `Gimbur` namespace).
-- Key rules files: `BoardTopology.cs`, `Board.cs`, `BoardSetup.cs`, `MapConfig.cs`, `HexCoord.cs`, `ResourceType.cs`, `PortType.cs`, `TurnStage.cs`, `VertexOccupancy.cs`, `EdgeOccupancy.cs`.
-- Key adapter files: `GameState.cs` (implements `ICoreState`/`ICoreAction`).
+- Directory structure:
+  - `Rules/Types/` — small enum and struct types: `ResourceType.cs`, `PortType.cs`, `DevCardType.cs`, `BuildingType.cs`, `TurnStage.cs`, `HexCoord.cs`, `VertexOccupancy.cs`, `EdgeOccupancy.cs`.
+  - `Rules/Board/` — board-related classes: `BoardTopology.cs`, `Board.cs`, `BoardSetup.cs`, `MapConfig.cs`.
+  - `Rules/GameConfig.cs` — game-level configuration (supply limits, victory conditions, costs, dev card pool). Defines `Standard` and `Mini` presets.
+  - `GameState.cs` — Kjarni adapter layer (namespace `Gimbur`), implements `ICoreState`/`ICoreAction`.
+- All rules files share the `Gimbur.Rules` namespace regardless of subfolder.
 - Build artifacts land under `src/Gimbur/bin/` and `src/Gimbur/obj/`.
 
 ## Tests
@@ -30,7 +34,7 @@
 - `tests/Kjarni.Tests/TestTypes.fs` provides support types shared across the test modules.
 - `tests/Kjarni.Tests/program.fs` is the entry point for running the test project.
 - Project file: `tests/Gimbur.Rules.Tests/Gimbur.Rules.Tests.csproj`.
-- Test files: `BoardTopologyTests.cs`, `BoardSetupTests.cs`, `BoardTests.cs`, `TypeTests.cs`.
+- Test files: `BoardTopologyTests.cs`, `BoardSetupTests.cs`, `BoardTests.cs`, `TypeTests.cs`, `GameConfigTests.cs`.
 
 ## Future Projects
 - A future `Gimbur` project will provide Settlers of Catan rules and a CLI for simulating games powered by the `Kjarni` engine. Expect corresponding tests under `tests/Gimbur.Tests/` when more test areas are introduced.
