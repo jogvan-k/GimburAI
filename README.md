@@ -9,6 +9,7 @@ The goal is to train a neural network that evaluates board positions (state to w
 - **Kjarni** (`src/Kjarni/`) — F# Monte Carlo Tree Search engine. Game-agnostic.
 - **Gimbur** (`src/Gimbur/`) — C# Catan game rules and state, integrates with Kjarni via `ICoreState`/`ICoreAction`.
 - **Gimbur.Cli** (`src/Gimbur.Cli/`) — Command-line interface for simulation and interactive play.
+- **Gimbur.Tui** (`src/Gimbur.Tui/`) — Terminal UI for manual board initialization and rendering.
 - **Tests** (`tests/`) — NUnit test suites.
 - **Docs** (`docs/`) — Board topology reference, state serialization spec, SVG diagrams.
 - **Scripts** (`scripts/`) — Topology SVG generation.
@@ -158,3 +159,21 @@ dotnet build                # build everything
 dotnet test                 # run all tests
 dotnet run --project src/Gimbur.Cli  # run CLI
 ```
+
+## TUI Manual Testing
+
+Run the TUI:
+
+```bash
+dotnet run --project src/Gimbur.Tui
+```
+
+Startup flow:
+- Choose map topology: `mini` or `standard`
+- Enter player count (validated against selected map config)
+
+Rendering notes:
+- ANSI colors are used for resources, ports, and markers
+- Tile cells show `[RsNN*]` (`Rs` resource, `NN` token, `*` robber)
+- Vertices/edges are shown so settlements/cities/roads can be visualized
+- Ports are labeled (`3:1`, `Wood`, `Brick`, `Sheep`, `Wheat`, `Ore`) with connector lines to their two vertices
