@@ -91,6 +91,8 @@ public sealed class CatanState : ICoreState
     private readonly int[] _devDeckRemaining;
     private readonly int[] _newDevCardsThisTurn;
     private readonly int[] _pendingRoadBuildingPlacements;
+    private static readonly object RngLock = new();
+    private static readonly Random SharedRng = new();
 
     public CatanState()
         : this(GameConfig.Standard, playerCount: 3, new Random())
@@ -275,11 +277,7 @@ public sealed class CatanState : ICoreState
                 break;
 
             case TurnStage.PreRoll:
-                for (var roll = 2; roll <= 12; roll++)
-                {
-                    actions.Add(new CatanAction(this, CatanActionType.RollDice, roll));
-                }
-
+                actions.Add(new CatanAction(this, CatanActionType.RollDice));
                 break;
 
             case TurnStage.ChooseRobberLocation:
@@ -321,9 +319,9 @@ public sealed class CatanState : ICoreState
                     actions.Add(new CatanAction(this, CatanActionType.BankTrade, (int)trade.Give, (int)trade.Receive));
                 }
 
-                foreach (var devCardType in LegalDevCardPurchases())
+                if (LegalDevCardPurchases().Count > 0)
                 {
-                    actions.Add(new CatanAction(this, CatanActionType.BuyDevCard, (int)devCardType));
+                    actions.Add(new CatanAction(this, CatanActionType.BuyDevCard));
                 }
 
                 foreach (var action in LegalDevCardPlays())
@@ -350,11 +348,11 @@ public sealed class CatanState : ICoreState
         {
             CatanActionType.PlaceSettlement => ApplySettlement(action.Arg1),
             CatanActionType.PlaceRoad => ApplyRoad(action.Arg1),
-            CatanActionType.RollDice => ApplyRollDice(action.Arg1),
+            CatanActionType.RollDice => ApplyRollDice(),
             CatanActionType.ChooseRobberTile => ApplyChooseRobberTile(action.Arg1),
             CatanActionType.BuildCity => ApplyBuildCity(action.Arg1),
             CatanActionType.BankTrade => ApplyBankTrade((ResourceType)action.Arg1, (ResourceType)action.Arg2),
-            CatanActionType.BuyDevCard => ApplyBuyDevCard((DevCardType)action.Arg1),
+            CatanActionType.BuyDevCard => ApplyBuyDevCard(),
             CatanActionType.PlayKnight => ApplyPlayKnight(),
             CatanActionType.PlayRoadBuilding => ApplyPlayRoadBuilding(),
             CatanActionType.PlayMonopoly => ApplyPlayMonopoly((ResourceType)action.Arg1),
@@ -827,17 +825,14 @@ public sealed class CatanState : ICoreState
         return next;
     }
 
-    private CatanState ApplyRollDice(int roll)
+    private CatanState ApplyRollDice()
     {
         if (Stage != TurnStage.PreRoll)
         {
             throw new InvalidOperationException("Dice can only be rolled during pre-roll stage.");
         }
 
-        if (roll < 2 || roll > 12)
-        {
-            throw new ArgumentOutOfRangeException(nameof(roll), roll, "Roll must be in [2, 12].");
-        }
+        var roll = RollTwoDice();
 
         var next = Clone();
         if (roll == 7)
@@ -919,23 +914,29 @@ public sealed class CatanState : ICoreState
         return next;
     }
 
-    private CatanState ApplyBuyDevCard(DevCardType cardType)
+    private CatanState ApplyBuyDevCard()
     {
         if (Stage != TurnStage.BuildTrade)
         {
             throw new InvalidOperationException("Buying development cards is only allowed during build/trade stage.");
         }
 
-        if (_devDeckRemaining[(int)cardType] <= 0)
+        if (!CanAfford(Config.DevCardCost))
         {
-            throw new InvalidOperationException($"No {cardType} cards remaining in deck.");
+            throw new InvalidOperationException("Current player cannot afford development card.");
+        }
+
+        var cardType = DrawRandomDevCard();
+        if (cardType is null)
+        {
+            throw new InvalidOperationException("No development cards remaining in deck.");
         }
 
         var next = Clone();
         next.PayCost(next.Config.DevCardCost);
-        next._devDeckRemaining[(int)cardType]--;
-        next._devCards[CurrentPlayer, (int)cardType]++;
-        next._newDevCardsThisTurn[(int)cardType]++;
+        next._devDeckRemaining[(int)cardType.Value]--;
+        next._devCards[CurrentPlayer, (int)cardType.Value]++;
+        next._newDevCardsThisTurn[(int)cardType.Value]++;
         next.RefreshVictory();
         return next;
     }
@@ -1545,6 +1546,46 @@ public sealed class CatanState : ICoreState
         yield return ResourceType.Sheep;
         yield return ResourceType.Wheat;
         yield return ResourceType.Ore;
+    }
+
+    private static int RollTwoDice()
+    {
+        lock (RngLock)
+        {
+            return SharedRng.Next(1, 7) + SharedRng.Next(1, 7);
+        }
+    }
+
+    private DevCardType? DrawRandomDevCard()
+    {
+        var totalRemaining = 0;
+        for (var i = 0; i < DevCardCount; i++)
+        {
+            totalRemaining += _devDeckRemaining[i];
+        }
+
+        if (totalRemaining <= 0)
+        {
+            return null;
+        }
+
+        int pick;
+        lock (RngLock)
+        {
+            pick = SharedRng.Next(totalRemaining);
+        }
+
+        var cumulative = 0;
+        for (var i = 0; i < DevCardCount; i++)
+        {
+            cumulative += _devDeckRemaining[i];
+            if (pick < cumulative)
+            {
+                return (DevCardType)i;
+            }
+        }
+
+        return (DevCardType)(DevCardCount - 1);
     }
 
     private CatanState Clone()

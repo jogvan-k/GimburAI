@@ -265,12 +265,12 @@ internal static class Program
 
             if (selected.Mode == ActionSelectionMode.RollDice)
             {
-                return ExecuteRandomRoll(state);
+                return ExecuteRollDice(state);
             }
 
             if (selected.Mode == ActionSelectionMode.BuyDevCardRandom)
             {
-                return ExecuteRandomDevCardPurchase(state);
+                return ExecuteBuyDevCard(state);
             }
 
             if (selected.Mode == ActionSelectionMode.PlaceSettlement)
@@ -393,68 +393,35 @@ internal static class Program
             _ => "Root",
         };
 
-    private static CatanState ExecuteRandomRoll(CatanState state)
+    private static CatanState ExecuteRollDice(CatanState state)
     {
-        var roll = UiRng.Next(1, 7) + UiRng.Next(1, 7);
         var action = state.Actions()
             .OfType<CatanAction>()
-            .FirstOrDefault(a => a.ActionType == CatanActionType.RollDice && a.Arg1 == roll);
+            .FirstOrDefault(a => a.ActionType == CatanActionType.RollDice);
 
         if (action is null)
         {
-            action = state.Actions()
-                .OfType<CatanAction>()
-                .First(a => a.ActionType == CatanActionType.RollDice);
-            roll = action.Arg1;
+            return state;
         }
 
         var next = (CatanState)action.DoCoreAction();
-        _statusMessage = $"Rolled {roll}";
+        _statusMessage = "Rolled dice";
         return next;
     }
 
-    private static CatanState ExecuteRandomDevCardPurchase(CatanState state)
+    private static CatanState ExecuteBuyDevCard(CatanState state)
     {
-        var options = state.Actions()
+        var action = state.Actions()
             .OfType<CatanAction>()
-            .Where(a => a.ActionType == CatanActionType.BuyDevCard)
-            .ToArray();
+            .FirstOrDefault(a => a.ActionType == CatanActionType.BuyDevCard);
 
-        if (options.Length == 0)
+        if (action is null)
         {
             return state;
         }
 
-        var weighted = options
-            .Select(a => new
-            {
-                Action = a,
-                Weight = state.DevCardsRemaining((DevCardType)a.Arg1),
-            })
-            .Where(x => x.Weight > 0)
-            .ToArray();
-
-        if (weighted.Length == 0)
-        {
-            return state;
-        }
-
-        var totalWeight = weighted.Sum(x => x.Weight);
-        var pick = UiRng.Next(totalWeight);
-        var cumulative = 0;
-        CatanAction selected = weighted[0].Action;
-        foreach (var option in weighted)
-        {
-            cumulative += option.Weight;
-            if (pick < cumulative)
-            {
-                selected = option.Action;
-                break;
-            }
-        }
-
-        var next = (CatanState)selected.DoCoreAction();
-        _statusMessage = $"Bought dev card: {(DevCardType)selected.Arg1}";
+        var next = (CatanState)action.DoCoreAction();
+        _statusMessage = "Bought dev card";
         return next;
     }
 
@@ -462,10 +429,10 @@ internal static class Program
     {
         return action.ActionType switch
         {
-            CatanActionType.RollDice => $"Roll dice = {action.Arg1}",
+            CatanActionType.RollDice => "Roll dice",
             CatanActionType.BuildCity => $"Build city at vertex {action.Arg1}",
             CatanActionType.BankTrade => $"Trade {state.Board.TradeRatio(state.CurrentPlayer, (ResourceType)action.Arg1)} {(ResourceType)action.Arg1} -> {(ResourceType)action.Arg2}",
-            CatanActionType.BuyDevCard => $"Buy dev card ({(DevCardType)action.Arg1})",
+            CatanActionType.BuyDevCard => "Buy dev card",
             CatanActionType.PlayKnight => "Play knight",
             CatanActionType.PlayRoadBuilding => "Play road building",
             CatanActionType.PlayMonopoly => $"Play monopoly on {(ResourceType)action.Arg1}",

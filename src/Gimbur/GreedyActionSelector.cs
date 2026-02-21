@@ -24,43 +24,6 @@ public sealed class GreedyActionSelector
             return null;
         }
 
-        if (actions.All(a => a.ActionType == CatanActionType.RollDice))
-        {
-            var roll = rng.Next(1, 7) + rng.Next(1, 7);
-            return actions.FirstOrDefault(a => a.Arg1 == roll) ?? actions[0];
-        }
-
-        if (actions.All(a => a.ActionType == CatanActionType.BuyDevCard))
-        {
-            var weighted = actions
-                .Select(a => new
-                {
-                    Action = a,
-                    Weight = state.DevCardsRemaining((Rules.DevCardType)a.Arg1),
-                })
-                .Where(x => x.Weight > 0)
-                .ToArray();
-
-            if (weighted.Length == 0)
-            {
-                return actions[0];
-            }
-
-            var totalWeight = weighted.Sum(x => x.Weight);
-            var pick = rng.Next(totalWeight);
-            var cumulative = 0;
-            foreach (var option in weighted)
-            {
-                cumulative += option.Weight;
-                if (pick < cumulative)
-                {
-                    return option.Action;
-                }
-            }
-
-            return weighted[^1].Action;
-        }
-
         var player = state.CurrentPlayer;
         var bestActions = new List<CatanAction>();
         var bestScore = double.NegativeInfinity;
