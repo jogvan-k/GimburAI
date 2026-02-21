@@ -39,8 +39,8 @@ public sealed class BoardSetup
 
     /// <summary>
     /// Generates a randomized board setup from a map configuration.
-    /// Shuffles tile resources, assigns number tokens to non-desert tiles,
-    /// and shuffles port types. Optionally enforces the constraint that
+    /// Shuffles tile resources, assigns number tokens in spiral order while
+    /// skipping the desert tile, and shuffles port types. Optionally enforces the constraint that
     /// no two high-probability numbers (6 and 8) are on adjacent tiles.
     /// </summary>
     /// <param name="config">The map configuration defining distributions.</param>
@@ -62,8 +62,9 @@ public sealed class BoardSetup
         // Shuffle tile resources.
         var resources = config.TileResources.ToArray();
 
-        // Shuffle number tokens.
+        // Number tokens are consumed in declared order and assigned by spiral position.
         var numberPool = config.NumberTokens.ToArray();
+        var spiral = BuildSpiralTileOrder(topology);
 
         // Shuffle port types.
         var ports = config.PortTypes.ToArray();
@@ -72,17 +73,24 @@ public sealed class BoardSetup
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
             Shuffle(resources, rng);
-            Shuffle(numberPool, rng);
 
-            // Assign number tokens: desert gets 0, others get from the shuffled pool.
+            // Assign number tokens in spiral order: desert gets 0 and is skipped.
             var numbers = new int[tileCount];
             var poolIndex = 0;
-            for (var ti = 0; ti < tileCount; ti++)
+            foreach (var ti in spiral)
             {
-                numbers[ti] = resources[ti] == ResourceType.Desert
-                    ? 0
-                    : numberPool[poolIndex++];
+                if (resources[ti] == ResourceType.Desert)
+                {
+                    numbers[ti] = 0;
+                    continue;
+                }
+
+                numbers[ti] = numberPool[poolIndex++];
             }
+
+            if (poolIndex != numberPool.Length)
+                throw new InvalidOperationException(
+                    $"Assigned {poolIndex} number tokens, expected {numberPool.Length}.");
 
             // Check adjacent red numbers constraint.
             if (noAdjacentRedNumbers && HasAdjacentRedNumbers(topology, numbers))
@@ -127,5 +135,39 @@ public sealed class BoardSetup
             var j = rng.Next(i + 1);
             (array[i], array[j]) = (array[j], array[i]);
         }
+    }
+
+    private static int[] BuildSpiralTileOrder(BoardTopology topology)
+    {
+        var byCoord = new Dictionary<HexCoord, int>(topology.TileCount);
+        for (var ti = 0; ti < topology.TileCount; ti++)
+            byCoord[topology.Tiles[ti]] = ti;
+
+        var dirs = HexCoord.Directions;
+        var ringDirs = new[] { dirs[2], dirs[1], dirs[0], dirs[5], dirs[4], dirs[3] };
+        var order = new List<int>(topology.TileCount);
+
+        for (var radius = topology.Radius; radius >= 1; radius--)
+        {
+            var current = new HexCoord(-radius, radius);
+            foreach (var dir in ringDirs)
+            {
+                for (var step = 0; step < radius; step++)
+                {
+                    order.Add(byCoord[current]);
+                    current += dir;
+                }
+            }
+        }
+
+        // Center tile for odd-count boards (both standard and mini).
+        if (byCoord.TryGetValue(new HexCoord(0, 0), out var center))
+            order.Add(center);
+
+        if (order.Count != topology.TileCount)
+            throw new InvalidOperationException(
+                $"Spiral order built {order.Count} tiles for topology with {topology.TileCount} tiles.");
+
+        return [.. order];
     }
 }

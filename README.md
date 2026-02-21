@@ -43,7 +43,7 @@ The goal is to train a neural network that evaluates board positions (state to w
 
 - [x] Board data structures (tiles, vertices, edges, ports) matching topology docs
 - [x] Board setup: random tile/number/port placement with standard constraints
-- [ ] Number token spiral placement (alphabetical letter order per official rules, skip desert)
+- [x] Number token spiral placement (alphabetical letter order per official rules, skip desert)
 - [x] Mini map variant support (for faster training iterations)
 
 #### 2b: Game State

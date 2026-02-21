@@ -99,6 +99,20 @@ public class BoardSetupTests
     }
 
     [Test]
+    public void Standard_AssignsNumberTokensInSpiralOrder_SkippingDesert()
+    {
+        var setup = BoardSetup.Generate(MapConfig.Standard, new Random(42));
+
+        var spiralTileOrder = new[] { 0, 3, 7, 12, 16, 17, 18, 15, 11, 6, 2, 1, 4, 8, 13, 14, 10, 5, 9 };
+        var assigned = spiralTileOrder
+            .Where(ti => setup.TileResources[ti] != ResourceType.Desert)
+            .Select(ti => setup.TileNumbers[ti])
+            .ToArray();
+
+        Assert.That(assigned, Is.EqualTo(MapConfig.Standard.NumberTokens.ToArray()));
+    }
+
+    [Test]
     public void Standard_HasCorrectPortTypeDistribution()
     {
         var rng = new Random(42);
@@ -186,5 +200,19 @@ public class BoardSetupTests
             if (setup.TileResources[ti] == ResourceType.Desert)
                 Assert.That(setup.TileNumbers[ti], Is.EqualTo(0));
         }
+    }
+
+    [Test]
+    public void Mini_AssignsNumberTokensInSpiralOrder_SkippingDesert()
+    {
+        var setup = BoardSetup.Generate(MapConfig.Mini, new Random(42));
+
+        var spiralTileOrder = new[] { 0, 2, 5, 6, 4, 1, 3 };
+        var assigned = spiralTileOrder
+            .Where(ti => setup.TileResources[ti] != ResourceType.Desert)
+            .Select(ti => setup.TileNumbers[ti])
+            .ToArray();
+
+        Assert.That(assigned, Is.EqualTo(MapConfig.Mini.NumberTokens.ToArray()));
     }
 }
