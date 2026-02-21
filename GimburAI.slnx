@@ -2,7 +2,6 @@
   <Folder Name="/src/">
     <Project Path="src/Gimbur.Cli/Gimbur.Cli.csproj" />
     <Project Path="src/Kjarni/Kjarni.fsproj" />
-    <Project Path="src/Gimbur.Rules/Gimbur.Rules.csproj" />
     <Project Path="src/Gimbur/Gimbur.csproj" />
   </Folder>
   <Folder Name="/tests/">

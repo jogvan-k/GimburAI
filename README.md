@@ -7,9 +7,8 @@ The goal is to train a neural network that evaluates board positions (state to w
 ## Project Structure
 
 - **Kjarni** (`src/Kjarni/`) — F# Monte Carlo Tree Search engine. Game-agnostic.
-- **Gimbur** (`src/Gimbur/`) — C# Catan game state and rules, integrates with Kjarni via `ICoreState`/`ICoreAction`.
+- **Gimbur** (`src/Gimbur/`) — C# Catan game rules and state, integrates with Kjarni via `ICoreState`/`ICoreAction`.
 - **Gimbur.Cli** (`src/Gimbur.Cli/`) — Command-line interface for simulation and interactive play.
-- **Gimbur.Rules** (`src/Gimbur.Rules/`) — Catan rules library (planned).
 - **Tests** (`tests/`) — NUnit test suites.
 - **Docs** (`docs/`) — Board topology reference, state serialization spec, SVG diagrams.
 - **Scripts** (`scripts/`) — Topology SVG generation.

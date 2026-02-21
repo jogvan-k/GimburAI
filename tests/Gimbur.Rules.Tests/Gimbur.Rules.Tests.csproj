@@ -21,7 +21,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Gimbur.Rules\Gimbur.Rules.csproj" />
+    <ProjectReference Include="..\..\src\Gimbur\Gimbur.csproj" />
   </ItemGroup>
 
 </Project>

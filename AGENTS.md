@@ -1,8 +1,13 @@
 # AGENTS NOTES
 
 ## Repository Overview
-- `src/` holds production code. Currently it contains the `Kjarni` project, an F# library that implements the core Monte Carlo Tree Search (MCTS) game-playing engine for multiplayer board games.
-- `tests/` contains automated tests. At the moment there is a single test project, `Kjarni.Tests`, which exercises the MCTS engine.
+- `src/` holds production code:
+  - `Kjarni` — F# library implementing the core Monte Carlo Tree Search (MCTS) game-playing engine for multiplayer board games.
+  - `Gimbur` (assembly name `Gimbur.Core`) — C# library containing Catan game rules, board topology, and the `ICoreState`/`ICoreAction` adapter layer that bridges to the Kjarni MCTS engine. Rules types live under the `Gimbur.Rules` namespace.
+  - `Gimbur.Cli` — C# CLI application for simulation and interactive play.
+- `tests/` contains automated tests:
+  - `Kjarni.Tests` — exercises the MCTS engine.
+  - `Gimbur.Rules.Tests` — exercises board topology, setup, and game rules.
 
 ## Kjarni Project
 - Project file: `src/Kjarni/Kjarni.fsproj`.
@@ -12,14 +17,23 @@
   - `MCTS/` contains the Monte Carlo Tree Search implementation (`Algorithm.fs`, `MonteCarloTreeSearch.fs`, `Types.fs`).
 - Build artifacts land under `src/Kjarni/bin/` and `src/Kjarni/obj/`.
 
+## Gimbur Project
+- Project file: `src/Gimbur/Gimbur.csproj` (assembly name: `Gimbur.Core`).
+- Contains both the Catan rules (under `Gimbur.Rules` namespace) and the Kjarni adapter layer (under `Gimbur` namespace).
+- Key rules files: `BoardTopology.cs`, `Board.cs`, `BoardSetup.cs`, `MapConfig.cs`, `HexCoord.cs`, `ResourceType.cs`, `PortType.cs`, `TurnStage.cs`, `VertexOccupancy.cs`, `EdgeOccupancy.cs`.
+- Key adapter files: `GameState.cs` (implements `ICoreState`/`ICoreAction`).
+- Build artifacts land under `src/Gimbur/bin/` and `src/Gimbur/obj/`.
+
 ## Tests
 - Project file: `tests/Kjarni.Tests/Kjarni.Test.fsproj`.
 - Test modules live under `tests/Kjarni.Tests/MCTS/` and cover selection, expansion, back propagation, benchmarking, and state behavior of the engine.
 - `tests/Kjarni.Tests/TestTypes.fs` provides support types shared across the test modules.
 - `tests/Kjarni.Tests/program.fs` is the entry point for running the test project.
+- Project file: `tests/Gimbur.Rules.Tests/Gimbur.Rules.Tests.csproj`.
+- Test files: `BoardTopologyTests.cs`, `BoardSetupTests.cs`, `BoardTests.cs`, `TypeTests.cs`.
 
 ## Future Projects
-- A future `Gimbur` project will provide Settlers of Catan rules and a CLI for simulating games powered by the `Kjarni` engine. Expect it to live under `src/Gimbur/` with corresponding tests under `tests/Gimbur.Tests/` when introduced.
+- A future `Gimbur` project will provide Settlers of Catan rules and a CLI for simulating games powered by the `Kjarni` engine. Expect corresponding tests under `tests/Gimbur.Tests/` when more test areas are introduced.
 
 ## Build/Test Commands
 
