@@ -1,4 +1,5 @@
 using Gimbur.Rules;
+using Gimbur;
 
 namespace Gimbur.Tui;
 
@@ -17,7 +18,10 @@ internal static class Program
     private const string FgGreen = "\u001b[32m";
     private const string FgSilver = "\u001b[38;5;250m";
     private const string FgBeige = "\u001b[38;5;223m";
+    private const string FgCyan = "\u001b[36m";
     private static int _lastFrameLineCount;
+    private static readonly Random UiRng = new();
+    private static string _statusMessage = "";
 
     private static void Main()
     {
@@ -29,43 +33,63 @@ internal static class Program
         var players = PromptPlayerCount(config.MinPlayers, config.MaxPlayers);
 
         var rng = new Random();
-        var session = InitialPlacementSession.Create(config, players, rng);
+        var state = new CatanState(config, players, rng);
 
-        RunInitialPlacementLoop(session);
+        RunGameLoop(state);
     }
 
-    private static void RunInitialPlacementLoop(InitialPlacementSession session)
+    private static void RunGameLoop(CatanState state)
     {
         Console.Clear();
         _lastFrameLineCount = 0;
         Console.CursorVisible = false;
 
-        while (!session.IsComplete)
+        while (true)
         {
-            if (session.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement)
+            var actions = state.Actions().OfType<CatanAction>().ToArray();
+            if (actions.Length == 0)
             {
-                ExecuteSettlementPlacement(session);
+                break;
+            }
+
+            if (state.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement)
+            {
+                state = ExecuteSettlementPlacement(state);
                 continue;
             }
 
-            if (session.Stage is TurnStage.PlaceFirstRoad or TurnStage.PlaceSecondRoad)
+            if (state.Stage is TurnStage.PlaceFirstRoad or TurnStage.PlaceSecondRoad)
             {
-                ExecuteRoadPlacement(session);
+                state = ExecuteRoadPlacement(state);
                 continue;
             }
 
-            break;
+            if (state.Stage == TurnStage.BuildTrade && state.PendingRoadBuildingPlacementsFor(state.CurrentPlayer) > 0)
+            {
+                state = ExecuteRoadPlacement(state);
+                continue;
+            }
+
+            if (state.Stage == TurnStage.ChooseRobberLocation)
+            {
+                state = ExecuteRobberPlacement(state);
+                continue;
+            }
+
+            state = ExecuteActionMenu(state, actions);
         }
 
         DrawFrame(() =>
         {
-            RenderBoard(session.Board);
+            RenderBoard(state.Board);
             Console.WriteLine();
-            Console.WriteLine("Initial placement complete.");
-            for (var player = 1; player <= session.PlayerCount; player++)
+            Console.WriteLine("Game finished.");
+            Console.WriteLine($"Winner: Player {state.WinnerPlayer}");
+            Console.WriteLine();
+            for (var player = 1; player <= state.PlayerCount; player++)
             {
                 Console.WriteLine(
-                    $"Player {player}: settlements={session.Board.SettlementCount(player)}, roads={session.Board.RoadCount(player)}");
+                    $"Player {player}: VP={state.VictoryPointsFor(player)} settlements={state.Board.SettlementCount(player)} cities={state.Board.CityCount(player)} roads={state.Board.RoadCount(player)}");
             }
             Console.WriteLine();
             Console.WriteLine("Legend: tile text stack = resource name, number, robber(*); o empty vertex, s settlement, c city, |/\\/- road");
@@ -75,54 +99,427 @@ internal static class Program
         Console.CursorVisible = true;
     }
 
-    private static void ExecuteSettlementPlacement(InitialPlacementSession session)
+    private static CatanState ExecuteSettlementPlacement(CatanState state)
     {
-        var legal = session.LegalSettlementVertices().ToArray();
+        var legal = state.Actions()
+            .OfType<CatanAction>()
+            .Where(a => a.ActionType == CatanActionType.PlaceSettlement)
+            .Select(a => a.TargetIndex)
+            .ToArray();
+
         if (legal.Length == 0)
         {
             Pause("No legal settlement placements available.");
-            return;
+            return state;
         }
 
         var selected = SelectLocation(
             title: "Select settlement location",
-            stageLabel: StageLabel(session.Stage),
-            currentPlayer: session.CurrentPlayer,
-            board: session.Board,
+            stageLabel: StageLabel(state.Stage),
+            currentPlayer: state.CurrentPlayer,
+            board: state.Board,
+            resourceSummary: BuildPlayerSummary(state),
             legalCandidates: legal,
-            pointProvider: BuildRenderLayout(session.Board.Topology).VertexPoints,
-            neighborProvider: vertex => session.Board.Topology.VertexNeighbors[vertex],
-            isVertexSelection: true);
+            pointProvider: BuildRenderLayout(state.Board.Topology).VertexPoints,
+            neighborProvider: vertex => state.Board.Topology.VertexNeighbors[vertex],
+            mode: LocationSelectionMode.Vertex);
 
         if (selected is int vertex)
         {
-            session.PlaceSettlement(vertex);
+            var action = new CatanAction(state, CatanActionType.PlaceSettlement, vertex);
+            return (CatanState)action.DoCoreAction();
+        }
+
+        return state;
+    }
+
+    private static CatanState ExecuteRobberPlacement(CatanState state)
+    {
+        var legal = state.Actions()
+            .OfType<CatanAction>()
+            .Where(a => a.ActionType == CatanActionType.ChooseRobberTile)
+            .Select(a => a.Arg1)
+            .ToArray();
+
+        if (legal.Length == 0)
+        {
+            Pause("No legal robber placements available.");
+            return state;
+        }
+
+        var selected = SelectLocation(
+            title: "Select robber destination tile",
+            stageLabel: StageLabel(state.Stage),
+            currentPlayer: state.CurrentPlayer,
+            board: state.Board,
+            resourceSummary: BuildPlayerSummary(state),
+            legalCandidates: legal,
+            pointProvider: BuildRenderLayout(state.Board.Topology).TilePoints,
+            neighborProvider: tile => state.Board.Topology.TileNeighbors[tile],
+            mode: LocationSelectionMode.Tile);
+
+        if (selected is int tile)
+        {
+            var action = new CatanAction(state, CatanActionType.ChooseRobberTile, tile);
+            return (CatanState)action.DoCoreAction();
+        }
+
+        return state;
+    }
+
+    private static CatanState ExecuteActionMenu(CatanState state, IReadOnlyList<CatanAction> actions)
+    {
+        var context = ActionMenuContext.Root;
+        var menuEntries = BuildMenuEntries(state, actions, context);
+        var selectedIndex = 0;
+
+        while (true)
+        {
+            DrawFrame(() =>
+            {
+                RenderBoard(state.Board);
+                WriteFixedLine();
+                WriteFixedLine($"Turn {state.TurnNumber} - Player {state.CurrentPlayer}");
+                WriteFixedLine($"Stage: {StageLabel(state.Stage),-28}");
+                WriteFixedLine($"Last: {_statusMessage,-32}");
+                WriteFixedLine(BuildPlayerSummary(state));
+                WriteFixedLine($"Longest Road: {(state.LongestRoadOwner == 0 ? "none" : $"Player {state.LongestRoadOwner}")}, Largest Army: {(state.LargestArmyOwner == 0 ? "none" : $"Player {state.LargestArmyOwner}")}");
+                WriteFixedLine();
+                WriteFixedLine($"Legal actions - {ContextLabel(context)} (Up/Down + Enter):");
+
+                for (var i = 0; i < menuEntries.Count; i++)
+                {
+                    var prefix = i == selectedIndex ? ">" : " ";
+                    WriteFixedLine($"{prefix} {menuEntries[i].Label}");
+                }
+            });
+
+            var key = Console.ReadKey(intercept: true).Key;
+            if (key == ConsoleKey.UpArrow)
+            {
+                selectedIndex = selectedIndex > 0 ? selectedIndex - 1 : menuEntries.Count - 1;
+                continue;
+            }
+
+            if (key == ConsoleKey.DownArrow)
+            {
+                selectedIndex = selectedIndex < menuEntries.Count - 1 ? selectedIndex + 1 : 0;
+                continue;
+            }
+
+            if (key != ConsoleKey.Enter)
+            {
+                continue;
+            }
+
+            var selected = menuEntries[selectedIndex];
+            if (selected.Mode == ActionSelectionMode.OpenTradeMenu)
+            {
+                context = ActionMenuContext.Trade;
+                menuEntries = BuildMenuEntries(state, actions, context);
+                selectedIndex = 0;
+                continue;
+            }
+
+            if (selected.Mode == ActionSelectionMode.OpenYearOfPlentyMenu)
+            {
+                context = ActionMenuContext.YearOfPlenty;
+                menuEntries = BuildMenuEntries(state, actions, context);
+                selectedIndex = 0;
+                continue;
+            }
+
+            if (selected.Mode == ActionSelectionMode.Back)
+            {
+                context = ActionMenuContext.Root;
+                menuEntries = BuildMenuEntries(state, actions, context);
+                selectedIndex = 0;
+                continue;
+            }
+
+            if (selected.Mode == ActionSelectionMode.Direct)
+            {
+                return (CatanState)selected.Action!.DoCoreAction();
+            }
+
+            if (selected.Mode == ActionSelectionMode.RollDice)
+            {
+                return ExecuteRandomRoll(state);
+            }
+
+            if (selected.Mode == ActionSelectionMode.BuyDevCardRandom)
+            {
+                return ExecuteRandomDevCardPurchase(state);
+            }
+
+            if (selected.Mode == ActionSelectionMode.PlaceSettlement)
+            {
+                return ExecuteSettlementPlacement(state);
+            }
+
+            if (selected.Mode == ActionSelectionMode.PlaceRoad)
+            {
+                return ExecuteRoadPlacement(state);
+            }
+
+            if (selected.Mode == ActionSelectionMode.PlaceCity)
+            {
+                return ExecuteCityPlacement(state);
+            }
+
+            if (selected.Mode == ActionSelectionMode.PlaceRobber)
+            {
+                return ExecuteRobberPlacement(state);
+            }
         }
     }
 
-    private static void ExecuteRoadPlacement(InitialPlacementSession session)
+    private static List<MenuEntry> BuildMenuEntries(
+        CatanState state,
+        IReadOnlyList<CatanAction> actions,
+        ActionMenuContext context)
     {
-        var legal = session.LegalRoadEdges().ToArray();
+        var entries = new List<MenuEntry>();
+        if (context == ActionMenuContext.Trade)
+        {
+            foreach (var action in actions.Where(a => a.ActionType == CatanActionType.BankTrade))
+            {
+                entries.Add(new MenuEntry(DescribeAction(state, action), ActionSelectionMode.Direct, action));
+            }
+
+            entries.Add(new MenuEntry("Back", ActionSelectionMode.Back, null));
+            return entries;
+        }
+
+        if (context == ActionMenuContext.YearOfPlenty)
+        {
+            foreach (var action in actions.Where(a => a.ActionType == CatanActionType.PlayYearOfPlenty))
+            {
+                entries.Add(new MenuEntry(DescribeAction(state, action), ActionSelectionMode.Direct, action));
+            }
+
+            entries.Add(new MenuEntry("Back", ActionSelectionMode.Back, null));
+            return entries;
+        }
+
+        if (actions.Any(a => a.ActionType == CatanActionType.RollDice))
+        {
+            entries.Add(new MenuEntry("Roll dice", ActionSelectionMode.RollDice, null));
+        }
+
+        if (actions.Any(a => a.ActionType == CatanActionType.PlaceSettlement))
+        {
+            entries.Add(new MenuEntry("Place settlement", ActionSelectionMode.PlaceSettlement, null));
+        }
+
+        if (actions.Any(a => a.ActionType == CatanActionType.PlaceRoad))
+        {
+            entries.Add(new MenuEntry("Place road", ActionSelectionMode.PlaceRoad, null));
+        }
+
+        if (actions.Any(a => a.ActionType == CatanActionType.BuildCity))
+        {
+            entries.Add(new MenuEntry("Place city", ActionSelectionMode.PlaceCity, null));
+        }
+
+        if (actions.Any(a => a.ActionType == CatanActionType.ChooseRobberTile))
+        {
+            entries.Add(new MenuEntry("Place robber", ActionSelectionMode.PlaceRobber, null));
+        }
+
+        if (actions.Any(a => a.ActionType == CatanActionType.BuyDevCard))
+        {
+            entries.Add(new MenuEntry("Buy dev card", ActionSelectionMode.BuyDevCardRandom, null));
+        }
+
+        if (actions.Any(a => a.ActionType == CatanActionType.BankTrade))
+        {
+            entries.Add(new MenuEntry("Trade", ActionSelectionMode.OpenTradeMenu, null));
+        }
+
+        if (actions.Any(a => a.ActionType == CatanActionType.PlayYearOfPlenty))
+        {
+            entries.Add(new MenuEntry("Year of Plenty", ActionSelectionMode.OpenYearOfPlentyMenu, null));
+        }
+
+        foreach (var action in actions)
+        {
+            if (action.ActionType is
+                CatanActionType.RollDice or
+                CatanActionType.BuyDevCard or
+                CatanActionType.BankTrade or
+                CatanActionType.PlayYearOfPlenty or
+                CatanActionType.PlaceSettlement or
+                CatanActionType.PlaceRoad or
+                CatanActionType.BuildCity or
+                CatanActionType.ChooseRobberTile)
+            {
+                continue;
+            }
+
+            entries.Add(new MenuEntry(DescribeAction(state, action), ActionSelectionMode.Direct, action));
+        }
+
+        return entries;
+    }
+
+    private static string ContextLabel(ActionMenuContext context) =>
+        context switch
+        {
+            ActionMenuContext.Root => "Root",
+            ActionMenuContext.Trade => "Trade",
+            ActionMenuContext.YearOfPlenty => "Year Of Plenty",
+            _ => "Root",
+        };
+
+    private static CatanState ExecuteRandomRoll(CatanState state)
+    {
+        var roll = UiRng.Next(1, 7) + UiRng.Next(1, 7);
+        var action = state.Actions()
+            .OfType<CatanAction>()
+            .FirstOrDefault(a => a.ActionType == CatanActionType.RollDice && a.Arg1 == roll);
+
+        if (action is null)
+        {
+            action = state.Actions()
+                .OfType<CatanAction>()
+                .First(a => a.ActionType == CatanActionType.RollDice);
+            roll = action.Arg1;
+        }
+
+        var next = (CatanState)action.DoCoreAction();
+        _statusMessage = $"Rolled {roll}";
+        return next;
+    }
+
+    private static CatanState ExecuteRandomDevCardPurchase(CatanState state)
+    {
+        var options = state.Actions()
+            .OfType<CatanAction>()
+            .Where(a => a.ActionType == CatanActionType.BuyDevCard)
+            .ToArray();
+
+        if (options.Length == 0)
+        {
+            return state;
+        }
+
+        var weighted = options
+            .Select(a => new
+            {
+                Action = a,
+                Weight = state.DevCardsRemaining((DevCardType)a.Arg1),
+            })
+            .Where(x => x.Weight > 0)
+            .ToArray();
+
+        if (weighted.Length == 0)
+        {
+            return state;
+        }
+
+        var totalWeight = weighted.Sum(x => x.Weight);
+        var pick = UiRng.Next(totalWeight);
+        var cumulative = 0;
+        CatanAction selected = weighted[0].Action;
+        foreach (var option in weighted)
+        {
+            cumulative += option.Weight;
+            if (pick < cumulative)
+            {
+                selected = option.Action;
+                break;
+            }
+        }
+
+        var next = (CatanState)selected.DoCoreAction();
+        _statusMessage = $"Bought dev card: {(DevCardType)selected.Arg1}";
+        return next;
+    }
+
+    private static string DescribeAction(CatanState state, CatanAction action)
+    {
+        return action.ActionType switch
+        {
+            CatanActionType.RollDice => $"Roll dice = {action.Arg1}",
+            CatanActionType.BuildCity => $"Build city at vertex {action.Arg1}",
+            CatanActionType.BankTrade => $"Trade {state.Board.TradeRatio(state.CurrentPlayer, (ResourceType)action.Arg1)} {(ResourceType)action.Arg1} -> {(ResourceType)action.Arg2}",
+            CatanActionType.BuyDevCard => $"Buy dev card ({(DevCardType)action.Arg1})",
+            CatanActionType.PlayKnight => "Play knight",
+            CatanActionType.PlayRoadBuilding => "Play road building",
+            CatanActionType.PlayMonopoly => $"Play monopoly on {(ResourceType)action.Arg1}",
+            CatanActionType.PlayYearOfPlenty => $"Play year of plenty: {(ResourceType)action.Arg1} + {(ResourceType)action.Arg2}",
+            CatanActionType.EndTurn => "End turn",
+            _ => action.ActionType.ToString(),
+        };
+    }
+
+    private static CatanState ExecuteRoadPlacement(CatanState state)
+    {
+        var legal = state.Actions()
+            .OfType<CatanAction>()
+            .Where(a => a.ActionType == CatanActionType.PlaceRoad)
+            .Select(a => a.TargetIndex)
+            .ToArray();
+
         if (legal.Length == 0)
         {
             Pause("No legal road placements available.");
-            return;
+            return state;
         }
 
         var selected = SelectLocation(
             title: "Select road location",
-            stageLabel: StageLabel(session.Stage),
-            currentPlayer: session.CurrentPlayer,
-            board: session.Board,
+            stageLabel: StageLabel(state.Stage),
+            currentPlayer: state.CurrentPlayer,
+            board: state.Board,
+            resourceSummary: BuildPlayerSummary(state),
             legalCandidates: legal,
-            pointProvider: BuildRenderLayout(session.Board.Topology).EdgePoints,
-            neighborProvider: BuildEdgeNeighborProvider(session.Board.Topology),
-            isVertexSelection: false);
+            pointProvider: BuildRenderLayout(state.Board.Topology).EdgePoints,
+            neighborProvider: BuildEdgeNeighborProvider(state.Board.Topology),
+            mode: LocationSelectionMode.Edge);
 
         if (selected is int edge)
         {
-            session.PlaceRoad(edge);
+            var action = new CatanAction(state, CatanActionType.PlaceRoad, edge);
+            return (CatanState)action.DoCoreAction();
         }
+
+        return state;
+    }
+
+    private static CatanState ExecuteCityPlacement(CatanState state)
+    {
+        var legal = state.Actions()
+            .OfType<CatanAction>()
+            .Where(a => a.ActionType == CatanActionType.BuildCity)
+            .Select(a => a.Arg1)
+            .ToArray();
+
+        if (legal.Length == 0)
+        {
+            Pause("No legal city placements available.");
+            return state;
+        }
+
+        var selected = SelectLocation(
+            title: "Select city location",
+            stageLabel: StageLabel(state.Stage),
+            currentPlayer: state.CurrentPlayer,
+            board: state.Board,
+            resourceSummary: BuildPlayerSummary(state),
+            legalCandidates: legal,
+            pointProvider: BuildRenderLayout(state.Board.Topology).VertexPoints,
+            neighborProvider: vertex => state.Board.Topology.VertexNeighbors[vertex],
+            mode: LocationSelectionMode.Vertex);
+
+        if (selected is int vertex)
+        {
+            var action = new CatanAction(state, CatanActionType.BuildCity, vertex);
+            return (CatanState)action.DoCoreAction();
+        }
+
+        return state;
     }
 
     private static int? SelectLocation(
@@ -130,10 +527,11 @@ internal static class Program
         string stageLabel,
         int currentPlayer,
         Board board,
+        string resourceSummary,
         int[] legalCandidates,
         IReadOnlyList<(int X, int Y)> pointProvider,
         Func<int, IEnumerable<int>> neighborProvider,
-        bool isVertexSelection)
+        LocationSelectionMode mode)
     {
         var legalSet = legalCandidates.ToHashSet();
         var current = legalCandidates[0];
@@ -142,25 +540,33 @@ internal static class Program
         {
             DrawFrame(() =>
             {
-                if (isVertexSelection)
+                if (mode == LocationSelectionMode.Vertex)
                 {
                     RenderBoard(
                         board,
                         highlightedVertices: legalCandidates,
                         selectedVertex: current);
                 }
-                else
+                else if (mode == LocationSelectionMode.Edge)
                 {
                     RenderBoard(
                         board,
                         highlightedEdges: legalCandidates,
                         selectedEdge: current);
                 }
+                else
+                {
+                    RenderBoard(
+                        board,
+                        highlightedTiles: legalCandidates,
+                        selectedTile: current);
+                }
 
-                Console.WriteLine();
-                Console.WriteLine($"Initial placement - Player {currentPlayer}");
-                Console.WriteLine($"Stage: {stageLabel}");
-                Console.WriteLine($"{title}: arrows to move, Enter to confirm, Esc to cancel");
+                WriteFixedLine();
+                WriteFixedLine($"Player {currentPlayer}");
+                WriteFixedLine($"Stage: {stageLabel,-28}");
+                WriteFixedLine(resourceSummary);
+                WriteFixedLine($"{title}: arrows to move, Enter to confirm, Esc to cancel");
             });
 
             var key = Console.ReadKey(intercept: true).Key;
@@ -275,8 +681,23 @@ internal static class Program
             TurnStage.PlaceFirstRoad => "Place first road",
             TurnStage.PlaceSecondSettlement => "Place second settlement",
             TurnStage.PlaceSecondRoad => "Place second road",
+            TurnStage.PreRoll => "Pre-roll",
+            TurnStage.ChooseRobberLocation => "Choose robber location",
+            TurnStage.BuildTrade => "Build/trade",
             _ => stage.ToString(),
         };
+
+    private static string BuildPlayerSummary(CatanState state)
+    {
+        var parts = new List<string>();
+        for (var player = 1; player <= state.PlayerCount; player++)
+        {
+            parts.Add(
+                $"{PlayerColor(player)}P{player}{Reset} VP:{state.VictoryPointsFor(player)} K:{state.KnightsPlayedFor(player)} W:{state.ResourceCountFor(player, ResourceType.Wood)} B:{state.ResourceCountFor(player, ResourceType.Brick)} S:{state.ResourceCountFor(player, ResourceType.Sheep)} Wh:{state.ResourceCountFor(player, ResourceType.Wheat)} O:{state.ResourceCountFor(player, ResourceType.Ore)}");
+        }
+
+        return string.Join(" | ", parts);
+    }
 
     private static MapChoice PromptMapTopology()
     {
@@ -342,11 +763,14 @@ internal static class Program
         IEnumerable<int>? highlightedVertices = null,
         int? selectedVertex = null,
         IEnumerable<int>? highlightedEdges = null,
-        int? selectedEdge = null)
+        int? selectedEdge = null,
+        IEnumerable<int>? highlightedTiles = null,
+        int? selectedTile = null)
     {
         var layout = BuildRenderLayout(board.Topology);
         var highlightedVertexSet = highlightedVertices is null ? null : highlightedVertices.ToHashSet();
         var highlightedEdgeSet = highlightedEdges is null ? null : highlightedEdges.ToHashSet();
+        var highlightedTileSet = highlightedTiles is null ? null : highlightedTiles.ToHashSet();
 
         var canvas = new Canvas(layout.Width, layout.Height);
 
@@ -374,7 +798,13 @@ internal static class Program
 
         for (var ti = 0; ti < board.Topology.TileCount; ti++)
         {
-            DrawTile(canvas, layout.TilePoints[ti], board, ti);
+            DrawTile(
+                canvas,
+                layout.TilePoints[ti],
+                board,
+                ti,
+                highlighted: highlightedTileSet?.Contains(ti) ?? false,
+                selected: selectedTile == ti);
         }
 
         for (var pi = 0; pi < board.Topology.PortCount; pi++)
@@ -573,10 +1003,28 @@ internal static class Program
         }
 
         var marker = occupancy.Building == BuildingType.City ? 'c' : 's';
+        if (selected)
+        {
+            canvas.Set(point.X, point.Y, char.ToUpperInvariant(marker), FgBrightRed);
+            return;
+        }
+
+        if (highlighted)
+        {
+            canvas.Set(point.X, point.Y, marker, FgBrightWhite);
+            return;
+        }
+
         canvas.Set(point.X, point.Y, marker, PlayerColor(occupancy.Player));
     }
 
-    private static void DrawTile(Canvas canvas, (int X, int Y) center, Board board, int tileIndex)
+    private static void DrawTile(
+        Canvas canvas,
+        (int X, int Y) center,
+        Board board,
+        int tileIndex,
+        bool highlighted,
+        bool selected)
     {
         var resource = board.TileResource(tileIndex);
         var resourceText = resource switch
@@ -609,6 +1057,13 @@ internal static class Program
         if (board.RobberTile == tileIndex)
         {
             DrawString(canvas, center.X, center.Y + 1, "*", FgRed);
+        }
+
+        if (selected || highlighted)
+        {
+            var marker = selected ? "@" : "+";
+            var markerColor = selected ? FgBrightRed : FgCyan;
+            DrawString(canvas, center.X, center.Y + 2, marker, markerColor);
         }
     }
 
@@ -742,13 +1197,56 @@ internal static class Program
         var clearWidth = Math.Max(1, Console.WindowWidth - 1);
         for (var i = usedLines; i < _lastFrameLineCount; i++)
         {
+            Console.SetCursorPosition(0, i);
             Console.Write(new string(' ', clearWidth));
-            Console.WriteLine();
         }
 
+        Console.SetCursorPosition(0, usedLines);
         _lastFrameLineCount = usedLines;
     }
+
+    private static void WriteFixedLine(string text = "")
+    {
+        var width = Math.Max(1, Console.WindowWidth - 1);
+        if (text.Length > width)
+        {
+            text = text[..width];
+        }
+
+        Console.Write(text);
+        Console.WriteLine(new string(' ', Math.Max(0, width - text.Length)));
+    }
 }
+
+internal enum ActionSelectionMode
+{
+    Direct,
+    RollDice,
+    BuyDevCardRandom,
+    OpenTradeMenu,
+    OpenYearOfPlentyMenu,
+    Back,
+    PlaceSettlement,
+    PlaceRoad,
+    PlaceCity,
+    PlaceRobber,
+}
+
+internal enum ActionMenuContext
+{
+    Root,
+    Trade,
+    YearOfPlenty,
+}
+
+internal enum LocationSelectionMode
+{
+    Vertex,
+    Edge,
+    Tile,
+}
+
+internal sealed record MenuEntry(string Label, ActionSelectionMode Mode, CatanAction? Action);
 
 internal sealed record BoardRenderLayout(
     (double X, double Y)[] TilePixels,

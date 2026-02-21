@@ -49,25 +49,25 @@ The goal is to train a neural network that evaluates board positions (state to w
 
 #### 2b: Game State
 
-- [ ] Full game state implementing `ICoreState`
-- [ ] Player resources, dev cards, knights played
-- [ ] Vertex/edge occupancy, robber position, longest road, largest army
-- [ ] Turn stage state machine (initial placement, pre-roll, robber, build/trade)
-- [ ] State hashing for transposition table
-- [ ] State serialization/deserialization (per `docs/state-serialization.md`)
+- [x] Full game state implementing `ICoreState`
+- [x] Player resources, dev cards, knights played
+- [x] Vertex/edge occupancy, robber position, longest road, largest army
+- [x] Turn stage state machine (initial placement, pre-roll, robber, build/trade)
+- [x] State hashing for transposition table
+- [x] State serialization/deserialization (per `docs/state-serialization.md`)
 
 #### 2c: Rules & Action Generation
 
-- [ ] Initial settlement/road placement (with second-placement resource grant)
-- [ ] Dice roll and resource production
-- [ ] Robber placement (on 7 or knight) + stealing + discard-on-7
-- [ ] Building: roads, settlements, cities (cost, placement rules, supply limits)
-- [ ] Development cards: buying, playing (knight, road building, monopoly, year of plenty, VP)
-- [ ] Trading: bank trade (4:1 default, port-adjusted) — no player-to-player trade (adds branching factor without improving training label quality)
-- [ ] Longest road calculation
-- [ ] Largest army tracking
-- [ ] Victory point calculation and win detection (10 VP)
-- [ ] Legal action enumeration
+- [x] Initial settlement/road placement (with second-placement resource grant)
+- [x] Dice roll and resource production
+- [x] Robber placement (on 7 or knight) + stealing + discard-on-7
+- [x] Building: roads, settlements, cities (cost, placement rules, supply limits)
+- [x] Development cards: buying, playing (knight, road building, monopoly, year of plenty, VP)
+- [x] Trading: bank trade (4:1 default, port-adjusted) — no player-to-player trade (adds branching factor without improving training label quality)
+- [x] Longest road calculation
+- [x] Largest army tracking
+- [x] Victory point calculation and win detection (10 VP)
+- [x] Legal action enumeration
 
 #### 2d: Greedy AI
 
@@ -174,6 +174,12 @@ Startup flow:
 
 Rendering notes:
 - ANSI colors are used for resources, ports, and markers
-- Tile cells show `[RsNN*]` (`Rs` resource, `NN` token, `*` robber)
+- Each tile shows resource name (top), number token (middle), and robber marker `*` (bottom)
 - Vertices/edges are shown so settlements/cities/roads can be visualized
 - Ports are labeled (`3:1`, `Wood`, `Brick`, `Sheep`, `Wheat`, `Ore`) with connector lines to their two vertices
+
+Gameplay notes:
+- Initial setup goes directly to settlement/road placement with legal spots highlighted
+- Use arrow keys + Enter to pick settlement/road/robber tile targets
+- During normal turns, legal actions are shown in a menu (Up/Down + Enter)
+- Resource and VP summaries for all players are displayed under the board
