@@ -7,7 +7,6 @@ internal static class Program
     private const double Sqrt3 = 1.7320508075688772;
 
     private const string Reset = "\u001b[0m";
-    private const string FgBlack = "\u001b[30m";
     private const string FgWhite = "\u001b[37m";
     private const string FgBrightWhite = "\u001b[97m";
     private const string FgBrightBlack = "\u001b[90m";
@@ -15,11 +14,11 @@ internal static class Program
     private const string FgBrightRed = "\u001b[91m";
     private const string FgYellow = "\u001b[33m";
     private const string FgBrightGreen = "\u001b[92m";
-    private const string FgBrightYellow = "\u001b[93m";
     private const string FgGreen = "\u001b[32m";
-    private const string FgCyan = "\u001b[36m";
     private const string FgSilver = "\u001b[38;5;250m";
     private const string FgBeige = "\u001b[38;5;223m";
+    private static int _lastFrameLineCount;
+
     private static void Main()
     {
         Console.WriteLine("Gimbur TUI");
@@ -30,18 +29,254 @@ internal static class Program
         var players = PromptPlayerCount(config.MinPlayers, config.MaxPlayers);
 
         var rng = new Random();
-        var setup = BoardSetup.Generate(config.Map, rng);
-        var board = new Board(setup, config);
+        var session = InitialPlacementSession.Create(config, players, rng);
 
-        Console.WriteLine();
-        Console.WriteLine($"Initialized {mapChoice.ToString().ToLowerInvariant()} map for {players} players.");
-        Console.WriteLine($"Tiles: {board.Topology.TileCount}, Vertices: {board.Topology.VertexCount}, Edges: {board.Topology.EdgeCount}");
-        Console.WriteLine();
-        RenderBoard(board);
-        Console.WriteLine();
-        Console.WriteLine("Legend: [RsNN*] tile, o empty vertex, s settlement, c city, . empty edge, -/\\ road");
-        Console.WriteLine("Ports: 3:1 generic plus Wood/Brick/Sheep/Wheat/Ore resource ports");
+        RunInitialPlacementLoop(session);
     }
+
+    private static void RunInitialPlacementLoop(InitialPlacementSession session)
+    {
+        Console.Clear();
+        _lastFrameLineCount = 0;
+        Console.CursorVisible = false;
+
+        while (!session.IsComplete)
+        {
+            if (session.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement)
+            {
+                ExecuteSettlementPlacement(session);
+                continue;
+            }
+
+            if (session.Stage is TurnStage.PlaceFirstRoad or TurnStage.PlaceSecondRoad)
+            {
+                ExecuteRoadPlacement(session);
+                continue;
+            }
+
+            break;
+        }
+
+        DrawFrame(() =>
+        {
+            RenderBoard(session.Board);
+            Console.WriteLine();
+            Console.WriteLine("Initial placement complete.");
+            for (var player = 1; player <= session.PlayerCount; player++)
+            {
+                Console.WriteLine(
+                    $"Player {player}: settlements={session.Board.SettlementCount(player)}, roads={session.Board.RoadCount(player)}");
+            }
+            Console.WriteLine();
+            Console.WriteLine("Legend: tile text stack = resource name, number, robber(*); o empty vertex, s settlement, c city, |/\\/- road");
+            Console.WriteLine("Ports: 3:1 generic plus Wood/Brick/Sheep/Wheat/Ore resource ports");
+        });
+
+        Console.CursorVisible = true;
+    }
+
+    private static void ExecuteSettlementPlacement(InitialPlacementSession session)
+    {
+        var legal = session.LegalSettlementVertices().ToArray();
+        if (legal.Length == 0)
+        {
+            Pause("No legal settlement placements available.");
+            return;
+        }
+
+        var selected = SelectLocation(
+            title: "Select settlement location",
+            stageLabel: StageLabel(session.Stage),
+            currentPlayer: session.CurrentPlayer,
+            board: session.Board,
+            legalCandidates: legal,
+            pointProvider: BuildRenderLayout(session.Board.Topology).VertexPoints,
+            neighborProvider: vertex => session.Board.Topology.VertexNeighbors[vertex],
+            isVertexSelection: true);
+
+        if (selected is int vertex)
+        {
+            session.PlaceSettlement(vertex);
+        }
+    }
+
+    private static void ExecuteRoadPlacement(InitialPlacementSession session)
+    {
+        var legal = session.LegalRoadEdges().ToArray();
+        if (legal.Length == 0)
+        {
+            Pause("No legal road placements available.");
+            return;
+        }
+
+        var selected = SelectLocation(
+            title: "Select road location",
+            stageLabel: StageLabel(session.Stage),
+            currentPlayer: session.CurrentPlayer,
+            board: session.Board,
+            legalCandidates: legal,
+            pointProvider: BuildRenderLayout(session.Board.Topology).EdgePoints,
+            neighborProvider: BuildEdgeNeighborProvider(session.Board.Topology),
+            isVertexSelection: false);
+
+        if (selected is int edge)
+        {
+            session.PlaceRoad(edge);
+        }
+    }
+
+    private static int? SelectLocation(
+        string title,
+        string stageLabel,
+        int currentPlayer,
+        Board board,
+        int[] legalCandidates,
+        IReadOnlyList<(int X, int Y)> pointProvider,
+        Func<int, IEnumerable<int>> neighborProvider,
+        bool isVertexSelection)
+    {
+        var legalSet = legalCandidates.ToHashSet();
+        var current = legalCandidates[0];
+
+        while (true)
+        {
+            DrawFrame(() =>
+            {
+                if (isVertexSelection)
+                {
+                    RenderBoard(
+                        board,
+                        highlightedVertices: legalCandidates,
+                        selectedVertex: current);
+                }
+                else
+                {
+                    RenderBoard(
+                        board,
+                        highlightedEdges: legalCandidates,
+                        selectedEdge: current);
+                }
+
+                Console.WriteLine();
+                Console.WriteLine($"Initial placement - Player {currentPlayer}");
+                Console.WriteLine($"Stage: {stageLabel}");
+                Console.WriteLine($"{title}: arrows to move, Enter to confirm, Esc to cancel");
+            });
+
+            var key = Console.ReadKey(intercept: true).Key;
+            if (key == ConsoleKey.Enter)
+            {
+                return current;
+            }
+
+            if (key == ConsoleKey.Escape)
+            {
+                return null;
+            }
+
+            current = key switch
+            {
+                ConsoleKey.LeftArrow => MoveSelection(current, legalCandidates, legalSet, pointProvider, neighborProvider, -1, 0),
+                ConsoleKey.RightArrow => MoveSelection(current, legalCandidates, legalSet, pointProvider, neighborProvider, 1, 0),
+                ConsoleKey.UpArrow => MoveSelection(current, legalCandidates, legalSet, pointProvider, neighborProvider, 0, -1),
+                ConsoleKey.DownArrow => MoveSelection(current, legalCandidates, legalSet, pointProvider, neighborProvider, 0, 1),
+                _ => current,
+            };
+        }
+    }
+
+    private static int MoveSelection(
+        int current,
+        IReadOnlyList<int> legalCandidates,
+        HashSet<int> legalSet,
+        IReadOnlyList<(int X, int Y)> pointProvider,
+        Func<int, IEnumerable<int>> neighborProvider,
+        int dirX,
+        int dirY)
+    {
+        var currentPoint = pointProvider[current];
+
+        var neighborCandidates = neighborProvider(current).Where(legalSet.Contains).ToArray();
+        var bestNeighbor = PickDirectionalBest(currentPoint, neighborCandidates, pointProvider, dirX, dirY);
+        if (bestNeighbor.HasValue)
+        {
+            return bestNeighbor.Value;
+        }
+
+        var fallback = PickDirectionalBest(currentPoint, legalCandidates, pointProvider, dirX, dirY);
+        return fallback ?? current;
+    }
+
+    private static int? PickDirectionalBest(
+        (int X, int Y) currentPoint,
+        IEnumerable<int> candidates,
+        IReadOnlyList<(int X, int Y)> pointProvider,
+        int dirX,
+        int dirY)
+    {
+        var best = -1;
+        var bestScore = double.MaxValue;
+        var found = false;
+
+        foreach (var candidate in candidates)
+        {
+            var point = pointProvider[candidate];
+            var vx = point.X - currentPoint.X;
+            var vy = point.Y - currentPoint.Y;
+
+            var projection = (vx * dirX) + (vy * dirY);
+            if (projection <= 0)
+                continue;
+
+            var perpendicular = Math.Abs((vx * dirY) - (vy * dirX));
+            var score = (perpendicular * 1000.0) + projection;
+            if (score < bestScore)
+            {
+                bestScore = score;
+                best = candidate;
+                found = true;
+            }
+        }
+
+        return found ? best : null;
+    }
+
+    private static Func<int, IEnumerable<int>> BuildEdgeNeighborProvider(BoardTopology topology)
+    {
+        var neighbors = new List<int>[topology.EdgeCount];
+        for (var i = 0; i < topology.EdgeCount; i++)
+        {
+            neighbors[i] = new List<int>();
+        }
+
+        for (var vi = 0; vi < topology.VertexCount; vi++)
+        {
+            var edges = topology.VertexEdges[vi];
+            for (var i = 0; i < edges.Length; i++)
+            {
+                for (var j = i + 1; j < edges.Length; j++)
+                {
+                    var a = edges[i];
+                    var b = edges[j];
+                    neighbors[a].Add(b);
+                    neighbors[b].Add(a);
+                }
+            }
+        }
+
+        var frozen = neighbors.Select(n => n.Distinct().ToArray()).ToArray();
+        return edge => frozen[edge];
+    }
+
+    private static string StageLabel(TurnStage stage) =>
+        stage switch
+        {
+            TurnStage.PlaceFirstSettlement => "Place first settlement",
+            TurnStage.PlaceFirstRoad => "Place first road",
+            TurnStage.PlaceSecondSettlement => "Place second settlement",
+            TurnStage.PlaceSecondRoad => "Place second road",
+            _ => stage.ToString(),
+        };
 
     private static MapChoice PromptMapTopology()
     {
@@ -102,9 +337,86 @@ internal static class Program
         }
     }
 
-    private static void RenderBoard(Board board)
+    private static void RenderBoard(
+        Board board,
+        IEnumerable<int>? highlightedVertices = null,
+        int? selectedVertex = null,
+        IEnumerable<int>? highlightedEdges = null,
+        int? selectedEdge = null)
     {
-        var topology = board.Topology;
+        var layout = BuildRenderLayout(board.Topology);
+        var highlightedVertexSet = highlightedVertices is null ? null : highlightedVertices.ToHashSet();
+        var highlightedEdgeSet = highlightedEdges is null ? null : highlightedEdges.ToHashSet();
+
+        var canvas = new Canvas(layout.Width, layout.Height);
+
+        for (var ei = 0; ei < board.Topology.EdgeCount; ei++)
+        {
+            var edge = board.Topology.Edges[ei];
+            DrawEdge(
+                canvas,
+                layout.VertexPoints[edge.VertexA],
+                layout.VertexPoints[edge.VertexB],
+                board.EdgeOccupancy[ei].Player,
+                highlighted: highlightedEdgeSet?.Contains(ei) ?? false,
+                selected: selectedEdge == ei);
+        }
+
+        for (var vi = 0; vi < board.Topology.VertexCount; vi++)
+        {
+            DrawVertex(
+                canvas,
+                layout.VertexPoints[vi],
+                board.VertexOccupancy[vi],
+                highlighted: highlightedVertexSet?.Contains(vi) ?? false,
+                selected: selectedVertex == vi);
+        }
+
+        for (var ti = 0; ti < board.Topology.TileCount; ti++)
+        {
+            DrawTile(canvas, layout.TilePoints[ti], board, ti);
+        }
+
+        for (var pi = 0; pi < board.Topology.PortCount; pi++)
+        {
+            var (va, vb) = board.Topology.Ports[pi];
+            var port = board.PortType(pi);
+            var portColor = PortColor(port);
+            var mid = (
+                X: (layout.VertexPixels[va].X + layout.VertexPixels[vb].X) / 2.0,
+                Y: (layout.VertexPixels[va].Y + layout.VertexPixels[vb].Y) / 2.0);
+            var outward = (
+                X: mid.X - layout.BoardCenter.X,
+                Y: mid.Y - layout.BoardCenter.Y);
+            var length = Math.Sqrt((outward.X * outward.X) + (outward.Y * outward.Y));
+            if (length < 0.0001)
+            {
+                length = 1.0;
+                outward = (1.0, 0.0);
+            }
+
+            var portPos = (
+                X: mid.X + (outward.X / length) * 1.15,
+                Y: mid.Y + (outward.Y / length) * 1.15);
+            var point = ToCanvasPoint(portPos, layout.MinX, layout.MinY, layout.ScaleX, layout.ScaleY, layout.MarginX, layout.MarginY);
+            var label = PortLabel(port);
+            var labelStartX = point.X - (label.Length / 2);
+            var labelEndX = labelStartX + label.Length - 1;
+            var leftAnchor = (X: labelStartX - 1, Y: point.Y);
+            var rightAnchor = (X: labelEndX + 1, Y: point.Y);
+            var aAnchor = layout.VertexPoints[va].X <= point.X ? leftAnchor : rightAnchor;
+            var bAnchor = layout.VertexPoints[vb].X <= point.X ? leftAnchor : rightAnchor;
+
+            DrawConnector(canvas, aAnchor, layout.VertexPoints[va], portColor);
+            DrawConnector(canvas, bAnchor, layout.VertexPoints[vb], portColor);
+            DrawString(canvas, labelStartX, point.Y, label, portColor);
+        }
+
+        canvas.Print();
+    }
+
+    private static BoardRenderLayout BuildRenderLayout(BoardTopology topology)
+    {
         var tilePixels = new (double X, double Y)[topology.TileCount];
         for (var ti = 0; ti < topology.TileCount; ti++)
         {
@@ -147,64 +459,31 @@ internal static class Program
             tilePoints[ti] = ToCanvasPoint(tilePixels[ti], minX, minY, scaleX, scaleY, marginX, marginY);
         }
 
-        var width = (int)Math.Ceiling((maxX - minX) * scaleX) + marginX * 2 + 20;
-        var height = (int)Math.Ceiling((maxY - minY) * scaleY) + marginY * 2 + 10;
-        var canvas = new Canvas(width, height);
-
+        var edgePoints = new (int X, int Y)[topology.EdgeCount];
         for (var ei = 0; ei < topology.EdgeCount; ei++)
         {
-            var edge = topology.Edges[ei];
-            var p0 = vertexPoints[edge.VertexA];
-            var p1 = vertexPoints[edge.VertexB];
-            DrawEdge(canvas, p0, p1, board.EdgeOccupancy[ei].Player);
+            var (va, vb) = topology.Edges[ei];
+            edgePoints[ei] = ((vertexPoints[va].X + vertexPoints[vb].X) / 2, (vertexPoints[va].Y + vertexPoints[vb].Y) / 2);
         }
 
-        for (var vi = 0; vi < topology.VertexCount; vi++)
-        {
-            DrawVertex(canvas, vertexPoints[vi], board.VertexOccupancy[vi]);
-        }
+        var width = (int)Math.Ceiling((maxX - minX) * scaleX) + marginX * 2 + 20;
+        var height = (int)Math.Ceiling((maxY - minY) * scaleY) + marginY * 2 + 10;
 
-        for (var ti = 0; ti < topology.TileCount; ti++)
-        {
-            DrawTile(canvas, tilePoints[ti], board, ti);
-        }
-
-        for (var pi = 0; pi < topology.PortCount; pi++)
-        {
-            var (va, vb) = topology.Ports[pi];
-            var port = board.PortType(pi);
-            var portColor = PortColor(port);
-            var mid = (
-                X: (vertexPixels[va].X + vertexPixels[vb].X) / 2.0,
-                Y: (vertexPixels[va].Y + vertexPixels[vb].Y) / 2.0);
-            var outward = (
-                X: mid.X - boardCenter.X,
-                Y: mid.Y - boardCenter.Y);
-            var length = Math.Sqrt((outward.X * outward.X) + (outward.Y * outward.Y));
-            if (length < 0.0001)
-            {
-                length = 1.0;
-                outward = (1.0, 0.0);
-            }
-
-            var portPos = (
-                X: mid.X + (outward.X / length) * 1.15,
-                Y: mid.Y + (outward.Y / length) * 1.15);
-            var point = ToCanvasPoint(portPos, minX, minY, scaleX, scaleY, marginX, marginY);
-            var label = PortLabel(port);
-            var labelStartX = point.X - (label.Length / 2);
-            var labelEndX = labelStartX + label.Length - 1;
-            var leftAnchor = (X: labelStartX - 1, Y: point.Y);
-            var rightAnchor = (X: labelEndX + 1, Y: point.Y);
-            var aAnchor = vertexPoints[va].X <= point.X ? leftAnchor : rightAnchor;
-            var bAnchor = vertexPoints[vb].X <= point.X ? leftAnchor : rightAnchor;
-
-            DrawConnector(canvas, aAnchor, vertexPoints[va], portColor);
-            DrawConnector(canvas, bAnchor, vertexPoints[vb], portColor);
-            DrawString(canvas, labelStartX, point.Y, label, portColor);
-        }
-
-        canvas.Print();
+        return new BoardRenderLayout(
+            tilePixels,
+            vertexPixels,
+            tilePoints,
+            vertexPoints,
+            edgePoints,
+            minX,
+            minY,
+            scaleX,
+            scaleY,
+            marginX,
+            marginY,
+            width,
+            height,
+            boardCenter);
     }
 
     private static (double X, double Y) AxialToPixel(HexCoord c)
@@ -228,7 +507,13 @@ internal static class Program
         return (x, y);
     }
 
-    private static void DrawEdge(Canvas canvas, (int X, int Y) p0, (int X, int Y) p1, int player)
+    private static void DrawEdge(
+        Canvas canvas,
+        (int X, int Y) p0,
+        (int X, int Y) p1,
+        int player,
+        bool highlighted,
+        bool selected)
     {
         var dx = p1.X - p0.X;
         var dy = p1.Y - p0.Y;
@@ -256,7 +541,13 @@ internal static class Program
             edgeChar = '/';
         }
 
-        var color = player == 0 ? FgBrightBlack : PlayerColor(player);
+        var color = player > 0
+            ? PlayerColor(player)
+            : selected
+                ? FgBrightRed
+                : highlighted
+                    ? FgBrightWhite
+                    : FgBrightBlack;
 
         for (var i = 1; i < steps; i++)
         {
@@ -266,11 +557,18 @@ internal static class Program
         }
     }
 
-    private static void DrawVertex(Canvas canvas, (int X, int Y) point, VertexOccupancy occupancy)
+    private static void DrawVertex(
+        Canvas canvas,
+        (int X, int Y) point,
+        VertexOccupancy occupancy,
+        bool highlighted,
+        bool selected)
     {
         if (occupancy.IsEmpty)
         {
-            canvas.Set(point.X, point.Y, 'o', FgBrightBlack);
+            var charToDraw = selected ? 'O' : 'o';
+            var color = selected ? FgBrightRed : highlighted ? FgBrightWhite : FgBrightBlack;
+            canvas.Set(point.X, point.Y, charToDraw, color);
             return;
         }
 
@@ -280,31 +578,38 @@ internal static class Program
 
     private static void DrawTile(Canvas canvas, (int X, int Y) center, Board board, int tileIndex)
     {
-        var startX = center.X - 3;
-        canvas.Set(startX, center.Y, '[', FgWhite);
-
         var resource = board.TileResource(tileIndex);
-        var resourceCode = resource switch
+        var resourceText = resource switch
         {
-            ResourceType.Desert => "Ds",
-            ResourceType.Wood => "Wd",
-            ResourceType.Brick => "Br",
-            ResourceType.Sheep => "Sh",
-            ResourceType.Wheat => "Wh",
-            ResourceType.Ore => "Or",
-            _ => "??",
+            ResourceType.Desert => "Desert",
+            ResourceType.Wood => "Wood",
+            ResourceType.Brick => "Brick",
+            ResourceType.Sheep => "Sheep",
+            ResourceType.Wheat => "Wheat",
+            ResourceType.Ore => "Ore",
+            _ => "Unknown",
         };
 
-        DrawString(canvas, startX + 1, center.Y, resourceCode, ResourceStyle(resource));
-
         var number = board.TileNumber(tileIndex);
-        var numberText = number == 0 ? "--" : number.ToString("00");
+        var numberText = number == 0 ? "" : number.ToString();
         var numberColor = number is 6 or 8 ? FgBrightRed : FgBrightWhite;
-        DrawString(canvas, startX + 3, center.Y, numberText, numberColor);
 
-        var robberMarker = board.RobberTile == tileIndex ? "*" : " ";
-        DrawString(canvas, startX + 5, center.Y, robberMarker, board.RobberTile == tileIndex ? FgRed : FgWhite);
-        canvas.Set(startX + 6, center.Y, ']', FgWhite);
+        DrawString(
+            canvas,
+            center.X - (resourceText.Length / 2),
+            center.Y - 1,
+            resourceText,
+            ResourceStyle(resource));
+
+        if (numberText.Length > 0)
+        {
+            DrawString(canvas, center.X - (numberText.Length / 2), center.Y, numberText, numberColor);
+        }
+
+        if (board.RobberTile == tileIndex)
+        {
+            DrawString(canvas, center.X, center.Y + 1, "*", FgRed);
+        }
     }
 
     private static void DrawString(Canvas canvas, int x, int y, string text, string color)
@@ -399,7 +704,7 @@ internal static class Program
         player switch
         {
             1 => FgRed,
-            2 => FgCyan,
+            2 => FgBrightGreen,
             3 => FgYellow,
             4 => FgBrightWhite,
             _ => FgWhite,
@@ -416,7 +721,50 @@ internal static class Program
             ResourceType.Desert => FgBeige,
             _ => Reset,
         };
+
+    private static void Pause(string message)
+    {
+        DrawFrame(() =>
+        {
+            Console.WriteLine();
+            Console.WriteLine(message);
+            Console.WriteLine("Press any key to continue...");
+        });
+        Console.ReadKey(intercept: true);
+    }
+
+    private static void DrawFrame(Action draw)
+    {
+        Console.SetCursorPosition(0, 0);
+        draw();
+
+        var usedLines = Console.CursorTop + (Console.CursorLeft > 0 ? 1 : 0);
+        var clearWidth = Math.Max(1, Console.WindowWidth - 1);
+        for (var i = usedLines; i < _lastFrameLineCount; i++)
+        {
+            Console.Write(new string(' ', clearWidth));
+            Console.WriteLine();
+        }
+
+        _lastFrameLineCount = usedLines;
+    }
 }
+
+internal sealed record BoardRenderLayout(
+    (double X, double Y)[] TilePixels,
+    (double X, double Y)[] VertexPixels,
+    (int X, int Y)[] TilePoints,
+    (int X, int Y)[] VertexPoints,
+    (int X, int Y)[] EdgePoints,
+    double MinX,
+    double MinY,
+    double ScaleX,
+    double ScaleY,
+    int MarginX,
+    int MarginY,
+    int Width,
+    int Height,
+    (double X, double Y) BoardCenter);
 
 internal sealed class Canvas
 {
@@ -505,14 +853,7 @@ internal sealed class Canvas
                 var color = _colors[y, x];
                 if (!string.Equals(color, activeColor, StringComparison.Ordinal))
                 {
-                    if (color is null)
-                    {
-                        Console.Write(ProgramReset());
-                    }
-                    else
-                    {
-                        Console.Write(color);
-                    }
+                    Console.Write(color ?? "\u001b[0m");
                     activeColor = color;
                 }
 
@@ -521,13 +862,11 @@ internal sealed class Canvas
 
             if (activeColor is not null)
             {
-                Console.Write(ProgramReset());
+                Console.Write("\u001b[0m");
             }
             Console.WriteLine();
         }
     }
-
-    private static string ProgramReset() => "\u001b[0m";
 }
 
 internal enum MapChoice
