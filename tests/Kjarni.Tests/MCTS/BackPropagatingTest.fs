@@ -63,8 +63,14 @@ type BackPropagatingTest() =
 
         let visitedActions = [ action1; action2 ]
 
-        backPropagating root visitedActions playerWin
-        backPropagating root visitedActions playerWin
+        let outcome =
+            if playerWin = Player.Player1 then
+                [| 0.; 1.; 0.; 0.; 0. |]
+            else
+                [| 0.; 0.; 1.; 0.; 0. |]
+
+        backPropagating root visitedActions outcome
+        backPropagating root visitedActions outcome
 
         root.visitCount |> should equal 2
         assertWinRate root playerWin

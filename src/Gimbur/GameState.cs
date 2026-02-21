@@ -20,29 +20,26 @@ public enum CatanActionType : byte
     EndTurn = 11,
 }
 
-public sealed class CatanAction : ICoreAction
+public abstract class CatanAction : ICoreAction
 {
-    public CatanAction(CatanState origin, CatanActionType actionType, int arg1 = 0, int arg2 = 0)
+    protected CatanAction(CatanState origin)
     {
         OriginState = origin;
-        ActionType = actionType;
-        Arg1 = arg1;
-        Arg2 = arg2;
     }
 
     public CatanState OriginState { get; }
 
-    public CatanActionType ActionType { get; }
+    public abstract CatanActionType ActionType { get; }
 
-    public int Arg1 { get; }
+    public virtual int Arg1 => 0;
 
-    public int Arg2 { get; }
+    public virtual int Arg2 => 0;
 
     public int TargetIndex => Arg1;
 
     public ICoreState Origin => OriginState;
 
-    public ICoreState DoCoreAction() => OriginState.Apply(this);
+    public abstract ICoreState DoCoreAction();
 
     public int CompareTo(object? obj)
     {
@@ -80,6 +77,122 @@ public sealed class CatanAction : ICoreAction
     }
 }
 
+public abstract class CatanDeterministicAction : CatanAction, IDeterministicCoreAction
+{
+    protected CatanDeterministicAction(CatanState origin)
+        : base(origin)
+    {
+    }
+}
+
+public abstract class CatanStochasticAction : CatanAction, IStochasticCoreAction
+{
+    protected CatanStochasticAction(CatanState origin)
+        : base(origin)
+    {
+    }
+
+    public abstract Tuple<ICoreState, double>[] Outcomes();
+}
+
+public sealed class PlaceSettlementAction(CatanState origin, int vertexIndex) : CatanDeterministicAction(origin)
+{
+    public int VertexIndex { get; } = vertexIndex;
+    public override int Arg1 => VertexIndex;
+    public override CatanActionType ActionType => CatanActionType.PlaceSettlement;
+    public override ICoreState DoCoreAction() => OriginState.Apply(this);
+}
+
+public sealed class PlaceRoadAction(CatanState origin, int edgeIndex) : CatanDeterministicAction(origin)
+{
+    public int EdgeIndex { get; } = edgeIndex;
+    public override int Arg1 => EdgeIndex;
+    public override CatanActionType ActionType => CatanActionType.PlaceRoad;
+    public override ICoreState DoCoreAction() => OriginState.Apply(this);
+}
+
+public sealed class RollDiceAction(CatanState origin) : CatanStochasticAction(origin)
+{
+    public override CatanActionType ActionType => CatanActionType.RollDice;
+    public override ICoreState DoCoreAction() => OriginState.Apply(this);
+    public override Tuple<ICoreState, double>[] Outcomes() =>
+        [.. OriginState.RollDiceOutcomes().Select(x => Tuple.Create((ICoreState)x.State, x.Probability))];
+}
+
+public sealed class ChooseRobberTileAction(CatanState origin, int tileIndex) : CatanStochasticAction(origin)
+{
+    public int TileIndex { get; } = tileIndex;
+    public override int Arg1 => TileIndex;
+    public override CatanActionType ActionType => CatanActionType.ChooseRobberTile;
+    public override ICoreState DoCoreAction() => OriginState.Apply(this);
+    public override Tuple<ICoreState, double>[] Outcomes() =>
+        [.. OriginState.ChooseRobberTileOutcomes(TileIndex).Select(x => Tuple.Create((ICoreState)x.State, x.Probability))];
+}
+
+public sealed class BuildCityAction(CatanState origin, int vertexIndex) : CatanDeterministicAction(origin)
+{
+    public int VertexIndex { get; } = vertexIndex;
+    public override int Arg1 => VertexIndex;
+    public override CatanActionType ActionType => CatanActionType.BuildCity;
+    public override ICoreState DoCoreAction() => OriginState.Apply(this);
+}
+
+public sealed class BankTradeAction(CatanState origin, ResourceType give, ResourceType receive) : CatanDeterministicAction(origin)
+{
+    public ResourceType Give { get; } = give;
+    public ResourceType Receive { get; } = receive;
+    public override int Arg1 => (int)Give;
+    public override int Arg2 => (int)Receive;
+    public override CatanActionType ActionType => CatanActionType.BankTrade;
+    public override ICoreState DoCoreAction() => OriginState.Apply(this);
+}
+
+public sealed class BuyDevCardAction(CatanState origin) : CatanStochasticAction(origin)
+{
+    public override CatanActionType ActionType => CatanActionType.BuyDevCard;
+    public override ICoreState DoCoreAction() => OriginState.Apply(this);
+    public override Tuple<ICoreState, double>[] Outcomes() =>
+        [.. OriginState.BuyDevCardOutcomes().Select(x => Tuple.Create((ICoreState)x.State, x.Probability))];
+}
+
+public sealed class PlayKnightAction(CatanState origin) : CatanStochasticAction(origin)
+{
+    public override CatanActionType ActionType => CatanActionType.PlayKnight;
+    public override ICoreState DoCoreAction() => OriginState.Apply(this);
+    public override Tuple<ICoreState, double>[] Outcomes() =>
+        [.. OriginState.PlayKnightOutcomes().Select(x => Tuple.Create((ICoreState)x.State, x.Probability))];
+}
+
+public sealed class PlayRoadBuildingAction(CatanState origin) : CatanDeterministicAction(origin)
+{
+    public override CatanActionType ActionType => CatanActionType.PlayRoadBuilding;
+    public override ICoreState DoCoreAction() => OriginState.Apply(this);
+}
+
+public sealed class PlayMonopolyAction(CatanState origin, ResourceType resource) : CatanDeterministicAction(origin)
+{
+    public ResourceType Resource { get; } = resource;
+    public override int Arg1 => (int)Resource;
+    public override CatanActionType ActionType => CatanActionType.PlayMonopoly;
+    public override ICoreState DoCoreAction() => OriginState.Apply(this);
+}
+
+public sealed class PlayYearOfPlentyAction(CatanState origin, ResourceType first, ResourceType second) : CatanDeterministicAction(origin)
+{
+    public ResourceType First { get; } = first;
+    public ResourceType Second { get; } = second;
+    public override int Arg1 => (int)First;
+    public override int Arg2 => (int)Second;
+    public override CatanActionType ActionType => CatanActionType.PlayYearOfPlenty;
+    public override ICoreState DoCoreAction() => OriginState.Apply(this);
+}
+
+public sealed class EndTurnAction(CatanState origin) : CatanDeterministicAction(origin)
+{
+    public override CatanActionType ActionType => CatanActionType.EndTurn;
+    public override ICoreState DoCoreAction() => OriginState.Apply(this);
+}
+
 public sealed class CatanState : ICoreState
 {
     private const int ResourceCount = 5;
@@ -93,6 +206,20 @@ public sealed class CatanState : ICoreState
     private readonly int[] _pendingRoadBuildingPlacements;
     private static readonly object RngLock = new();
     private static readonly Random SharedRng = new();
+    private static readonly Dictionary<int, int> DiceRollCounts = new()
+    {
+        [2] = 1,
+        [3] = 2,
+        [4] = 3,
+        [5] = 4,
+        [6] = 5,
+        [7] = 6,
+        [8] = 5,
+        [9] = 4,
+        [10] = 3,
+        [11] = 2,
+        [12] = 1,
+    };
 
     public CatanState()
         : this(GameConfig.Standard, playerCount: 3, new Random())
@@ -192,6 +319,8 @@ public sealed class CatanState : ICoreState
     {
         1 => Player.Player1,
         2 => Player.Player2,
+        3 => Player.Player3,
+        4 => Player.Player4,
         _ => Player.None,
     };
 
@@ -237,6 +366,93 @@ public sealed class CatanState : ICoreState
         return _pendingRoadBuildingPlacements[player];
     }
 
+    internal IReadOnlyList<(CatanState State, double Probability)> RollDiceOutcomes()
+    {
+        var outcomes = new List<(CatanState State, double Probability)>(11);
+        foreach (var pair in DiceRollCounts)
+        {
+            outcomes.Add((ApplyRollDiceOutcome(pair.Key), pair.Value / 36.0));
+        }
+
+        return outcomes;
+    }
+
+    internal IReadOnlyList<(CatanState State, double Probability)> BuyDevCardOutcomes()
+    {
+        var total = 0;
+        for (var i = 0; i < DevCardCount; i++)
+        {
+            total += _devDeckRemaining[i];
+        }
+
+        if (total <= 0)
+        {
+            return [];
+        }
+
+        var outcomes = new List<(CatanState State, double Probability)>(DevCardCount);
+        for (var i = 0; i < DevCardCount; i++)
+        {
+            var count = _devDeckRemaining[i];
+            if (count <= 0)
+            {
+                continue;
+            }
+
+            outcomes.Add((ApplyBuyDevCardType((DevCardType)i), (double)count / total));
+        }
+
+        return outcomes;
+    }
+
+    internal IReadOnlyList<(CatanState State, double Probability)> ChooseRobberTileOutcomes(int tileIndex)
+    {
+        if (Stage != TurnStage.ChooseRobberLocation)
+        {
+            throw new InvalidOperationException("Robber placement is not currently allowed.");
+        }
+
+        if (!LegalRobberTiles().Contains(tileIndex))
+        {
+            throw new InvalidOperationException($"Tile {tileIndex} is not a legal robber destination.");
+        }
+
+        var victims = RobberVictims(tileIndex);
+        if (victims.Count == 0)
+        {
+            return [ (ApplyChooseRobberTileNoSteal(tileIndex), 1.0) ];
+        }
+
+        var outcomes = new List<(CatanState State, double Probability)>();
+        var victimChance = 1.0 / victims.Count;
+        foreach (var victim in victims)
+        {
+            var victimTotal = TotalResourceCards(victim);
+            if (victimTotal <= 0)
+            {
+                continue;
+            }
+
+            for (var i = 0; i < ResourceCount; i++)
+            {
+                var count = _resources[victim, i];
+                if (count <= 0)
+                {
+                    continue;
+                }
+
+                outcomes.Add((ApplyChooseRobberTileSteal(tileIndex, victim, i), victimChance * (count / (double)victimTotal)));
+            }
+        }
+
+        return outcomes;
+    }
+
+    internal IReadOnlyList<(CatanState State, double Probability)> PlayKnightOutcomes()
+    {
+        return [ (ApplyPlayKnight(), 1.0) ];
+    }
+
     public int VictoryPointsFor(int player)
     {
         EnsurePlayer(player);
@@ -262,7 +478,7 @@ public sealed class CatanState : ICoreState
             case TurnStage.PlaceSecondSettlement:
                 foreach (var vertexIndex in LegalSettlementVertices(initialPlacement: true))
                 {
-                    actions.Add(new CatanAction(this, CatanActionType.PlaceSettlement, vertexIndex));
+                    actions.Add(new PlaceSettlementAction(this, vertexIndex));
                 }
 
                 break;
@@ -271,19 +487,19 @@ public sealed class CatanState : ICoreState
             case TurnStage.PlaceSecondRoad:
                 foreach (var edgeIndex in LegalInitialRoadEdges())
                 {
-                    actions.Add(new CatanAction(this, CatanActionType.PlaceRoad, edgeIndex));
+                    actions.Add(new PlaceRoadAction(this, edgeIndex));
                 }
 
                 break;
 
             case TurnStage.PreRoll:
-                actions.Add(new CatanAction(this, CatanActionType.RollDice));
+                actions.Add(new RollDiceAction(this));
                 break;
 
             case TurnStage.ChooseRobberLocation:
                 foreach (var tileIndex in LegalRobberTiles())
                 {
-                    actions.Add(new CatanAction(this, CatanActionType.ChooseRobberTile, tileIndex));
+                    actions.Add(new ChooseRobberTileAction(this, tileIndex));
                 }
 
                 break;
@@ -293,7 +509,7 @@ public sealed class CatanState : ICoreState
                 {
                     foreach (var edgeIndex in LegalBuildRoadEdges(requireCost: false))
                     {
-                        actions.Add(new CatanAction(this, CatanActionType.PlaceRoad, edgeIndex));
+                        actions.Add(new PlaceRoadAction(this, edgeIndex));
                     }
 
                     break;
@@ -301,27 +517,27 @@ public sealed class CatanState : ICoreState
 
                 foreach (var edgeIndex in LegalBuildRoadEdges(requireCost: true))
                 {
-                    actions.Add(new CatanAction(this, CatanActionType.PlaceRoad, edgeIndex));
+                    actions.Add(new PlaceRoadAction(this, edgeIndex));
                 }
 
                 foreach (var vertexIndex in LegalSettlementVertices(initialPlacement: false))
                 {
-                    actions.Add(new CatanAction(this, CatanActionType.PlaceSettlement, vertexIndex));
+                    actions.Add(new PlaceSettlementAction(this, vertexIndex));
                 }
 
                 foreach (var vertexIndex in LegalCityVertices())
                 {
-                    actions.Add(new CatanAction(this, CatanActionType.BuildCity, vertexIndex));
+                    actions.Add(new BuildCityAction(this, vertexIndex));
                 }
 
                 foreach (var trade in LegalBankTrades())
                 {
-                    actions.Add(new CatanAction(this, CatanActionType.BankTrade, (int)trade.Give, (int)trade.Receive));
+                    actions.Add(new BankTradeAction(this, trade.Give, trade.Receive));
                 }
 
                 if (LegalDevCardPurchases().Count > 0)
                 {
-                    actions.Add(new CatanAction(this, CatanActionType.BuyDevCard));
+                    actions.Add(new BuyDevCardAction(this));
                 }
 
                 foreach (var action in LegalDevCardPlays())
@@ -329,7 +545,7 @@ public sealed class CatanState : ICoreState
                     actions.Add(action);
                 }
 
-                actions.Add(new CatanAction(this, CatanActionType.EndTurn));
+                actions.Add(new EndTurnAction(this));
                 break;
         }
 
@@ -337,28 +553,28 @@ public sealed class CatanState : ICoreState
         return [.. actions];
     }
 
-    public CatanState Apply(CatanAction action)
+    internal CatanState Apply(CatanAction action)
     {
         if (!ReferenceEquals(action.OriginState, this))
         {
             throw new InvalidOperationException("Action origin does not match the current state.");
         }
 
-        return action.ActionType switch
+        return action switch
         {
-            CatanActionType.PlaceSettlement => ApplySettlement(action.Arg1),
-            CatanActionType.PlaceRoad => ApplyRoad(action.Arg1),
-            CatanActionType.RollDice => ApplyRollDice(),
-            CatanActionType.ChooseRobberTile => ApplyChooseRobberTile(action.Arg1),
-            CatanActionType.BuildCity => ApplyBuildCity(action.Arg1),
-            CatanActionType.BankTrade => ApplyBankTrade((ResourceType)action.Arg1, (ResourceType)action.Arg2),
-            CatanActionType.BuyDevCard => ApplyBuyDevCard(),
-            CatanActionType.PlayKnight => ApplyPlayKnight(),
-            CatanActionType.PlayRoadBuilding => ApplyPlayRoadBuilding(),
-            CatanActionType.PlayMonopoly => ApplyPlayMonopoly((ResourceType)action.Arg1),
-            CatanActionType.PlayYearOfPlenty => ApplyPlayYearOfPlenty((ResourceType)action.Arg1, (ResourceType)action.Arg2),
-            CatanActionType.EndTurn => ApplyEndTurn(),
-            _ => throw new InvalidOperationException($"Unsupported action type: {action.ActionType}"),
+            PlaceSettlementAction a => ApplySettlement(a.VertexIndex),
+            PlaceRoadAction a => ApplyRoad(a.EdgeIndex),
+            RollDiceAction => ApplyRollDice(),
+            ChooseRobberTileAction a => ApplyChooseRobberTile(a.TileIndex),
+            BuildCityAction a => ApplyBuildCity(a.VertexIndex),
+            BankTradeAction a => ApplyBankTrade(a.Give, a.Receive),
+            BuyDevCardAction => ApplyBuyDevCard(),
+            PlayKnightAction => ApplyPlayKnight(),
+            PlayRoadBuildingAction => ApplyPlayRoadBuilding(),
+            PlayMonopolyAction a => ApplyPlayMonopoly(a.Resource),
+            PlayYearOfPlentyAction a => ApplyPlayYearOfPlenty(a.First, a.Second),
+            EndTurnAction => ApplyEndTurn(),
+            _ => throw new InvalidOperationException($"Unsupported action type: {action.GetType().Name}"),
         };
     }
 
@@ -833,21 +1049,7 @@ public sealed class CatanState : ICoreState
         }
 
         var roll = RollTwoDice();
-
-        var next = Clone();
-        if (roll == 7)
-        {
-            next.ApplyDiscardOnSeven();
-            next.Stage = TurnStage.ChooseRobberLocation;
-        }
-        else
-        {
-            next.ProduceResources(roll);
-            next.Stage = TurnStage.BuildTrade;
-        }
-
-        next.RefreshVictory();
-        return next;
+        return ApplyRollDiceOutcome(roll);
     }
 
     private CatanState ApplyChooseRobberTile(int tileIndex)
@@ -862,11 +1064,41 @@ public sealed class CatanState : ICoreState
             throw new InvalidOperationException($"Tile {tileIndex} is not a legal robber destination.");
         }
 
-        var next = Clone();
-        next.Board.RobberTile = tileIndex;
-        next.TryStealFromRobberTile(tileIndex);
-        next.Stage = TurnStage.BuildTrade;
-        return next;
+        var victims = RobberVictims(tileIndex);
+        if (victims.Count == 0)
+        {
+            return ApplyChooseRobberTileNoSteal(tileIndex);
+        }
+
+        int victim;
+        lock (RngLock)
+        {
+            victim = victims[SharedRng.Next(victims.Count)];
+        }
+
+        var victimCardCount = TotalResourceCards(victim);
+        if (victimCardCount <= 0)
+        {
+            return ApplyChooseRobberTileNoSteal(tileIndex);
+        }
+
+        int pick;
+        lock (RngLock)
+        {
+            pick = SharedRng.Next(victimCardCount);
+        }
+
+        var running = pick;
+        for (var i = 0; i < ResourceCount; i++)
+        {
+            running -= _resources[victim, i];
+            if (running < 0)
+            {
+                return ApplyChooseRobberTileSteal(tileIndex, victim, i);
+            }
+        }
+
+        return ApplyChooseRobberTileNoSteal(tileIndex);
     }
 
     private CatanState ApplyBuildCity(int vertexIndex)
@@ -921,24 +1153,7 @@ public sealed class CatanState : ICoreState
             throw new InvalidOperationException("Buying development cards is only allowed during build/trade stage.");
         }
 
-        if (!CanAfford(Config.DevCardCost))
-        {
-            throw new InvalidOperationException("Current player cannot afford development card.");
-        }
-
-        var cardType = DrawRandomDevCard();
-        if (cardType is null)
-        {
-            throw new InvalidOperationException("No development cards remaining in deck.");
-        }
-
-        var next = Clone();
-        next.PayCost(next.Config.DevCardCost);
-        next._devDeckRemaining[(int)cardType.Value]--;
-        next._devCards[CurrentPlayer, (int)cardType.Value]++;
-        next._newDevCardsThisTurn[(int)cardType.Value]++;
-        next.RefreshVictory();
-        return next;
+        return ApplyBuyDevCardType(DrawRandomDevCard() ?? throw new InvalidOperationException("No development cards remaining in deck."));
     }
 
     private CatanState ApplyPlayKnight()
@@ -1227,14 +1442,14 @@ public sealed class CatanState : ICoreState
 
         if (GetPlayableDevCardCount(DevCardType.Knight) > 0)
         {
-            legal.Add(new CatanAction(this, CatanActionType.PlayKnight));
+            legal.Add(new PlayKnightAction(this));
         }
 
         if (GetPlayableDevCardCount(DevCardType.RoadBuilding) > 0 && Board.RoadCount(CurrentPlayer) < Config.MaxRoads)
         {
             if (LegalBuildRoadEdges(requireCost: false).Count > 0)
             {
-                legal.Add(new CatanAction(this, CatanActionType.PlayRoadBuilding));
+                legal.Add(new PlayRoadBuildingAction(this));
             }
         }
 
@@ -1242,7 +1457,7 @@ public sealed class CatanState : ICoreState
         {
             foreach (var resource in CollectableResources())
             {
-                legal.Add(new CatanAction(this, CatanActionType.PlayMonopoly, (int)resource));
+                legal.Add(new PlayMonopolyAction(this, resource));
             }
         }
 
@@ -1253,7 +1468,7 @@ public sealed class CatanState : ICoreState
             {
                 for (var j = i; j < resources.Length; j++)
                 {
-                    legal.Add(new CatanAction(this, CatanActionType.PlayYearOfPlenty, (int)resources[i], (int)resources[j]));
+                    legal.Add(new PlayYearOfPlentyAction(this, resources[i], resources[j]));
                 }
             }
         }
@@ -1327,7 +1542,7 @@ public sealed class CatanState : ICoreState
         return bestCount > 0 ? bestIndex : -1;
     }
 
-    private void TryStealFromRobberTile(int tileIndex)
+    private List<int> RobberVictims(int tileIndex)
     {
         var candidates = new HashSet<int>();
         foreach (var vertex in Board.Topology.TileVertices[tileIndex])
@@ -1344,23 +1559,23 @@ public sealed class CatanState : ICoreState
             }
         }
 
-        if (candidates.Count == 0)
-        {
-            return;
-        }
+        return [.. candidates.OrderBy(p => p)];
+    }
 
-        var victim = candidates.OrderBy(p => p).First();
-        for (var i = 0; i < ResourceCount; i++)
-        {
-            if (_resources[victim, i] <= 0)
-            {
-                continue;
-            }
+    private CatanState ApplyChooseRobberTileNoSteal(int tileIndex)
+    {
+        var next = Clone();
+        next.Board.RobberTile = tileIndex;
+        next.Stage = TurnStage.BuildTrade;
+        return next;
+    }
 
-            _resources[victim, i]--;
-            _resources[CurrentPlayer, i]++;
-            break;
-        }
+    private CatanState ApplyChooseRobberTileSteal(int tileIndex, int victim, int resourceIndex)
+    {
+        var next = ApplyChooseRobberTileNoSteal(tileIndex);
+        next._resources[victim, resourceIndex]--;
+        next._resources[CurrentPlayer, resourceIndex]++;
+        return next;
     }
 
     private bool CanBuildSettlementConnected(int vertexIndex)
@@ -1586,6 +1801,45 @@ public sealed class CatanState : ICoreState
         }
 
         return (DevCardType)(DevCardCount - 1);
+    }
+
+    private CatanState ApplyRollDiceOutcome(int roll)
+    {
+        var next = Clone();
+        if (roll == 7)
+        {
+            next.ApplyDiscardOnSeven();
+            next.Stage = TurnStage.ChooseRobberLocation;
+        }
+        else
+        {
+            next.ProduceResources(roll);
+            next.Stage = TurnStage.BuildTrade;
+        }
+
+        next.RefreshVictory();
+        return next;
+    }
+
+    private CatanState ApplyBuyDevCardType(DevCardType cardType)
+    {
+        if (!CanAfford(Config.DevCardCost))
+        {
+            throw new InvalidOperationException("Current player cannot afford development card.");
+        }
+
+        if (_devDeckRemaining[(int)cardType] <= 0)
+        {
+            throw new InvalidOperationException($"No {cardType} cards remaining in deck.");
+        }
+
+        var next = Clone();
+        next.PayCost(next.Config.DevCardCost);
+        next._devDeckRemaining[(int)cardType]--;
+        next._devCards[CurrentPlayer, (int)cardType]++;
+        next._newDevCardsThisTurn[(int)cardType]++;
+        next.RefreshVictory();
+        return next;
     }
 
     private CatanState Clone()

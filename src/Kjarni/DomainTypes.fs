@@ -6,6 +6,8 @@ type Player =
     | None = 0
     | Player1 = 1
     | Player2 = 2
+    | Player3 = 3
+    | Player4 = 4
 
 type ICoreState =
     abstract PlayerTurn : Player
@@ -16,6 +18,13 @@ and ICoreAction =
     abstract Origin : ICoreState
     abstract DoCoreAction : unit -> ICoreState
     inherit IComparable
+
+and IDeterministicCoreAction =
+    inherit ICoreAction
+
+and IStochasticCoreAction =
+    inherit ICoreAction
+    abstract Outcomes : unit -> (ICoreState * float) []
 
 type IEvaluator =
     abstract Evaluate : ICoreState -> int

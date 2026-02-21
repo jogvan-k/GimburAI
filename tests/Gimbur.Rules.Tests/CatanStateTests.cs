@@ -179,11 +179,24 @@ public class CatanStateTests
         serialized = SetResource(serialized, robberState, victim, ResourceType.Sheep, 0);
         serialized = SetResource(serialized, robberState, victim, ResourceType.Wheat, 0);
         serialized = SetResource(serialized, robberState, victim, ResourceType.Ore, 0);
+        for (var player = 1; player <= robberState.PlayerCount; player++)
+        {
+            if (player == current || player == victim)
+            {
+                continue;
+            }
+
+            serialized = SetResource(serialized, robberState, player, ResourceType.Brick, 0);
+            serialized = SetResource(serialized, robberState, player, ResourceType.Wood, 0);
+            serialized = SetResource(serialized, robberState, player, ResourceType.Sheep, 0);
+            serialized = SetResource(serialized, robberState, player, ResourceType.Wheat, 0);
+            serialized = SetResource(serialized, robberState, player, ResourceType.Ore, 0);
+        }
 
         var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Standard, 3, serialized);
         var beforeCurrent = loaded.ResourceCountFor(current, ResourceType.Brick);
         var beforeVictim = loaded.ResourceCountFor(victim, ResourceType.Brick);
-        var place = new Gimbur.CatanAction(loaded, Gimbur.CatanActionType.ChooseRobberTile, targetTile);
+        var place = new Gimbur.ChooseRobberTileAction(loaded, targetTile);
         var next = (Gimbur.CatanState)place.DoCoreAction();
 
         Assert.That(next.Stage, Is.EqualTo(TurnStage.BuildTrade));

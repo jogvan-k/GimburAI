@@ -147,7 +147,7 @@ internal static class Program
 
         if (selected is int vertex)
         {
-            var action = new CatanAction(state, CatanActionType.PlaceSettlement, vertex);
+            var action = new PlaceSettlementAction(state, vertex);
             return (CatanState)action.DoCoreAction();
         }
 
@@ -181,7 +181,7 @@ internal static class Program
 
         if (selected is int tile)
         {
-            var action = new CatanAction(state, CatanActionType.ChooseRobberTile, tile);
+            var action = new ChooseRobberTileAction(state, tile);
             return (CatanState)action.DoCoreAction();
         }
 
@@ -469,7 +469,7 @@ internal static class Program
 
         if (selected is int edge)
         {
-            var action = new CatanAction(state, CatanActionType.PlaceRoad, edge);
+            var action = new PlaceRoadAction(state, edge);
             return (CatanState)action.DoCoreAction();
         }
 
@@ -503,7 +503,7 @@ internal static class Program
 
         if (selected is int vertex)
         {
-            var action = new CatanAction(state, CatanActionType.BuildCity, vertex);
+            var action = new BuildCityAction(state, vertex);
             return (CatanState)action.DoCoreAction();
         }
 
