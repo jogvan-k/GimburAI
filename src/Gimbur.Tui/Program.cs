@@ -31,18 +31,20 @@ internal static class Program
         var mapChoice = PromptMapTopology();
         var config = mapChoice == MapChoice.Mini ? GameConfig.Mini : GameConfig.Standard;
         var players = PromptPlayerCount(config.MinPlayers, config.MaxPlayers);
+        var controllers = PromptPlayerControllers(players);
 
         var rng = new Random();
         var state = new CatanState(config, players, rng);
 
-        RunGameLoop(state);
+        RunGameLoop(state, controllers);
     }
 
-    private static void RunGameLoop(CatanState state)
+    private static void RunGameLoop(CatanState state, PlayerController[] controllers)
     {
         Console.Clear();
         _lastFrameLineCount = 0;
         Console.CursorVisible = false;
+        var greedy = new GreedyActionSelector();
 
         while (true)
         {
@@ -50,6 +52,12 @@ internal static class Program
             if (actions.Length == 0)
             {
                 break;
+            }
+
+            if (controllers[state.CurrentPlayer] == PlayerController.Greedy)
+            {
+                state = ExecuteGreedyStep(state, greedy);
+                continue;
             }
 
             if (state.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement)
@@ -97,6 +105,19 @@ internal static class Program
         });
 
         Console.CursorVisible = true;
+    }
+
+    private static CatanState ExecuteGreedyStep(CatanState state, GreedyActionSelector greedy)
+    {
+        var action = greedy.ChooseAction(state, UiRng);
+        if (action is null)
+        {
+            return state;
+        }
+
+        var next = (CatanState)action.DoCoreAction();
+        _statusMessage = $"P{state.CurrentPlayer}(AI): {DescribeAction(state, action)}";
+        return next;
     }
 
     private static CatanState ExecuteSettlementPlacement(CatanState state)
@@ -758,6 +779,34 @@ internal static class Program
         }
     }
 
+    private static PlayerController[] PromptPlayerControllers(int playerCount)
+    {
+        var controllers = new PlayerController[playerCount + 1];
+        for (var player = 1; player <= playerCount; player++)
+        {
+            while (true)
+            {
+                Console.Write($"Player {player} controller ([h]uman/[g]reedy): ");
+                var input = Console.ReadLine()?.Trim().ToLowerInvariant();
+                if (string.IsNullOrEmpty(input) || input is "h" or "human")
+                {
+                    controllers[player] = PlayerController.Human;
+                    break;
+                }
+
+                if (input is "g" or "greedy" or "ai")
+                {
+                    controllers[player] = PlayerController.Greedy;
+                    break;
+                }
+
+                Console.WriteLine("Please enter 'h' for human or 'g' for greedy.");
+            }
+        }
+
+        return controllers;
+    }
+
     private static void RenderBoard(
         Board board,
         IEnumerable<int>? highlightedVertices = null,
@@ -1230,6 +1279,12 @@ internal enum ActionSelectionMode
     PlaceRoad,
     PlaceCity,
     PlaceRobber,
+}
+
+internal enum PlayerController
+{
+    Human,
+    Greedy,
 }
 
 internal enum ActionMenuContext
