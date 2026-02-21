@@ -17,6 +17,21 @@ let isLeaf l =
     | _ -> false
 
 let explorationConstant = sqrt 2.
+let maxTrackedPlayers = int Player.Player4
+
+let emptyOutcome() = Array.zeroCreate<float> (maxTrackedPlayers + 1)
+
+let oneHotOutcome (winner: Player) =
+    let outcome = emptyOutcome ()
+    let i = int winner
+    if i > 0 && i <= maxTrackedPlayers then
+        outcome.[i] <- 1.
+    outcome
+
+let addScaledOutcome (target: float array) (source: float array) (scale: float) =
+    for i in 1 .. maxTrackedPlayers do
+        let v = if i < source.Length then source.[i] else 0.
+        target.[i] <- target.[i] + v * scale
 
 let explorationRate (stateVisitCount: int, actionVisitCount: int) =
     explorationConstant
@@ -80,29 +95,35 @@ let expansion (s: State, i, tTable: TranspositionTable Option) =
 
     | _ -> raise (Exception "Target leaf is already expanded")
 
-let simulation (s: State) =
-    let mutable currentState = ref s.state
-    let mutable actions = ref (currentState.Value.Actions())
-
-    while not (Array.isEmpty actions.Value) do
-        let nextMove = actions.Value |> Seq.sort |> Seq.head
-        currentState <- ref (nextMove.DoCoreAction())
-        actions <- ref (currentState.Value.Actions())
-
-    currentState.Value.PlayerTurn
-
-let registerResult (s: State) (playerWin: Player) =
-    if s.state.PlayerTurn = playerWin then
-        s.registerWin ()
+let rec simulationDistribution (state: ICoreState) =
+    let actions = state.Actions()
+    if Array.isEmpty actions then
+        oneHotOutcome state.PlayerTurn
     else
-        s.registerLoss ()
+        let nextMove = actions |> Seq.sort |> Seq.head
+        match nextMove with
+        | :? IStochasticCoreAction as stochastic ->
+            let outcomes = stochastic.Outcomes()
+            if Array.isEmpty outcomes then
+                oneHotOutcome state.PlayerTurn
+            else
+                let result = emptyOutcome ()
+                for nextState, probability in outcomes do
+                    if probability > 0. then
+                        addScaledOutcome result (simulationDistribution nextState) probability
+                result
+        | _ -> simulationDistribution (nextMove.DoCoreAction())
 
-let backPropagating (root: State) (a: Action list) (playerWin: Player) =
+let simulation (s: State) = simulationDistribution s.state
+
+let registerResult (s: State) (outcome: float array) = s.registerOutcome outcome
+
+let backPropagating (root: State) (a: Action list) (outcome: float array) =
     for a1 in a do
         a1.incrementVisitCount ()
-        registerResult a1.state playerWin
+        registerResult a1.state outcome
 
-    registerResult root playerWin
+    registerResult root outcome
 
 let extractionEvaluator (p: Player, l: Leaf) =
     match l with
@@ -137,7 +158,7 @@ let search (root: State, maxSimulationCount, timer: Stopwatch, tTable, evaluateU
           && (not evaluateUntil.IsSome
               || timer.ElapsedTicks < evaluateUntil.Value) do
         match selection (root, leafEvaluator) with
-        | Exhausted (actionHistory, win) -> backPropagating root actionHistory win
+        | Exhausted (actionHistory, win) -> backPropagating root actionHistory (oneHotOutcome win)
         | Candidate (actionHistory, a) ->
             let s =
                 if List.isEmpty actionHistory then
@@ -147,9 +168,9 @@ let search (root: State, maxSimulationCount, timer: Stopwatch, tTable, evaluateU
 
             match expansion (s, a, tTable) with
             | Leaf a ->
-                let win = simulation a.state
-                backPropagating root (a :: actionHistory) win
-            | Terminal win -> backPropagating root actionHistory win
+                let outcome = simulation a.state
+                backPropagating root (a :: actionHistory) outcome
+            | Terminal win -> backPropagating root actionHistory (oneHotOutcome win)
             | _ -> raise (Exception "Expanded to unexpected leaf type")
 
     extractBestPath root |> List.toArray
@@ -175,7 +196,7 @@ let parallelSearch (root: State, maxSimulationCount, tTable, evaluateUntil: int)
             let win, actionHistory =
                 match leaf with
                 | Leaf a -> simulation a.state, a :: ah
-                | Terminal win -> win, ah                
+                | Terminal win -> oneHotOutcome win, ah
                 | Unexplored _ -> failwith "Not Implemented"
 
             lock root (fun () -> backPropagating root actionHistory win)

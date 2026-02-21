@@ -33,9 +33,9 @@ The goal is to train a neural network that evaluates board positions (state to w
 - [x] Best-path extraction
 - [x] `IGameAI` public API (`MonteCarloTreeSearch` class)
 - [x] Test suite (selection, expansion, backprop, state tracking, benchmark)
-- [ ] Extend `Player` enum to support 3-4 players
-- [ ] Multiplayer backpropagation (win/loss per player, not just binary)
-- [ ] Replace deterministic simulation with random rollouts
+- [x] Extend `Player` enum to support 3-4 players
+- [x] Multiplayer backpropagation (per-player outcome vector, not just binary win/loss)
+- [x] Support stochastic rollout EV via weighted outcomes (`IStochasticCoreAction`)
 - [ ] Neural network leaf evaluator (replace rollouts with model inference)
 
 ### Phase 2: Catan Game Engine (Gimbur)
@@ -68,6 +68,7 @@ The goal is to train a neural network that evaluates board positions (state to w
 - [x] Largest army tracking
 - [x] Victory point calculation and win detection (10 VP)
 - [x] Legal action enumeration
+- [ ] Remove temporary `CatanActionType` enum and migrate all consumers to pure action-type polymorphism
 
 #### 2d: Greedy AI
 
@@ -184,3 +185,4 @@ Gameplay notes:
 - Use arrow keys + Enter to pick settlement/road/robber tile targets
 - During normal turns, legal actions are shown in a menu (Up/Down + Enter)
 - Resource and VP summaries for all players are displayed under the board
+- Chance actions (`RollDice`, `BuyDevCard`) are single actions; outcomes are resolved by the game engine

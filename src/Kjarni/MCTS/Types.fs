@@ -11,7 +11,8 @@ type Leaf =
 and State(state: ICoreState) =
     let mutable _leaves = state.Actions() |> Array.map Unexplored
     let mutable _visitCount = 0
-    let mutable _winRate = 0.
+    let maxTrackedPlayers = int Player.Player4
+    let mutable _winRates = Array.zeroCreate<float> (maxTrackedPlayers + 1)
     let incrementVisitCount () = _visitCount <- _visitCount + 1
     member _.state = state
 
@@ -19,15 +20,26 @@ and State(state: ICoreState) =
         with get () = _leaves
         and set value = _leaves <- value
 
-    member _.registerWin() =
+    member _.registerOutcome(outcome: float array) =
         incrementVisitCount ()
-        _winRate <- _winRate + (1. - _winRate) / float _visitCount
 
-    member _.registerLoss() =
-        incrementVisitCount ()
-        _winRate <- _winRate - _winRate / float _visitCount
+        for i in 1 .. maxTrackedPlayers do
+            let target =
+                if i < outcome.Length then
+                    outcome.[i]
+                else
+                    0.
 
-    member _.winRate = _winRate
+            _winRates.[i] <- _winRates.[i] + (target - _winRates.[i]) / float _visitCount
+
+    member _.winRateFor(player: Player) =
+        let i = int player
+        if i < 0 || i >= _winRates.Length then
+            0.
+        else
+            _winRates.[i]
+
+    member this.winRate = this.winRateFor state.PlayerTurn
     member _.visitCount = Math.Max(1, _visitCount)
     member _.playerTurn = state.PlayerTurn
 
@@ -38,10 +50,7 @@ and Action(activePlayer: Player, state: State) =
     member _.visitCount = Math.Max(_visitCount, 1)
 
     member _.winRate =
-        if state.state.PlayerTurn = activePlayer then
-            state.winRate
-        else
-            1. - state.winRate
+        state.winRateFor activePlayer
 
 type SelectionResult =
     | Exhausted of (Action list * Player)
