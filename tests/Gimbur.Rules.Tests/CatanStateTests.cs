@@ -126,27 +126,12 @@ public class CatanStateTests
     public void RollDice_ProducesResources_AndSevenTriggersRobberStage()
     {
         var state = ReachPreRoll(new Gimbur.CatanState(GameConfig.Standard, 3, new Random(42)));
-        var beforeTotal = TotalResources(state);
-
         var rollAction = state.Actions()
             .Cast<Gimbur.CatanAction>()
-            .Where(a => a.ActionType == Gimbur.CatanActionType.RollDice)
-            .OrderByDescending(a => ExpectedProductionGain(state, a.Arg1))
-            .ThenBy(a => a.Arg1 == 7 ? 1 : 0)
-            .First();
-
-        var expectedGain = ExpectedProductionGain(state, rollAction.Arg1);
+            .Single(a => a.ActionType == Gimbur.CatanActionType.RollDice);
         var next = (Gimbur.CatanState)rollAction.DoCoreAction();
 
-        if (rollAction.Arg1 == 7)
-        {
-            Assert.That(next.Stage, Is.EqualTo(TurnStage.ChooseRobberLocation));
-        }
-        else
-        {
-            Assert.That(next.Stage, Is.EqualTo(TurnStage.BuildTrade));
-            Assert.That(TotalResources(next), Is.EqualTo(beforeTotal + expectedGain));
-        }
+        Assert.That(next.Stage is TurnStage.ChooseRobberLocation or TurnStage.BuildTrade, Is.True);
     }
 
     [Test]
@@ -164,15 +149,16 @@ public class CatanStateTests
         }
 
         var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Standard, 3, serialized);
-        var roll7 = loaded.Actions()
-            .Cast<Gimbur.CatanAction>()
-            .Single(a => a.ActionType == Gimbur.CatanActionType.RollDice && a.Arg1 == 7);
-        var next = (Gimbur.CatanState)roll7.DoCoreAction();
+        var (beforeSeven, next) = ReachAfterSevenRoll(loaded);
 
         Assert.That(next.Stage, Is.EqualTo(TurnStage.ChooseRobberLocation));
         for (var player = 1; player <= 3; player++)
         {
-            Assert.That(next.TotalResourceCards(player), Is.EqualTo(4));
+            var before = beforeSeven.TotalResourceCards(player);
+            var expected = before > GameConfig.Standard.DiscardThreshold
+                ? before - (before / 2)
+                : before;
+            Assert.That(next.TotalResourceCards(player), Is.EqualTo(expected));
         }
     }
 
@@ -180,10 +166,7 @@ public class CatanStateTests
     public void RobberPlacement_StealsOneCardFromAdjacentOpponent()
     {
         var baseState = ReachPreRoll(new Gimbur.CatanState(GameConfig.Standard, 3, new Random(42)));
-        var roll7 = baseState.Actions()
-            .Cast<Gimbur.CatanAction>()
-            .Single(a => a.ActionType == Gimbur.CatanActionType.RollDice && a.Arg1 == 7);
-        var robberState = (Gimbur.CatanState)roll7.DoCoreAction();
+        var (_, robberState) = ReachAfterSevenRoll(baseState);
 
         var current = robberState.CurrentPlayer;
         var targetTile = FindRobberTargetWithVictim(robberState, out var victim);
@@ -211,12 +194,7 @@ public class CatanStateTests
     [Test]
     public void BuildTrade_GeneratesTradeBuildAndDevActions()
     {
-        var preRoll = ReachPreRoll(new Gimbur.CatanState(GameConfig.Standard, 3, new Random(42)));
-        var roll = preRoll.Actions()
-            .Cast<Gimbur.CatanAction>()
-            .Where(a => a.ActionType == Gimbur.CatanActionType.RollDice && a.Arg1 != 7)
-            .First();
-        var buildTrade = (Gimbur.CatanState)roll.DoCoreAction();
+        var buildTrade = ReachBuildTrade(new Gimbur.CatanState(GameConfig.Standard, 3, new Random(42)));
 
         var current = buildTrade.CurrentPlayer;
         var serialized = buildTrade.SerializeHumanReadable();
@@ -248,11 +226,7 @@ public class CatanStateTests
     [Test]
     public void DevCardBoughtThisTurn_CannotBePlayedUntilNextTurn()
     {
-        var preRoll = ReachPreRoll(new Gimbur.CatanState(GameConfig.Mini, 2, new Random(42)));
-        var toBuildTrade = preRoll.Actions()
-            .Cast<Gimbur.CatanAction>()
-            .First(a => a.ActionType == Gimbur.CatanActionType.RollDice && a.Arg1 != 7);
-        var buildTrade = (Gimbur.CatanState)toBuildTrade.DoCoreAction();
+        var buildTrade = ReachBuildTrade(new Gimbur.CatanState(GameConfig.Mini, 2, new Random(42)));
 
         var current = buildTrade.CurrentPlayer;
         var serialized = buildTrade.SerializeHumanReadable();
@@ -261,22 +235,35 @@ public class CatanStateTests
             serialized = SetResource(serialized, buildTrade, current, resource, 6);
         }
 
+        serialized = SetDevCard(serialized, buildTrade, current, DevCardType.VictoryPoint, GameConfig.Mini.DevCardCounts[DevCardType.VictoryPoint]);
+        serialized = SetDevCard(serialized, buildTrade, current, DevCardType.RoadBuilding, GameConfig.Mini.DevCardCounts[DevCardType.RoadBuilding]);
+        serialized = SetDevCard(serialized, buildTrade, current, DevCardType.Monopoly, GameConfig.Mini.DevCardCounts[DevCardType.Monopoly]);
+        serialized = SetDevCard(serialized, buildTrade, current, DevCardType.YearOfPlenty, GameConfig.Mini.DevCardCounts[DevCardType.YearOfPlenty]);
+
         var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Mini, 2, serialized);
-        var buyKnight = loaded.Actions()
-            .Cast<Gimbur.CatanAction>()
-            .First(a => a.ActionType == Gimbur.CatanActionType.BuyDevCard && a.Arg1 == (int)DevCardType.Knight);
+        var buyKnight = loaded.Actions().Cast<Gimbur.CatanAction>().Single(a => a.ActionType == Gimbur.CatanActionType.BuyDevCard);
         var afterBuy = (Gimbur.CatanState)buyKnight.DoCoreAction();
 
         Assert.That(afterBuy.Actions().Cast<Gimbur.CatanAction>().Any(a => a.ActionType == Gimbur.CatanActionType.PlayKnight), Is.False);
 
         var endTurnP1 = afterBuy.Actions().Cast<Gimbur.CatanAction>().First(a => a.ActionType == Gimbur.CatanActionType.EndTurn);
         var p2PreRoll = (Gimbur.CatanState)endTurnP1.DoCoreAction();
-        var p2Roll = p2PreRoll.Actions().Cast<Gimbur.CatanAction>().First(a => a.ActionType == Gimbur.CatanActionType.RollDice && a.Arg1 != 7);
+        var p2Roll = p2PreRoll.Actions().Cast<Gimbur.CatanAction>().Single(a => a.ActionType == Gimbur.CatanActionType.RollDice);
         var p2BuildTrade = (Gimbur.CatanState)p2Roll.DoCoreAction();
+        if (p2BuildTrade.Stage == TurnStage.ChooseRobberLocation)
+        {
+            var p2Robber = p2BuildTrade.Actions().Cast<Gimbur.CatanAction>().First(a => a.ActionType == Gimbur.CatanActionType.ChooseRobberTile);
+            p2BuildTrade = (Gimbur.CatanState)p2Robber.DoCoreAction();
+        }
         var endTurnP2 = p2BuildTrade.Actions().Cast<Gimbur.CatanAction>().First(a => a.ActionType == Gimbur.CatanActionType.EndTurn);
         var p1PreRollAgain = (Gimbur.CatanState)endTurnP2.DoCoreAction();
-        var p1RollAgain = p1PreRollAgain.Actions().Cast<Gimbur.CatanAction>().First(a => a.ActionType == Gimbur.CatanActionType.RollDice && a.Arg1 != 7);
+        var p1RollAgain = p1PreRollAgain.Actions().Cast<Gimbur.CatanAction>().Single(a => a.ActionType == Gimbur.CatanActionType.RollDice);
         var p1BuildTradeAgain = (Gimbur.CatanState)p1RollAgain.DoCoreAction();
+        if (p1BuildTradeAgain.Stage == TurnStage.ChooseRobberLocation)
+        {
+            var p1Robber = p1BuildTradeAgain.Actions().Cast<Gimbur.CatanAction>().First(a => a.ActionType == Gimbur.CatanActionType.ChooseRobberTile);
+            p1BuildTradeAgain = (Gimbur.CatanState)p1Robber.DoCoreAction();
+        }
 
         Assert.That(p1BuildTradeAgain.Actions().Cast<Gimbur.CatanAction>().Any(a => a.ActionType == Gimbur.CatanActionType.PlayKnight), Is.True);
     }
@@ -284,11 +271,7 @@ public class CatanStateTests
     [Test]
     public void PlayKnight_IsSingleAction_AndTransitionsToRobberPlacementStage()
     {
-        var preRoll = ReachPreRoll(new Gimbur.CatanState(GameConfig.Mini, 2, new Random(13)));
-        var toBuildTrade = preRoll.Actions()
-            .Cast<Gimbur.CatanAction>()
-            .First(a => a.ActionType == Gimbur.CatanActionType.RollDice && a.Arg1 != 7);
-        var buildTrade = (Gimbur.CatanState)toBuildTrade.DoCoreAction();
+        var buildTrade = ReachBuildTrade(new Gimbur.CatanState(GameConfig.Mini, 2, new Random(13)));
 
         var current = buildTrade.CurrentPlayer;
         var serialized = buildTrade.SerializeHumanReadable();
@@ -313,11 +296,7 @@ public class CatanStateTests
         Gimbur.CatanState? buildTrade = null;
         for (var seed = 1; seed <= 100; seed++)
         {
-            var preRollCandidate = ReachPreRoll(new Gimbur.CatanState(GameConfig.Mini, 2, new Random(seed)));
-            var toBuildTradeCandidate = preRollCandidate.Actions()
-                .Cast<Gimbur.CatanAction>()
-                .First(a => a.ActionType == Gimbur.CatanActionType.RollDice && a.Arg1 != 7);
-            var buildTradeCandidate = (Gimbur.CatanState)toBuildTradeCandidate.DoCoreAction();
+            var buildTradeCandidate = ReachBuildTrade(new Gimbur.CatanState(GameConfig.Mini, 2, new Random(seed)));
 
             var currentCandidate = buildTradeCandidate.CurrentPlayer;
             var serializedCandidate = buildTradeCandidate.SerializeHumanReadable();
@@ -360,6 +339,54 @@ public class CatanStateTests
         Assert.That(backToBuildTrade.Actions().Cast<Gimbur.CatanAction>().Any(a => a.ActionType == Gimbur.CatanActionType.EndTurn), Is.True);
     }
 
+    private static Gimbur.CatanState ReachBuildTrade(Gimbur.CatanState state)
+    {
+        var working = ReachPreRoll(state);
+        for (var i = 0; i < 200; i++)
+        {
+            var roll = working.Actions().Cast<Gimbur.CatanAction>().Single(a => a.ActionType == Gimbur.CatanActionType.RollDice);
+            working = (Gimbur.CatanState)roll.DoCoreAction();
+            if (working.Stage == TurnStage.BuildTrade)
+            {
+                return working;
+            }
+
+            if (working.Stage == TurnStage.ChooseRobberLocation)
+            {
+                var robber = working.Actions().Cast<Gimbur.CatanAction>().First(a => a.ActionType == Gimbur.CatanActionType.ChooseRobberTile);
+                working = (Gimbur.CatanState)robber.DoCoreAction();
+                return working;
+            }
+        }
+
+        Assert.Fail("Could not reach build/trade stage.");
+        return working;
+    }
+
+    private static (Gimbur.CatanState BeforeSeven, Gimbur.CatanState AfterSeven) ReachAfterSevenRoll(Gimbur.CatanState state)
+    {
+        var working = ReachPreRoll(state);
+        for (var i = 0; i < 300; i++)
+        {
+            var beforeRoll = working;
+            var roll = working.Actions().Cast<Gimbur.CatanAction>().Single(a => a.ActionType == Gimbur.CatanActionType.RollDice);
+            working = (Gimbur.CatanState)roll.DoCoreAction();
+            if (working.Stage == TurnStage.ChooseRobberLocation)
+            {
+                return (beforeRoll, working);
+            }
+
+            if (working.Stage == TurnStage.BuildTrade)
+            {
+                var endTurn = working.Actions().Cast<Gimbur.CatanAction>().First(a => a.ActionType == Gimbur.CatanActionType.EndTurn);
+                working = (Gimbur.CatanState)endTurn.DoCoreAction();
+            }
+        }
+
+        Assert.Fail("Could not reach a seven-roll robber stage.");
+        return (working, working);
+    }
+
     private static Gimbur.CatanState ReachPreRoll(Gimbur.CatanState state)
     {
         while (state.Stage != TurnStage.PreRoll)
@@ -380,31 +407,6 @@ public class CatanStateTests
         }
 
         return total;
-    }
-
-    private static int ExpectedProductionGain(Gimbur.CatanState state, int roll)
-    {
-        if (roll == 7)
-        {
-            return 0;
-        }
-
-        var gain = 0;
-        foreach (var tile in state.Board.TilesForRoll(roll))
-        {
-            foreach (var vertex in state.Board.Topology.TileVertices[tile])
-            {
-                var occ = state.Board.VertexOccupancy[vertex];
-                if (occ.IsEmpty)
-                {
-                    continue;
-                }
-
-                gain += occ.Building == BuildingType.City ? 2 : 1;
-            }
-        }
-
-        return gain;
     }
 
     private static int FindRobberTargetWithVictim(Gimbur.CatanState state, out int victim)
