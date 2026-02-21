@@ -12,6 +12,9 @@ public sealed class Board
     /// <summary>The initial setup (tile resources, number tokens, port types).</summary>
     public BoardSetup Setup { get; }
 
+    /// <summary>The game configuration (supply limits, victory conditions, etc.).</summary>
+    public GameConfig Config { get; }
+
     // ── Mutable state ───────────────────────────────────────────────
 
     /// <summary>Occupancy of each vertex, indexed by vertex index.</summary>
@@ -39,10 +42,11 @@ public sealed class Board
 
     // ── Constructor ─────────────────────────────────────────────────
 
-    public Board(BoardSetup setup)
+    public Board(BoardSetup setup, GameConfig config)
     {
         Topology = setup.Topology;
         Setup = setup;
+        Config = config;
         VertexOccupancy = new VertexOccupancy[Topology.VertexCount];
         EdgeOccupancy = new EdgeOccupancy[Topology.EdgeCount];
         RobberTile = setup.InitialRobberTile;
@@ -57,11 +61,57 @@ public sealed class Board
     /// </summary>
     public Board Clone()
     {
-        var clone = new Board(Setup);
+        var clone = new Board(Setup, Config);
         Array.Copy(VertexOccupancy, clone.VertexOccupancy, VertexOccupancy.Length);
         Array.Copy(EdgeOccupancy, clone.EdgeOccupancy, EdgeOccupancy.Length);
         clone.RobberTile = RobberTile;
         return clone;
+    }
+
+    // ── Piece counting ──────────────────────────────────────────────
+
+    /// <summary>
+    /// Counts the number of settlements placed by a player on the board.
+    /// </summary>
+    public int SettlementCount(int player)
+    {
+        var count = 0;
+        for (var vi = 0; vi < VertexOccupancy.Length; vi++)
+        {
+            var occ = VertexOccupancy[vi];
+            if (occ.Building == BuildingType.Settlement && occ.Player == player)
+                count++;
+        }
+        return count;
+    }
+
+    /// <summary>
+    /// Counts the number of cities placed by a player on the board.
+    /// </summary>
+    public int CityCount(int player)
+    {
+        var count = 0;
+        for (var vi = 0; vi < VertexOccupancy.Length; vi++)
+        {
+            var occ = VertexOccupancy[vi];
+            if (occ.Building == BuildingType.City && occ.Player == player)
+                count++;
+        }
+        return count;
+    }
+
+    /// <summary>
+    /// Counts the number of roads placed by a player on the board.
+    /// </summary>
+    public int RoadCount(int player)
+    {
+        var count = 0;
+        for (var ei = 0; ei < EdgeOccupancy.Length; ei++)
+        {
+            if (EdgeOccupancy[ei].Player == player)
+                count++;
+        }
+        return count;
     }
 
     // ── Query methods ───────────────────────────────────────────────
@@ -111,12 +161,17 @@ public sealed class Board
     }
 
     /// <summary>
-    /// Returns whether a vertex is available for settlement placement.
-    /// A vertex is available if it is empty and no adjacent vertex has a building.
+    /// Returns whether a vertex is available for settlement placement by the given player.
+    /// A vertex is available if it is empty, no adjacent vertex has a building (distance rule),
+    /// and the player has not reached the settlement supply limit.
     /// </summary>
-    public bool CanPlaceSettlement(int vertexIndex)
+    public bool CanPlaceSettlement(int vertexIndex, int player)
     {
         if (!VertexOccupancy[vertexIndex].IsEmpty)
+            return false;
+
+        // Supply limit.
+        if (SettlementCount(player) >= Config.MaxSettlements)
             return false;
 
         // Distance rule: no building on any adjacent vertex.
@@ -130,20 +185,34 @@ public sealed class Board
 
     /// <summary>
     /// Returns whether a vertex can be upgraded to a city by the given player.
+    /// Requires the player's own settlement at the vertex and the player has not
+    /// reached the city supply limit.
     /// </summary>
     public bool CanUpgradeToCity(int vertexIndex, int player)
     {
         var occ = VertexOccupancy[vertexIndex];
-        return occ.Building == BuildingType.Settlement && occ.Player == player;
+        if (occ.Building != BuildingType.Settlement || occ.Player != player)
+            return false;
+
+        // Supply limit.
+        if (CityCount(player) >= Config.MaxCities)
+            return false;
+
+        return true;
     }
 
     /// <summary>
     /// Returns whether an edge is available for road placement by the given player.
-    /// An edge must be empty and adjacent to the player's existing road or building.
+    /// An edge must be empty, adjacent to the player's existing road or building,
+    /// and the player has not reached the road supply limit.
     /// </summary>
     public bool CanPlaceRoad(int edgeIndex, int player)
     {
         if (!EdgeOccupancy[edgeIndex].IsEmpty)
+            return false;
+
+        // Supply limit.
+        if (RoadCount(player) >= Config.MaxRoads)
             return false;
 
         // Must connect to player's existing network.
