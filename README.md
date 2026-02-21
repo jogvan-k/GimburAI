@@ -71,8 +71,8 @@ The goal is to train a neural network that evaluates board positions (state to w
 
 #### 2d: Greedy AI
 
-- [ ] Heuristic evaluation function (weighted sum of VP, resources, board position, etc.)
-- [ ] Greedy action selection: evaluate each legal action's resulting state, pick highest score
+- [x] Heuristic evaluation function (weighted sum of VP, resources, board position, etc.)
+- [x] Greedy action selection: evaluate each legal action's resulting state, pick highest score
 - [ ] Use as default simulation policy (replaces random legal moves for higher quality rollouts)
 
 #### 2e: TUI for Manual Testing
@@ -171,6 +171,7 @@ dotnet run --project src/Gimbur.Tui
 Startup flow:
 - Choose map topology: `mini` or `standard`
 - Enter player count (validated against selected map config)
+- Choose controller per player: `human` or `greedy`
 
 Rendering notes:
 - ANSI colors are used for resources, ports, and markers
