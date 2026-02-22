@@ -13,6 +13,9 @@ type ICoreState =
     abstract PlayerTurn : Player
     abstract TurnNumber : int
     abstract Actions : unit -> ICoreAction []
+    /// Returns per-player scores (indexed by Player enum value, size >= 5).
+    /// Used by the MCTS rollout to evaluate positions when max depth is reached.
+    abstract Scores : unit -> float []
 
 and ICoreAction =
     abstract Origin : ICoreState

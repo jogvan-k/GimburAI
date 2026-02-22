@@ -29,6 +29,13 @@ type node(playerTurn, turnNumber, value, hash, parent: ICoreState option) =
         member this.Actions() =
             Array.map (fun n -> action (this, n) :> ICoreAction) (Array.ofList _children)
 
+        member _.Scores() =
+            let scores = Array.zeroCreate<float> 5
+            let i = int playerTurn
+            if i > 0 && i < 5 then
+                scores.[i] <- float value
+            scores
+
 and action(origin, node) =
     interface ICoreAction with
         member _.Origin = origin :> ICoreState

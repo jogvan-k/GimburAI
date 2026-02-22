@@ -13,6 +13,11 @@ type terminalState(winner: Player) =
         member _.PlayerTurn = winner
         member _.TurnNumber = 0
         member _.Actions() = Array.empty
+        member _.Scores() =
+            let scores = Array.zeroCreate<float> 5
+            let i = int winner
+            if i > 0 && i < 5 then scores.[i] <- 1.
+            scores
 
 type stochasticRootAction(origin: ICoreState) =
     interface ICoreAction with
@@ -33,6 +38,7 @@ type rootState() =
         member _.TurnNumber = 0
         member this.Actions() =
             [| stochasticRootAction(this :> ICoreState) :> ICoreAction |]
+        member _.Scores() = Array.zeroCreate<float> 5
 
 [<TestFixture>]
 type StateTest() =
@@ -73,7 +79,22 @@ type StateTest() =
         |> should (equalWithin 0.0000001) 0.01
 
     [<Test>]
-    member _.StochasticSimulation_UsesWeightedAverage() =
-        let result = simulation (State(rootState() :> ICoreState))
-        result.[int Player.Player1] |> should (equalWithin 0.0000001) 0.25
-        result.[int Player.Player2] |> should (equalWithin 0.0000001) 0.75
+    member _.StochasticSimulation_SamplesOutcome() =
+        // Each simulation samples a single stochastic outcome. Over many runs
+        // the distribution should converge to the expected probabilities
+        // (P1=0.25, P2=0.75). A single call returns a one-hot outcome.
+        let mutable p1Wins = 0.
+        let mutable p2Wins = 0.
+        let trials = 1000
+
+        for _ in 1 .. trials do
+            let result = simulation defaultMaxRolloutDepth (State(rootState() :> ICoreState))
+            p1Wins <- p1Wins + result.[int Player.Player1]
+            p2Wins <- p2Wins + result.[int Player.Player2]
+
+        let p1Rate = p1Wins / float trials
+        let p2Rate = p2Wins / float trials
+
+        // With 1000 trials, rates should be within ~0.05 of expected values.
+        p1Rate |> should (equalWithin 0.1) 0.25
+        p2Rate |> should (equalWithin 0.1) 0.75
