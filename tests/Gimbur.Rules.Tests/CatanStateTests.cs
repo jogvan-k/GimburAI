@@ -128,7 +128,7 @@ public class CatanStateTests
         var state = ReachPreRoll(new Gimbur.CatanState(GameConfig.Standard, 3, new Random(42)));
         var rollAction = state.Actions()
             .Cast<Gimbur.CatanAction>()
-            .Single(a => a.ActionType == Gimbur.CatanActionType.RollDice);
+            .Single(a => a is Gimbur.RollDiceAction);
         var next = (Gimbur.CatanState)rollAction.DoCoreAction();
 
         Assert.That(next.Stage is TurnStage.ChooseRobberLocation or TurnStage.BuildTrade, Is.True);
@@ -223,17 +223,17 @@ public class CatanStateTests
         var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Standard, 3, serialized);
 
         var actions = loaded.Actions().Cast<Gimbur.CatanAction>().ToArray();
-        Assert.That(actions.Any(a => a.ActionType == Gimbur.CatanActionType.EndTurn), Is.True);
-        Assert.That(actions.Any(a => a.ActionType == Gimbur.CatanActionType.BankTrade), Is.True);
-        Assert.That(actions.Any(a => a.ActionType == Gimbur.CatanActionType.PlaceRoad), Is.True);
+        Assert.That(actions.Any(a => a is Gimbur.EndTurnAction), Is.True);
+        Assert.That(actions.Any(a => a is Gimbur.BankTradeAction), Is.True);
+        Assert.That(actions.Any(a => a is Gimbur.PlaceRoadAction), Is.True);
         Assert.That(
-            actions.Any(a => a.ActionType is Gimbur.CatanActionType.PlaceSettlement or Gimbur.CatanActionType.BuildCity),
+            actions.Any(a => a is Gimbur.PlaceSettlementAction or Gimbur.BuildCityAction),
             Is.True);
-        Assert.That(actions.Any(a => a.ActionType == Gimbur.CatanActionType.BuyDevCard), Is.True);
-        Assert.That(actions.Any(a => a.ActionType == Gimbur.CatanActionType.PlayMonopoly), Is.True);
-        Assert.That(actions.Any(a => a.ActionType == Gimbur.CatanActionType.PlayYearOfPlenty), Is.True);
-        Assert.That(actions.Any(a => a.ActionType == Gimbur.CatanActionType.PlayRoadBuilding), Is.True);
-        Assert.That(actions.Any(a => a.ActionType == Gimbur.CatanActionType.PlayKnight), Is.True);
+        Assert.That(actions.Any(a => a is Gimbur.BuyDevCardAction), Is.True);
+        Assert.That(actions.Any(a => a is Gimbur.PlayMonopolyAction), Is.True);
+        Assert.That(actions.Any(a => a is Gimbur.PlayYearOfPlentyAction), Is.True);
+        Assert.That(actions.Any(a => a is Gimbur.PlayRoadBuildingAction), Is.True);
+        Assert.That(actions.Any(a => a is Gimbur.PlayKnightAction), Is.True);
     }
 
     [Test]
@@ -254,21 +254,21 @@ public class CatanStateTests
         serialized = SetDevCard(serialized, buildTrade, current, DevCardType.YearOfPlenty, GameConfig.Mini.DevCardCounts[DevCardType.YearOfPlenty]);
 
         var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Mini, 2, serialized);
-        var buyKnight = loaded.Actions().Cast<Gimbur.CatanAction>().Single(a => a.ActionType == Gimbur.CatanActionType.BuyDevCard);
+        var buyKnight = loaded.Actions().Cast<Gimbur.CatanAction>().Single(a => a is Gimbur.BuyDevCardAction);
         var afterBuy = (Gimbur.CatanState)buyKnight.DoCoreAction();
 
-        Assert.That(afterBuy.Actions().Cast<Gimbur.CatanAction>().Any(a => a.ActionType == Gimbur.CatanActionType.PlayKnight), Is.False);
+        Assert.That(afterBuy.Actions().Cast<Gimbur.CatanAction>().Any(a => a is Gimbur.PlayKnightAction), Is.False);
 
-        var endTurnP1 = afterBuy.Actions().Cast<Gimbur.CatanAction>().First(a => a.ActionType == Gimbur.CatanActionType.EndTurn);
+        var endTurnP1 = afterBuy.Actions().Cast<Gimbur.CatanAction>().First(a => a is Gimbur.EndTurnAction);
         var p2PreRoll = (Gimbur.CatanState)endTurnP1.DoCoreAction();
-        var p2Roll = p2PreRoll.Actions().Cast<Gimbur.CatanAction>().Single(a => a.ActionType == Gimbur.CatanActionType.RollDice);
+        var p2Roll = p2PreRoll.Actions().Cast<Gimbur.CatanAction>().Single(a => a is Gimbur.RollDiceAction);
         var p2BuildTrade = ResolveRobberStages((Gimbur.CatanState)p2Roll.DoCoreAction());
-        var endTurnP2 = p2BuildTrade.Actions().Cast<Gimbur.CatanAction>().First(a => a.ActionType == Gimbur.CatanActionType.EndTurn);
+        var endTurnP2 = p2BuildTrade.Actions().Cast<Gimbur.CatanAction>().First(a => a is Gimbur.EndTurnAction);
         var p1PreRollAgain = (Gimbur.CatanState)endTurnP2.DoCoreAction();
-        var p1RollAgain = p1PreRollAgain.Actions().Cast<Gimbur.CatanAction>().Single(a => a.ActionType == Gimbur.CatanActionType.RollDice);
+        var p1RollAgain = p1PreRollAgain.Actions().Cast<Gimbur.CatanAction>().Single(a => a is Gimbur.RollDiceAction);
         var p1BuildTradeAgain = ResolveRobberStages((Gimbur.CatanState)p1RollAgain.DoCoreAction());
 
-        Assert.That(p1BuildTradeAgain.Actions().Cast<Gimbur.CatanAction>().Any(a => a.ActionType == Gimbur.CatanActionType.PlayKnight), Is.True);
+        Assert.That(p1BuildTradeAgain.Actions().Cast<Gimbur.CatanAction>().Any(a => a is Gimbur.PlayKnightAction), Is.True);
     }
 
     [Test]
@@ -283,14 +283,14 @@ public class CatanStateTests
 
         var knightActions = loaded.Actions()
             .Cast<Gimbur.CatanAction>()
-            .Where(a => a.ActionType == Gimbur.CatanActionType.PlayKnight)
+            .Where(a => a is Gimbur.PlayKnightAction)
             .ToArray();
         Assert.That(knightActions.Length, Is.EqualTo(1));
         Assert.That(knightActions[0].Arg1, Is.EqualTo(0));
 
         var afterKnight = (Gimbur.CatanState)knightActions[0].DoCoreAction();
         Assert.That(afterKnight.Stage, Is.EqualTo(TurnStage.ChooseRobberLocation));
-        Assert.That(afterKnight.Actions().Cast<Gimbur.CatanAction>().All(a => a.ActionType == Gimbur.CatanActionType.ChooseRobberTile), Is.True);
+        Assert.That(afterKnight.Actions().Cast<Gimbur.CatanAction>().All(a => a is Gimbur.ChooseRobberTileAction), Is.True);
     }
 
     [Test]
@@ -306,7 +306,7 @@ public class CatanStateTests
             serializedCandidate = SetDevCard(serializedCandidate, buildTradeCandidate, currentCandidate, DevCardType.RoadBuilding, 1);
             var loadedCandidate = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Mini, 2, serializedCandidate);
 
-            if (loadedCandidate.Actions().Cast<Gimbur.CatanAction>().Any(a => a.ActionType == Gimbur.CatanActionType.PlayRoadBuilding))
+            if (loadedCandidate.Actions().Cast<Gimbur.CatanAction>().Any(a => a is Gimbur.PlayRoadBuildingAction))
             {
                 buildTrade = buildTradeCandidate;
                 break;
@@ -322,24 +322,24 @@ public class CatanStateTests
 
         var playRoadBuilding = loaded.Actions()
             .Cast<Gimbur.CatanAction>()
-            .Single(a => a.ActionType == Gimbur.CatanActionType.PlayRoadBuilding);
+            .Single(a => a is Gimbur.PlayRoadBuildingAction);
         var pending2 = (Gimbur.CatanState)playRoadBuilding.DoCoreAction();
         Assert.That(pending2.PendingRoadBuildingPlacementsFor(current), Is.EqualTo(2));
         Assert.That(
-            pending2.Actions().Cast<Gimbur.CatanAction>().All(a => a.ActionType == Gimbur.CatanActionType.PlaceRoad),
+            pending2.Actions().Cast<Gimbur.CatanAction>().All(a => a is Gimbur.PlaceRoadAction),
             Is.True);
 
         var firstRoad = pending2.Actions().Cast<Gimbur.CatanAction>().First();
         var pending1 = (Gimbur.CatanState)firstRoad.DoCoreAction();
         Assert.That(pending1.PendingRoadBuildingPlacementsFor(current), Is.EqualTo(1));
         Assert.That(
-            pending1.Actions().Cast<Gimbur.CatanAction>().All(a => a.ActionType == Gimbur.CatanActionType.PlaceRoad),
+            pending1.Actions().Cast<Gimbur.CatanAction>().All(a => a is Gimbur.PlaceRoadAction),
             Is.True);
 
         var secondRoad = pending1.Actions().Cast<Gimbur.CatanAction>().First();
         var backToBuildTrade = (Gimbur.CatanState)secondRoad.DoCoreAction();
         Assert.That(backToBuildTrade.PendingRoadBuildingPlacementsFor(current), Is.EqualTo(0));
-        Assert.That(backToBuildTrade.Actions().Cast<Gimbur.CatanAction>().Any(a => a.ActionType == Gimbur.CatanActionType.EndTurn), Is.True);
+        Assert.That(backToBuildTrade.Actions().Cast<Gimbur.CatanAction>().Any(a => a is Gimbur.EndTurnAction), Is.True);
     }
 
     [Test]
@@ -371,7 +371,7 @@ public class CatanStateTests
 
         Assert.That(next.Stage, Is.EqualTo(TurnStage.ChooseRobberVictim));
         var victimActions = next.Actions().Cast<Gimbur.CatanAction>()
-            .Where(a => a.ActionType == Gimbur.CatanActionType.ChooseRobberVictim)
+            .Where(a => a is Gimbur.ChooseRobberVictimAction)
             .ToArray();
         Assert.That(victimActions.Length, Is.GreaterThanOrEqualTo(2));
     }
@@ -381,7 +381,7 @@ public class CatanStateTests
         var working = ReachPreRoll(state);
         for (var i = 0; i < 200; i++)
         {
-            var roll = working.Actions().Cast<Gimbur.CatanAction>().Single(a => a.ActionType == Gimbur.CatanActionType.RollDice);
+            var roll = working.Actions().Cast<Gimbur.CatanAction>().Single(a => a is Gimbur.RollDiceAction);
             working = (Gimbur.CatanState)roll.DoCoreAction();
             if (working.Stage == TurnStage.BuildTrade)
             {
@@ -405,7 +405,7 @@ public class CatanStateTests
         for (var i = 0; i < 300; i++)
         {
             var beforeRoll = working;
-            var roll = working.Actions().Cast<Gimbur.CatanAction>().Single(a => a.ActionType == Gimbur.CatanActionType.RollDice);
+            var roll = working.Actions().Cast<Gimbur.CatanAction>().Single(a => a is Gimbur.RollDiceAction);
             working = (Gimbur.CatanState)roll.DoCoreAction();
             if (working.Stage == TurnStage.ChooseRobberLocation)
             {
@@ -414,7 +414,7 @@ public class CatanStateTests
 
             if (working.Stage == TurnStage.BuildTrade)
             {
-                var endTurn = working.Actions().Cast<Gimbur.CatanAction>().First(a => a.ActionType == Gimbur.CatanActionType.EndTurn);
+                var endTurn = working.Actions().Cast<Gimbur.CatanAction>().First(a => a is Gimbur.EndTurnAction);
                 working = (Gimbur.CatanState)endTurn.DoCoreAction();
             }
         }

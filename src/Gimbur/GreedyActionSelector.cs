@@ -93,11 +93,11 @@ public sealed class GreedyActionSelector
 
     private static double ActionHeuristic(CatanState state, CatanAction action, CatanState next, int player)
     {
-        return action.ActionType switch
+        return action switch
         {
-            CatanActionType.PlaceSettlement => ScoreSettlementPlacement(state, action.Arg1),
-            CatanActionType.PlaceRoad => ScoreRoadPlacement(state, next, action.Arg1, player),
-            CatanActionType.ChooseRobberTile => ScoreRobberPlacement(state, next, action.Arg1, player),
+            PlaceSettlementAction => ScoreSettlementPlacement(state, action.Arg1),
+            PlaceRoadAction => ScoreRoadPlacement(state, next, action.Arg1, player),
+            ChooseRobberTileAction => ScoreRobberPlacement(state, next, action.Arg1, player),
             _ => 0.0,
         };
     }

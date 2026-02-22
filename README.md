@@ -68,7 +68,7 @@ The goal is to train a neural network that evaluates board positions (state to w
 - [x] Largest army tracking
 - [x] Victory point calculation and win detection (10 VP)
 - [x] Legal action enumeration
-- [ ] Remove temporary `CatanActionType` enum and migrate all consumers to pure action-type polymorphism
+- [x] Remove temporary `CatanActionType` enum and migrate all consumers to pure action-type polymorphism
 
 #### 2d: Greedy AI
 
