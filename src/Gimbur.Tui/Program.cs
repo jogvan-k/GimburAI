@@ -144,7 +144,7 @@ internal static class Program
     {
         var legal = state.Actions()
             .OfType<CatanAction>()
-            .Where(a => a.ActionType == CatanActionType.PlaceSettlement)
+            .Where(a => a is PlaceSettlementAction)
             .Select(a => a.TargetIndex)
             .ToArray();
 
@@ -178,7 +178,7 @@ internal static class Program
     {
         var legal = state.Actions()
             .OfType<CatanAction>()
-            .Where(a => a.ActionType == CatanActionType.ChooseRobberTile)
+            .Where(a => a is ChooseRobberTileAction)
             .Select(a => a.Arg1)
             .ToArray();
 
@@ -212,7 +212,7 @@ internal static class Program
     {
         var victimActions = state.Actions()
             .OfType<CatanAction>()
-            .Where(a => a.ActionType == CatanActionType.ChooseRobberVictim)
+            .Where(a => a is ChooseRobberVictimAction)
             .ToArray();
         if (victimActions.Length == 0)
         {
@@ -388,7 +388,7 @@ internal static class Program
         var entries = new List<MenuEntry>();
         if (context == ActionMenuContext.Trade)
         {
-            foreach (var action in actions.Where(a => a.ActionType == CatanActionType.BankTrade))
+            foreach (var action in actions.Where(a => a is BankTradeAction))
             {
                 entries.Add(new MenuEntry(DescribeAction(state, action), ActionSelectionMode.Direct, action));
             }
@@ -399,7 +399,7 @@ internal static class Program
 
         if (context == ActionMenuContext.YearOfPlenty)
         {
-            foreach (var action in actions.Where(a => a.ActionType == CatanActionType.PlayYearOfPlenty))
+            foreach (var action in actions.Where(a => a is PlayYearOfPlentyAction))
             {
                 entries.Add(new MenuEntry(DescribeAction(state, action), ActionSelectionMode.Direct, action));
             }
@@ -408,57 +408,57 @@ internal static class Program
             return entries;
         }
 
-        if (actions.Any(a => a.ActionType == CatanActionType.RollDice))
+        if (actions.Any(a => a is RollDiceAction))
         {
             entries.Add(new MenuEntry("Roll dice", ActionSelectionMode.RollDice, null));
         }
 
-        if (actions.Any(a => a.ActionType == CatanActionType.PlaceSettlement))
+        if (actions.Any(a => a is PlaceSettlementAction))
         {
             entries.Add(new MenuEntry("Place settlement", ActionSelectionMode.PlaceSettlement, null));
         }
 
-        if (actions.Any(a => a.ActionType == CatanActionType.PlaceRoad))
+        if (actions.Any(a => a is PlaceRoadAction))
         {
             entries.Add(new MenuEntry("Place road", ActionSelectionMode.PlaceRoad, null));
         }
 
-        if (actions.Any(a => a.ActionType == CatanActionType.BuildCity))
+        if (actions.Any(a => a is BuildCityAction))
         {
             entries.Add(new MenuEntry("Place city", ActionSelectionMode.PlaceCity, null));
         }
 
-        if (actions.Any(a => a.ActionType == CatanActionType.ChooseRobberTile))
+        if (actions.Any(a => a is ChooseRobberTileAction))
         {
             entries.Add(new MenuEntry("Place robber", ActionSelectionMode.PlaceRobber, null));
         }
 
-        if (actions.Any(a => a.ActionType == CatanActionType.BuyDevCard))
+        if (actions.Any(a => a is BuyDevCardAction))
         {
             entries.Add(new MenuEntry("Buy dev card", ActionSelectionMode.BuyDevCardRandom, null));
         }
 
-        if (actions.Any(a => a.ActionType == CatanActionType.BankTrade))
+        if (actions.Any(a => a is BankTradeAction))
         {
             entries.Add(new MenuEntry("Trade", ActionSelectionMode.OpenTradeMenu, null));
         }
 
-        if (actions.Any(a => a.ActionType == CatanActionType.PlayYearOfPlenty))
+        if (actions.Any(a => a is PlayYearOfPlentyAction))
         {
             entries.Add(new MenuEntry("Year of Plenty", ActionSelectionMode.OpenYearOfPlentyMenu, null));
         }
 
         foreach (var action in actions)
         {
-            if (action.ActionType is
-                CatanActionType.RollDice or
-                CatanActionType.BuyDevCard or
-                CatanActionType.BankTrade or
-                CatanActionType.PlayYearOfPlenty or
-                CatanActionType.PlaceSettlement or
-                CatanActionType.PlaceRoad or
-                CatanActionType.BuildCity or
-                CatanActionType.ChooseRobberTile)
+            if (action is
+                RollDiceAction or
+                BuyDevCardAction or
+                BankTradeAction or
+                PlayYearOfPlentyAction or
+                PlaceSettlementAction or
+                PlaceRoadAction or
+                BuildCityAction or
+                ChooseRobberTileAction)
             {
                 continue;
             }
@@ -482,7 +482,7 @@ internal static class Program
     {
         var action = state.Actions()
             .OfType<CatanAction>()
-            .FirstOrDefault(a => a.ActionType == CatanActionType.RollDice);
+            .FirstOrDefault(a => a is RollDiceAction);
 
         if (action is null)
         {
@@ -497,7 +497,7 @@ internal static class Program
     {
         var action = state.Actions()
             .OfType<CatanAction>()
-            .FirstOrDefault(a => a.ActionType == CatanActionType.BuyDevCard);
+            .FirstOrDefault(a => a is BuyDevCardAction);
 
         if (action is null)
         {
@@ -509,19 +509,19 @@ internal static class Program
 
     private static string DescribeAction(CatanState state, CatanAction action)
     {
-        return action.ActionType switch
+        return action switch
         {
-            CatanActionType.RollDice => "Roll dice",
-            CatanActionType.BuildCity => $"Build city at vertex {action.Arg1}",
-            CatanActionType.ChooseRobberVictim => $"Rob player {action.Arg1}",
-            CatanActionType.BankTrade => $"Trade {state.Board.TradeRatio(state.CurrentPlayer, (ResourceType)action.Arg1)} {(ResourceType)action.Arg1} -> {(ResourceType)action.Arg2}",
-            CatanActionType.BuyDevCard => "Buy dev card",
-            CatanActionType.PlayKnight => "Play knight",
-            CatanActionType.PlayRoadBuilding => "Play road building",
-            CatanActionType.PlayMonopoly => $"Play monopoly on {(ResourceType)action.Arg1}",
-            CatanActionType.PlayYearOfPlenty => $"Play year of plenty: {(ResourceType)action.Arg1} + {(ResourceType)action.Arg2}",
-            CatanActionType.EndTurn => "End turn",
-            _ => action.ActionType.ToString(),
+            RollDiceAction => "Roll dice",
+            BuildCityAction => $"Build city at vertex {action.Arg1}",
+            ChooseRobberVictimAction => $"Rob player {action.Arg1}",
+            BankTradeAction => $"Trade {state.Board.TradeRatio(state.CurrentPlayer, (ResourceType)action.Arg1)} {(ResourceType)action.Arg1} -> {(ResourceType)action.Arg2}",
+            BuyDevCardAction => "Buy dev card",
+            PlayKnightAction => "Play knight",
+            PlayRoadBuildingAction => "Play road building",
+            PlayMonopolyAction => $"Play monopoly on {(ResourceType)action.Arg1}",
+            PlayYearOfPlentyAction => $"Play year of plenty: {(ResourceType)action.Arg1} + {(ResourceType)action.Arg2}",
+            EndTurnAction => "End turn",
+            _ => action.GetType().Name,
         };
     }
 
@@ -529,7 +529,7 @@ internal static class Program
     {
         var legal = state.Actions()
             .OfType<CatanAction>()
-            .Where(a => a.ActionType == CatanActionType.PlaceRoad)
+            .Where(a => a is PlaceRoadAction)
             .Select(a => a.TargetIndex)
             .ToArray();
 
@@ -563,7 +563,7 @@ internal static class Program
     {
         var legal = state.Actions()
             .OfType<CatanAction>()
-            .Where(a => a.ActionType == CatanActionType.BuildCity)
+            .Where(a => a is BuildCityAction)
             .Select(a => a.Arg1)
             .ToArray();
 

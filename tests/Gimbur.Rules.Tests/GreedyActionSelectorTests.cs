@@ -62,7 +62,7 @@ public class GreedyActionSelectorTests
 
             var pick = greedy.ChooseAction(state, rng);
             Assert.That(pick, Is.Not.Null);
-            Assert.That(pick!.ActionType, Is.EqualTo(Gimbur.CatanActionType.PlaceSettlement));
+            Assert.That(pick, Is.InstanceOf<Gimbur.PlaceSettlementAction>());
             Assert.That(state.Board.Topology.VertexTiles[pick.Arg1].Length, Is.GreaterThanOrEqualTo(2));
             return;
         }
