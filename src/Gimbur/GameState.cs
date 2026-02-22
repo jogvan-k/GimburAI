@@ -18,6 +18,7 @@ public enum CatanActionType : byte
     PlayMonopoly = 9,
     PlayYearOfPlenty = 10,
     EndTurn = 11,
+    ChooseRobberVictim = 12,
 }
 
 public abstract class CatanAction : ICoreAction
@@ -127,6 +128,16 @@ public sealed class ChooseRobberTileAction(CatanState origin, int tileIndex) : C
     public override ICoreState DoCoreAction() => OriginState.Apply(this);
     public override Tuple<ICoreState, double>[] Outcomes() =>
         [.. OriginState.ChooseRobberTileOutcomes(TileIndex).Select(x => Tuple.Create((ICoreState)x.State, x.Probability))];
+}
+
+public sealed class ChooseRobberVictimAction(CatanState origin, int victimPlayer) : CatanStochasticAction(origin)
+{
+    public int VictimPlayer { get; } = victimPlayer;
+    public override int Arg1 => VictimPlayer;
+    public override CatanActionType ActionType => CatanActionType.ChooseRobberVictim;
+    public override ICoreState DoCoreAction() => OriginState.Apply(this);
+    public override Tuple<ICoreState, double>[] Outcomes() =>
+        [.. OriginState.ChooseRobberVictimOutcomes(VictimPlayer).Select(x => Tuple.Create((ICoreState)x.State, x.Probability))];
 }
 
 public sealed class BuildCityAction(CatanState origin, int vertexIndex) : CatanDeterministicAction(origin)
@@ -423,26 +434,49 @@ public sealed class CatanState : ICoreState
             return [ (ApplyChooseRobberTileNoSteal(tileIndex), 1.0) ];
         }
 
-        var outcomes = new List<(CatanState State, double Probability)>();
-        var victimChance = 1.0 / victims.Count;
-        foreach (var victim in victims)
+        if (victims.Count > 1)
         {
-            var victimTotal = TotalResourceCards(victim);
-            if (victimTotal <= 0)
+            return [ (ApplyChooseRobberTileAwaitVictim(tileIndex), 1.0) ];
+        }
+
+        var victim = victims[0];
+        return ChooseRobberTileVictimStealOutcomes(tileIndex, victim);
+    }
+
+    internal IReadOnlyList<(CatanState State, double Probability)> ChooseRobberVictimOutcomes(int victimPlayer)
+    {
+        if (Stage != TurnStage.ChooseRobberVictim)
+        {
+            throw new InvalidOperationException("Robber victim choice is not currently allowed.");
+        }
+
+        if (!LegalRobberVictims().Contains(victimPlayer))
+        {
+            throw new InvalidOperationException($"Player {victimPlayer} is not a legal robber victim.");
+        }
+
+        return ChooseRobberTileVictimStealOutcomes(Board.RobberTile, victimPlayer);
+    }
+
+    private IReadOnlyList<(CatanState State, double Probability)> ChooseRobberTileVictimStealOutcomes(int tileIndex, int victim)
+    {
+        var outcomes = new List<(CatanState State, double Probability)>();
+        var victimTotal = TotalResourceCards(victim);
+        if (victimTotal <= 0)
+        {
+            outcomes.Add((ApplyChooseRobberTileNoSteal(tileIndex), 1.0));
+            return outcomes;
+        }
+
+        for (var i = 0; i < ResourceCount; i++)
+        {
+            var count = _resources[victim, i];
+            if (count <= 0)
             {
                 continue;
             }
 
-            for (var i = 0; i < ResourceCount; i++)
-            {
-                var count = _resources[victim, i];
-                if (count <= 0)
-                {
-                    continue;
-                }
-
-                outcomes.Add((ApplyChooseRobberTileSteal(tileIndex, victim, i), victimChance * (count / (double)victimTotal)));
-            }
+            outcomes.Add((ApplyChooseRobberTileSteal(tileIndex, victim, i), count / (double)victimTotal));
         }
 
         return outcomes;
@@ -502,6 +536,13 @@ public sealed class CatanState : ICoreState
                     actions.Add(new ChooseRobberTileAction(this, tileIndex));
                 }
 
+                break;
+
+            case TurnStage.ChooseRobberVictim:
+                foreach (var victim in LegalRobberVictims())
+                {
+                    actions.Add(new ChooseRobberVictimAction(this, victim));
+                }
                 break;
 
             case TurnStage.BuildTrade:
@@ -566,6 +607,7 @@ public sealed class CatanState : ICoreState
             PlaceRoadAction a => ApplyRoad(a.EdgeIndex),
             RollDiceAction => ApplyRollDice(),
             ChooseRobberTileAction a => ApplyChooseRobberTile(a.TileIndex),
+            ChooseRobberVictimAction a => ApplyChooseRobberVictim(a.VictimPlayer),
             BuildCityAction a => ApplyBuildCity(a.VertexIndex),
             BankTradeAction a => ApplyBankTrade(a.Give, a.Receive),
             BuyDevCardAction => ApplyBuyDevCard(),
@@ -758,7 +800,7 @@ public sealed class CatanState : ICoreState
         board.RobberTile = robberTile;
 
         var pendingSettlement = InferPendingSettlementVertex(board, currentPlayer, stage);
-        var turnNumber = stage is TurnStage.PreRoll or TurnStage.ChooseRobberLocation or TurnStage.BuildTrade ? 1 : 0;
+        var turnNumber = stage is TurnStage.PreRoll or TurnStage.ChooseRobberLocation or TurnStage.ChooseRobberVictim or TurnStage.BuildTrade ? 1 : 0;
 
         var deck = new int[DevCardCount];
         foreach (var pair in config.DevCardCounts)
@@ -1070,12 +1112,12 @@ public sealed class CatanState : ICoreState
             return ApplyChooseRobberTileNoSteal(tileIndex);
         }
 
-        int victim;
-        lock (RngLock)
+        if (victims.Count > 1)
         {
-            victim = victims[SharedRng.Next(victims.Count)];
+            return ApplyChooseRobberTileAwaitVictim(tileIndex);
         }
 
+        var victim = victims[0];
         var victimCardCount = TotalResourceCards(victim);
         if (victimCardCount <= 0)
         {
@@ -1099,6 +1141,43 @@ public sealed class CatanState : ICoreState
         }
 
         return ApplyChooseRobberTileNoSteal(tileIndex);
+    }
+
+    private CatanState ApplyChooseRobberVictim(int victimPlayer)
+    {
+        if (Stage != TurnStage.ChooseRobberVictim)
+        {
+            throw new InvalidOperationException("Robber victim choice is not currently allowed.");
+        }
+
+        if (!LegalRobberVictims().Contains(victimPlayer))
+        {
+            throw new InvalidOperationException($"Player {victimPlayer} is not a legal robber victim.");
+        }
+
+        var victimCardCount = TotalResourceCards(victimPlayer);
+        if (victimCardCount <= 0)
+        {
+            return ApplyChooseRobberTileNoSteal(Board.RobberTile);
+        }
+
+        int pick;
+        lock (RngLock)
+        {
+            pick = SharedRng.Next(victimCardCount);
+        }
+
+        var running = pick;
+        for (var i = 0; i < ResourceCount; i++)
+        {
+            running -= _resources[victimPlayer, i];
+            if (running < 0)
+            {
+                return ApplyChooseRobberTileSteal(Board.RobberTile, victimPlayer, i);
+            }
+        }
+
+        return ApplyChooseRobberTileNoSteal(Board.RobberTile);
     }
 
     private CatanState ApplyBuildCity(int vertexIndex)
@@ -1394,6 +1473,16 @@ public sealed class CatanState : ICoreState
         return legal;
     }
 
+    private IReadOnlyList<int> LegalRobberVictims()
+    {
+        if (Stage != TurnStage.ChooseRobberVictim)
+        {
+            return [];
+        }
+
+        return RobberVictims(Board.RobberTile);
+    }
+
     private IReadOnlyList<(ResourceType Give, ResourceType Receive)> LegalBankTrades()
     {
         var legal = new List<(ResourceType Give, ResourceType Receive)>();
@@ -1567,6 +1656,14 @@ public sealed class CatanState : ICoreState
         var next = Clone();
         next.Board.RobberTile = tileIndex;
         next.Stage = TurnStage.BuildTrade;
+        return next;
+    }
+
+    private CatanState ApplyChooseRobberTileAwaitVictim(int tileIndex)
+    {
+        var next = Clone();
+        next.Board.RobberTile = tileIndex;
+        next.Stage = TurnStage.ChooseRobberVictim;
         return next;
     }
 

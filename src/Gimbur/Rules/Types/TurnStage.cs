@@ -24,6 +24,9 @@ public enum TurnStage : byte
     /// <summary>Choose robber location (after rolling 7 or playing knight).</summary>
     ChooseRobberLocation = 5,
 
+    /// <summary>Choose robber victim (only when multiple adjacent opponents can be robbed).</summary>
+    ChooseRobberVictim = 6,
+
     /// <summary>Build and trade phase.</summary>
-    BuildTrade = 6,
+    BuildTrade = 7,
 }
