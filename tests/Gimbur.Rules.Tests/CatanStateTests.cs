@@ -262,21 +262,11 @@ public class CatanStateTests
         var endTurnP1 = afterBuy.Actions().Cast<Gimbur.CatanAction>().First(a => a.ActionType == Gimbur.CatanActionType.EndTurn);
         var p2PreRoll = (Gimbur.CatanState)endTurnP1.DoCoreAction();
         var p2Roll = p2PreRoll.Actions().Cast<Gimbur.CatanAction>().Single(a => a.ActionType == Gimbur.CatanActionType.RollDice);
-        var p2BuildTrade = (Gimbur.CatanState)p2Roll.DoCoreAction();
-        if (p2BuildTrade.Stage == TurnStage.ChooseRobberLocation)
-        {
-            var p2Robber = p2BuildTrade.Actions().Cast<Gimbur.CatanAction>().First(a => a.ActionType == Gimbur.CatanActionType.ChooseRobberTile);
-            p2BuildTrade = (Gimbur.CatanState)p2Robber.DoCoreAction();
-        }
+        var p2BuildTrade = ResolveRobberStages((Gimbur.CatanState)p2Roll.DoCoreAction());
         var endTurnP2 = p2BuildTrade.Actions().Cast<Gimbur.CatanAction>().First(a => a.ActionType == Gimbur.CatanActionType.EndTurn);
         var p1PreRollAgain = (Gimbur.CatanState)endTurnP2.DoCoreAction();
         var p1RollAgain = p1PreRollAgain.Actions().Cast<Gimbur.CatanAction>().Single(a => a.ActionType == Gimbur.CatanActionType.RollDice);
-        var p1BuildTradeAgain = (Gimbur.CatanState)p1RollAgain.DoCoreAction();
-        if (p1BuildTradeAgain.Stage == TurnStage.ChooseRobberLocation)
-        {
-            var p1Robber = p1BuildTradeAgain.Actions().Cast<Gimbur.CatanAction>().First(a => a.ActionType == Gimbur.CatanActionType.ChooseRobberTile);
-            p1BuildTradeAgain = (Gimbur.CatanState)p1Robber.DoCoreAction();
-        }
+        var p1BuildTradeAgain = ResolveRobberStages((Gimbur.CatanState)p1RollAgain.DoCoreAction());
 
         Assert.That(p1BuildTradeAgain.Actions().Cast<Gimbur.CatanAction>().Any(a => a.ActionType == Gimbur.CatanActionType.PlayKnight), Is.True);
     }
@@ -352,6 +342,40 @@ public class CatanStateTests
         Assert.That(backToBuildTrade.Actions().Cast<Gimbur.CatanAction>().Any(a => a.ActionType == Gimbur.CatanActionType.EndTurn), Is.True);
     }
 
+    [Test]
+    public void RobberPlacement_WithMultipleVictims_TransitionsToChooseVictimStage()
+    {
+        var state = ReachPreRoll(new Gimbur.CatanState(GameConfig.Standard, 3, new Random(123)));
+        var (_, robberState) = ReachAfterSevenRoll(state);
+        var targetTile = FindRobberTargetWithMultipleVictims(robberState);
+        Assert.That(targetTile, Is.GreaterThanOrEqualTo(0));
+
+        var serialized = robberState.SerializeHumanReadable();
+        for (var player = 1; player <= robberState.PlayerCount; player++)
+        {
+            if (player == robberState.CurrentPlayer)
+            {
+                continue;
+            }
+
+            serialized = SetResource(serialized, robberState, player, ResourceType.Brick, 1);
+            serialized = SetResource(serialized, robberState, player, ResourceType.Wood, 0);
+            serialized = SetResource(serialized, robberState, player, ResourceType.Sheep, 0);
+            serialized = SetResource(serialized, robberState, player, ResourceType.Wheat, 0);
+            serialized = SetResource(serialized, robberState, player, ResourceType.Ore, 0);
+        }
+
+        var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Standard, 3, serialized);
+        var place = new Gimbur.ChooseRobberTileAction(loaded, targetTile);
+        var next = (Gimbur.CatanState)place.DoCoreAction();
+
+        Assert.That(next.Stage, Is.EqualTo(TurnStage.ChooseRobberVictim));
+        var victimActions = next.Actions().Cast<Gimbur.CatanAction>()
+            .Where(a => a.ActionType == Gimbur.CatanActionType.ChooseRobberVictim)
+            .ToArray();
+        Assert.That(victimActions.Length, Is.GreaterThanOrEqualTo(2));
+    }
+
     private static Gimbur.CatanState ReachBuildTrade(Gimbur.CatanState state)
     {
         var working = ReachPreRoll(state);
@@ -364,10 +388,9 @@ public class CatanStateTests
                 return working;
             }
 
-            if (working.Stage == TurnStage.ChooseRobberLocation)
+            if (working.Stage is TurnStage.ChooseRobberLocation or TurnStage.ChooseRobberVictim)
             {
-                var robber = working.Actions().Cast<Gimbur.CatanAction>().First(a => a.ActionType == Gimbur.CatanActionType.ChooseRobberTile);
-                working = (Gimbur.CatanState)robber.DoCoreAction();
+                working = ResolveRobberStages(working);
                 return working;
             }
         }
@@ -398,6 +421,18 @@ public class CatanStateTests
 
         Assert.Fail("Could not reach a seven-roll robber stage.");
         return (working, working);
+    }
+
+    private static Gimbur.CatanState ResolveRobberStages(Gimbur.CatanState state)
+    {
+        var working = state;
+        while (working.Stage is TurnStage.ChooseRobberLocation or TurnStage.ChooseRobberVictim)
+        {
+            var action = working.Actions().Cast<Gimbur.CatanAction>().First();
+            working = (Gimbur.CatanState)action.DoCoreAction();
+        }
+
+        return working;
     }
 
     private static Gimbur.CatanState ReachPreRoll(Gimbur.CatanState state)
@@ -447,6 +482,31 @@ public class CatanStateTests
 
         victim = 0;
         return 0;
+    }
+
+    private static int FindRobberTargetWithMultipleVictims(Gimbur.CatanState state)
+    {
+        for (var tile = 0; tile < state.Board.Topology.TileCount; tile++)
+        {
+            if (tile == state.Board.RobberTile)
+            {
+                continue;
+            }
+
+            var victims = state.Board.Topology.TileVertices[tile]
+                .Select(v => state.Board.VertexOccupancy[v].Player)
+                .Where(p => p != 0 && p != state.CurrentPlayer)
+                .Distinct()
+                .OrderBy(p => p)
+                .ToArray();
+
+            if (victims.Length >= 2)
+            {
+                return tile;
+            }
+        }
+
+        return -1;
     }
 
     private static string SetResource(

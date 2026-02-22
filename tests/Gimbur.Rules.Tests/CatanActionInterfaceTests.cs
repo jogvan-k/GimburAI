@@ -36,6 +36,9 @@ public class CatanActionInterfaceTests
         Assert.That(typeof(IStochasticCoreAction).IsAssignableFrom(typeof(Gimbur.ChooseRobberTileAction)), Is.True);
         Assert.That(typeof(IDeterministicCoreAction).IsAssignableFrom(typeof(Gimbur.ChooseRobberTileAction)), Is.False);
 
+        Assert.That(typeof(IStochasticCoreAction).IsAssignableFrom(typeof(Gimbur.ChooseRobberVictimAction)), Is.True);
+        Assert.That(typeof(IDeterministicCoreAction).IsAssignableFrom(typeof(Gimbur.ChooseRobberVictimAction)), Is.False);
+
         Assert.That(typeof(IStochasticCoreAction).IsAssignableFrom(typeof(Gimbur.PlayKnightAction)), Is.True);
         Assert.That(typeof(IDeterministicCoreAction).IsAssignableFrom(typeof(Gimbur.PlayKnightAction)), Is.False);
     }

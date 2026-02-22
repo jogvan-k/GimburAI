@@ -1,3 +1,5 @@
+using System.Text;
+using System.Text.RegularExpressions;
 using Gimbur.Rules;
 using Gimbur;
 
@@ -16,12 +18,24 @@ internal static class Program
     private const string FgYellow = "\u001b[33m";
     private const string FgBrightGreen = "\u001b[92m";
     private const string FgGreen = "\u001b[32m";
+    private const string FgLightGreen = "\u001b[38;5;154m";
     private const string FgSilver = "\u001b[38;5;250m";
     private const string FgBeige = "\u001b[38;5;223m";
     private const string FgCyan = "\u001b[36m";
+    private const int MaxVisibleLogEntries = 6;
     private static int _lastFrameLineCount;
     private static readonly Random UiRng = new();
     private static string _statusMessage = "";
+    private static readonly List<LoggedAction> _actionLog = new();
+    private static int[] _lastSeenLogIndexByPlayer = [];
+    private static readonly StringBuilder _frameBuffer = new();
+
+    private static readonly Regex AnsiEscapePattern = new(
+        @"\u001b\[[0-9;]*m",
+        RegexOptions.Compiled);
+
+    private static int VisibleLength(string text) =>
+        AnsiEscapePattern.Replace(text, "").Length;
 
     private static void Main()
     {
@@ -44,6 +58,8 @@ internal static class Program
         Console.Clear();
         _lastFrameLineCount = 0;
         Console.CursorVisible = false;
+        _actionLog.Clear();
+        _lastSeenLogIndexByPlayer = new int[state.PlayerCount + 1];
         var greedy = new GreedyActionSelector();
 
         while (true)
@@ -84,24 +100,30 @@ internal static class Program
                 continue;
             }
 
+            if (state.Stage == TurnStage.ChooseRobberVictim)
+            {
+                state = ExecuteRobberVictimSelection(state);
+                continue;
+            }
+
             state = ExecuteActionMenu(state, actions);
         }
 
         DrawFrame(() =>
         {
             RenderBoard(state.Board);
-            Console.WriteLine();
-            Console.WriteLine("Game finished.");
-            Console.WriteLine($"Winner: Player {state.WinnerPlayer}");
-            Console.WriteLine();
+            WriteFixedLine();
+            WriteFixedLine("Game finished.");
+            WriteFixedLine($"Winner: Player {state.WinnerPlayer}");
+            WriteFixedLine();
             for (var player = 1; player <= state.PlayerCount; player++)
             {
-                Console.WriteLine(
+                WriteFixedLine(
                     $"Player {player}: VP={state.VictoryPointsFor(player)} settlements={state.Board.SettlementCount(player)} cities={state.Board.CityCount(player)} roads={state.Board.RoadCount(player)}");
             }
-            Console.WriteLine();
-            Console.WriteLine("Legend: tile text stack = resource name, number, robber(*); o empty vertex, s settlement, c city, |/\\/- road");
-            Console.WriteLine("Ports: 3:1 generic plus Wood/Brick/Sheep/Wheat/Ore resource ports");
+            WriteFixedLine();
+            WriteFixedLine("Legend: tile text stack = resource name, number, robber(*); o empty vertex, s settlement, c city, |/\\/- road");
+            WriteFixedLine("Ports: 3:1 generic plus Wood/Brick/Sheep/Wheat/Ore resource ports");
         });
 
         Console.CursorVisible = true;
@@ -115,9 +137,7 @@ internal static class Program
             return state;
         }
 
-        var next = (CatanState)action.DoCoreAction();
-        _statusMessage = $"P{state.CurrentPlayer}(AI): {DescribeAction(state, action)}";
-        return next;
+        return ApplyActionAndLog(state, action, aiControlled: true);
     }
 
     private static CatanState ExecuteSettlementPlacement(CatanState state)
@@ -139,7 +159,7 @@ internal static class Program
             stageLabel: StageLabel(state.Stage),
             currentPlayer: state.CurrentPlayer,
             board: state.Board,
-            resourceSummary: BuildPlayerSummary(state),
+            playerLines: BuildPlayerLines(state),
             legalCandidates: legal,
             pointProvider: BuildRenderLayout(state.Board.Topology).VertexPoints,
             neighborProvider: vertex => state.Board.Topology.VertexNeighbors[vertex],
@@ -148,7 +168,7 @@ internal static class Program
         if (selected is int vertex)
         {
             var action = new PlaceSettlementAction(state, vertex);
-            return (CatanState)action.DoCoreAction();
+            return ApplyActionAndLog(state, action);
         }
 
         return state;
@@ -173,7 +193,7 @@ internal static class Program
             stageLabel: StageLabel(state.Stage),
             currentPlayer: state.CurrentPlayer,
             board: state.Board,
-            resourceSummary: BuildPlayerSummary(state),
+            playerLines: BuildPlayerLines(state),
             legalCandidates: legal,
             pointProvider: BuildRenderLayout(state.Board.Topology).TilePoints,
             neighborProvider: tile => state.Board.Topology.TileNeighbors[tile],
@@ -182,10 +202,68 @@ internal static class Program
         if (selected is int tile)
         {
             var action = new ChooseRobberTileAction(state, tile);
-            return (CatanState)action.DoCoreAction();
+            return ApplyActionAndLog(state, action);
         }
 
         return state;
+    }
+
+    private static CatanState ExecuteRobberVictimSelection(CatanState state)
+    {
+        var victimActions = state.Actions()
+            .OfType<CatanAction>()
+            .Where(a => a.ActionType == CatanActionType.ChooseRobberVictim)
+            .ToArray();
+        if (victimActions.Length == 0)
+        {
+            return state;
+        }
+
+        var selectedIndex = 0;
+        while (true)
+        {
+            DrawFrame(() =>
+            {
+                RenderBoard(state.Board);
+
+                var leftCol = new List<string>
+                {
+                    $"Turn {state.TurnNumber} - Player {state.CurrentPlayer} | Stage: {StageLabel(state.Stage)}",
+                };
+                leftCol.AddRange(BuildPlayerLines(state));
+
+                var rightCol = new List<string> { "Action log:" };
+                rightCol.AddRange(ActionLogLinesForPlayer(state.CurrentPlayer));
+
+                const int leftWidth = 48;
+                WriteTwoColumnBlock(leftCol, rightCol, leftWidth);
+
+                WriteFixedLine("Select player to rob (Up/Down + Enter):");
+                for (var i = 0; i < victimActions.Length; i++)
+                {
+                    var prefix = i == selectedIndex ? ">" : " ";
+                    WriteFixedLine($"{prefix} {DescribeAction(state, victimActions[i])}");
+                }
+            });
+
+            var key = Console.ReadKey(intercept: true).Key;
+            if (key == ConsoleKey.UpArrow)
+            {
+                selectedIndex = selectedIndex > 0 ? selectedIndex - 1 : victimActions.Length - 1;
+                continue;
+            }
+
+            if (key == ConsoleKey.DownArrow)
+            {
+                selectedIndex = selectedIndex < victimActions.Length - 1 ? selectedIndex + 1 : 0;
+                continue;
+            }
+
+            if (key == ConsoleKey.Enter)
+            {
+                return ApplyActionAndLog(state, victimActions[selectedIndex]);
+            }
+        }
     }
 
     private static CatanState ExecuteActionMenu(CatanState state, IReadOnlyList<CatanAction> actions)
@@ -199,15 +277,22 @@ internal static class Program
             DrawFrame(() =>
             {
                 RenderBoard(state.Board);
-                WriteFixedLine();
-                WriteFixedLine($"Turn {state.TurnNumber} - Player {state.CurrentPlayer}");
-                WriteFixedLine($"Stage: {StageLabel(state.Stage),-28}");
-                WriteFixedLine($"Last: {_statusMessage,-32}");
-                WriteFixedLine(BuildPlayerSummary(state));
-                WriteFixedLine($"Longest Road: {(state.LongestRoadOwner == 0 ? "none" : $"Player {state.LongestRoadOwner}")}, Largest Army: {(state.LargestArmyOwner == 0 ? "none" : $"Player {state.LargestArmyOwner}")}");
-                WriteFixedLine();
-                WriteFixedLine($"Legal actions - {ContextLabel(context)} (Up/Down + Enter):");
 
+                var leftCol = new List<string>
+                {
+                    $"Turn {state.TurnNumber} - Player {state.CurrentPlayer} | Stage: {StageLabel(state.Stage)}",
+                    $"Last: {_statusMessage}",
+                    $"LR: {(state.LongestRoadOwner == 0 ? "none" : $"Player {state.LongestRoadOwner}")}, LA: {(state.LargestArmyOwner == 0 ? "none" : $"Player {state.LargestArmyOwner}")}",
+                };
+                leftCol.AddRange(BuildPlayerLines(state));
+
+                var rightCol = new List<string> { "Action log:" };
+                rightCol.AddRange(ActionLogLinesForPlayer(state.CurrentPlayer));
+
+                const int leftWidth = 48;
+                WriteTwoColumnBlock(leftCol, rightCol, leftWidth);
+
+                WriteFixedLine($"Legal actions - {ContextLabel(context)} (Up/Down + Enter):");
                 for (var i = 0; i < menuEntries.Count; i++)
                 {
                     var prefix = i == selectedIndex ? ">" : " ";
@@ -260,7 +345,7 @@ internal static class Program
 
             if (selected.Mode == ActionSelectionMode.Direct)
             {
-                return (CatanState)selected.Action!.DoCoreAction();
+                return ApplyActionAndLog(state, selected.Action!);
             }
 
             if (selected.Mode == ActionSelectionMode.RollDice)
@@ -405,8 +490,7 @@ internal static class Program
         }
 
         var next = (CatanState)action.DoCoreAction();
-        _statusMessage = "Rolled dice";
-        return next;
+        return ApplyActionAndLog(state, action);
     }
 
     private static CatanState ExecuteBuyDevCard(CatanState state)
@@ -420,9 +504,7 @@ internal static class Program
             return state;
         }
 
-        var next = (CatanState)action.DoCoreAction();
-        _statusMessage = "Bought dev card";
-        return next;
+        return ApplyActionAndLog(state, action);
     }
 
     private static string DescribeAction(CatanState state, CatanAction action)
@@ -431,6 +513,7 @@ internal static class Program
         {
             CatanActionType.RollDice => "Roll dice",
             CatanActionType.BuildCity => $"Build city at vertex {action.Arg1}",
+            CatanActionType.ChooseRobberVictim => $"Rob player {action.Arg1}",
             CatanActionType.BankTrade => $"Trade {state.Board.TradeRatio(state.CurrentPlayer, (ResourceType)action.Arg1)} {(ResourceType)action.Arg1} -> {(ResourceType)action.Arg2}",
             CatanActionType.BuyDevCard => "Buy dev card",
             CatanActionType.PlayKnight => "Play knight",
@@ -461,7 +544,7 @@ internal static class Program
             stageLabel: StageLabel(state.Stage),
             currentPlayer: state.CurrentPlayer,
             board: state.Board,
-            resourceSummary: BuildPlayerSummary(state),
+            playerLines: BuildPlayerLines(state),
             legalCandidates: legal,
             pointProvider: BuildRenderLayout(state.Board.Topology).EdgePoints,
             neighborProvider: BuildEdgeNeighborProvider(state.Board.Topology),
@@ -470,7 +553,7 @@ internal static class Program
         if (selected is int edge)
         {
             var action = new PlaceRoadAction(state, edge);
-            return (CatanState)action.DoCoreAction();
+            return ApplyActionAndLog(state, action);
         }
 
         return state;
@@ -495,7 +578,7 @@ internal static class Program
             stageLabel: StageLabel(state.Stage),
             currentPlayer: state.CurrentPlayer,
             board: state.Board,
-            resourceSummary: BuildPlayerSummary(state),
+            playerLines: BuildPlayerLines(state),
             legalCandidates: legal,
             pointProvider: BuildRenderLayout(state.Board.Topology).VertexPoints,
             neighborProvider: vertex => state.Board.Topology.VertexNeighbors[vertex],
@@ -504,7 +587,7 @@ internal static class Program
         if (selected is int vertex)
         {
             var action = new BuildCityAction(state, vertex);
-            return (CatanState)action.DoCoreAction();
+            return ApplyActionAndLog(state, action);
         }
 
         return state;
@@ -515,7 +598,7 @@ internal static class Program
         string stageLabel,
         int currentPlayer,
         Board board,
-        string resourceSummary,
+        IReadOnlyList<string> playerLines,
         int[] legalCandidates,
         IReadOnlyList<(int X, int Y)> pointProvider,
         Func<int, IEnumerable<int>> neighborProvider,
@@ -550,11 +633,18 @@ internal static class Program
                         selectedTile: current);
                 }
 
-                WriteFixedLine();
-                WriteFixedLine($"Player {currentPlayer}");
-                WriteFixedLine($"Stage: {stageLabel,-28}");
-                WriteFixedLine(resourceSummary);
-                WriteFixedLine($"{title}: arrows to move, Enter to confirm, Esc to cancel");
+                var leftCol = new List<string>
+                {
+                    $"Player {currentPlayer} | Stage: {stageLabel}",
+                };
+                leftCol.AddRange(playerLines);
+                leftCol.Add($"{title}: arrows, Enter, Esc");
+
+                var rightCol = new List<string> { "Action log:" };
+                rightCol.AddRange(ActionLogLinesForPlayer(currentPlayer));
+
+                const int leftWidth = 48;
+                WriteTwoColumnBlock(leftCol, rightCol, leftWidth);
             });
 
             var key = Console.ReadKey(intercept: true).Key;
@@ -671,6 +761,7 @@ internal static class Program
             TurnStage.PlaceSecondRoad => "Place second road",
             TurnStage.PreRoll => "Pre-roll",
             TurnStage.ChooseRobberLocation => "Choose robber location",
+            TurnStage.ChooseRobberVictim => "Choose robber victim",
             TurnStage.BuildTrade => "Build/trade",
             _ => stage.ToString(),
         };
@@ -685,6 +776,85 @@ internal static class Program
         }
 
         return string.Join(" | ", parts);
+    }
+
+    private static List<string> BuildPlayerLines(CatanState state)
+    {
+        var lines = new List<string>();
+        for (var player = 1; player <= state.PlayerCount; player++)
+        {
+            lines.Add(
+                $"{PlayerColor(player)}P{player}{Reset} VP:{state.VictoryPointsFor(player)} K:{state.KnightsPlayedFor(player)} W:{state.ResourceCountFor(player, ResourceType.Wood)} B:{state.ResourceCountFor(player, ResourceType.Brick)} S:{state.ResourceCountFor(player, ResourceType.Sheep)} Wh:{state.ResourceCountFor(player, ResourceType.Wheat)} O:{state.ResourceCountFor(player, ResourceType.Ore)}");
+        }
+
+        return lines;
+    }
+
+    private static CatanState ApplyActionAndLog(CatanState state, CatanAction action, bool aiControlled = false)
+    {
+        var actor = state.CurrentPlayer;
+        var description = DescribeAction(state, action);
+        var next = (CatanState)action.DoCoreAction();
+        var actorLabel = aiControlled ? $"P{actor}(AI)" : $"P{actor}";
+        _statusMessage = $"{actorLabel}: {description}";
+        _actionLog.Add(new LoggedAction(state.TurnNumber, actor, description));
+        if (actor > 0 && actor < _lastSeenLogIndexByPlayer.Length)
+        {
+            _lastSeenLogIndexByPlayer[actor] = _actionLog.Count;
+        }
+
+        return next;
+    }
+
+    private static IEnumerable<string> ActionLogLinesForPlayer(int player)
+    {
+        var lines = new List<string>(MaxVisibleLogEntries);
+        if (player <= 0 || player >= _lastSeenLogIndexByPlayer.Length)
+        {
+            lines.Add("  (action log unavailable)");
+            while (lines.Count < MaxVisibleLogEntries)
+            {
+                lines.Add(string.Empty);
+            }
+
+            return lines;
+        }
+
+        var startIndex = Math.Clamp(_lastSeenLogIndexByPlayer[player], 0, _actionLog.Count);
+        var unseen = _actionLog.Skip(startIndex).ToArray();
+        if (unseen.Length == 0)
+        {
+            lines.Add("  (no actions yet)");
+            while (lines.Count < MaxVisibleLogEntries)
+            {
+                lines.Add(string.Empty);
+            }
+
+            return lines;
+        }
+
+        if (unseen.Length > MaxVisibleLogEntries)
+        {
+            var hiddenCount = unseen.Length - (MaxVisibleLogEntries - 1);
+            lines.Add($"  ... {hiddenCount} earlier action(s)");
+            unseen = unseen.Skip(unseen.Length - (MaxVisibleLogEntries - 1)).ToArray();
+        }
+        else
+        {
+            unseen = unseen.Skip(Math.Max(0, unseen.Length - MaxVisibleLogEntries)).ToArray();
+        }
+
+        foreach (var entry in unseen)
+        {
+            lines.Add($"  T{entry.TurnNumber} P{entry.Player}: {entry.Description}");
+        }
+
+        while (lines.Count < MaxVisibleLogEntries)
+        {
+            lines.Add(string.Empty);
+        }
+
+        return lines;
     }
 
     private static MapChoice PromptMapTopology()
@@ -858,7 +1028,7 @@ internal static class Program
             DrawString(canvas, labelStartX, point.Y, label, portColor);
         }
 
-        canvas.Print();
+        canvas.Print(_frameBuffer);
     }
 
     private static BoardRenderLayout BuildRenderLayout(BoardTopology topology)
@@ -913,7 +1083,7 @@ internal static class Program
         }
 
         var width = (int)Math.Ceiling((maxX - minX) * scaleX) + marginX * 2 + 20;
-        var height = (int)Math.Ceiling((maxY - minY) * scaleY) + marginY * 2 + 10;
+        var height = (int)Math.Ceiling((maxY - minY) * scaleY) + marginY * 2 + 2;
 
         return new BoardRenderLayout(
             tilePixels,
@@ -1165,7 +1335,7 @@ internal static class Program
             PortType.Generic => FgBrightWhite,
             PortType.Wood => FgGreen,
             PortType.Brick => FgRed,
-            PortType.Sheep => FgBrightGreen,
+            PortType.Sheep => FgLightGreen,
             PortType.Wheat => FgYellow,
             PortType.Ore => FgSilver,
             _ => FgWhite,
@@ -1186,7 +1356,7 @@ internal static class Program
         {
             ResourceType.Wood => FgGreen,
             ResourceType.Brick => FgRed,
-            ResourceType.Sheep => FgBrightGreen,
+            ResourceType.Sheep => FgLightGreen,
             ResourceType.Wheat => FgYellow,
             ResourceType.Ore => FgSilver,
             ResourceType.Desert => FgBeige,
@@ -1197,40 +1367,132 @@ internal static class Program
     {
         DrawFrame(() =>
         {
-            Console.WriteLine();
-            Console.WriteLine(message);
-            Console.WriteLine("Press any key to continue...");
+            WriteFixedLine();
+            WriteFixedLine(message);
+            WriteFixedLine("Press any key to continue...");
         });
         Console.ReadKey(intercept: true);
     }
 
     private static void DrawFrame(Action draw)
     {
-        Console.SetCursorPosition(0, 0);
+        _frameBuffer.Clear();
         draw();
 
-        var usedLines = Console.CursorTop + (Console.CursorLeft > 0 ? 1 : 0);
-        var clearWidth = Math.Max(1, Console.WindowWidth - 1);
-        for (var i = usedLines; i < _lastFrameLineCount; i++)
+        // Count how many lines the frame produced
+        var lineCount = 0;
+        foreach (var ch in _frameBuffer.ToString())
         {
-            Console.SetCursorPosition(0, i);
-            Console.Write(new string(' ', clearWidth));
+            if (ch == '\n')
+            {
+                lineCount++;
+            }
         }
 
-        Console.SetCursorPosition(0, usedLines);
-        _lastFrameLineCount = usedLines;
+        // Append blank lines to clear any leftover content from the previous frame
+        var clearWidth = Math.Max(1, Console.WindowWidth - 1);
+        for (var i = lineCount; i < _lastFrameLineCount; i++)
+        {
+            _frameBuffer.Append(' ', clearWidth);
+            _frameBuffer.AppendLine();
+        }
+
+        // Flush everything in one write to avoid flicker
+        Console.SetCursorPosition(0, 0);
+        Console.Write(_frameBuffer);
+        Console.SetCursorPosition(0, lineCount);
+        _lastFrameLineCount = lineCount;
     }
 
     private static void WriteFixedLine(string text = "")
     {
         var width = Math.Max(1, Console.WindowWidth - 1);
-        if (text.Length > width)
+        var visible = VisibleLength(text);
+        if (visible > width)
         {
-            text = text[..width];
+            text = TruncateAnsi(text, width);
+            visible = width;
         }
 
-        Console.Write(text);
-        Console.WriteLine(new string(' ', Math.Max(0, width - text.Length)));
+        _frameBuffer.Append(text);
+        _frameBuffer.Append(' ', Math.Max(0, width - visible));
+        _frameBuffer.AppendLine();
+    }
+
+    /// <summary>
+    /// Writes rows from two lists side by side. The left column occupies
+    /// <paramref name="leftWidth"/> visible characters; the right column
+    /// fills the rest. Rows beyond the shorter list are blank on that side.
+    /// </summary>
+    private static void WriteTwoColumnBlock(
+        IReadOnlyList<string> leftLines,
+        IReadOnlyList<string> rightLines,
+        int leftWidth)
+    {
+        var totalWidth = Math.Max(1, Console.WindowWidth - 1);
+        var rows = Math.Max(leftLines.Count, rightLines.Count);
+        for (var i = 0; i < rows; i++)
+        {
+            var left = i < leftLines.Count ? leftLines[i] : "";
+            var right = i < rightLines.Count ? rightLines[i] : "";
+            var leftVisible = VisibleLength(left);
+
+            // Pad or truncate left column to exactly leftWidth visible chars
+            if (leftVisible > leftWidth)
+            {
+                left = TruncateAnsi(left, leftWidth);
+                leftVisible = leftWidth;
+            }
+
+            _frameBuffer.Append(left);
+            _frameBuffer.Append(' ', Math.Max(0, leftWidth - leftVisible));
+
+            // Separator
+            _frameBuffer.Append("  ");
+
+            var rightVisible = VisibleLength(right);
+            var rightWidth = Math.Max(0, totalWidth - leftWidth - 2);
+            if (rightVisible > rightWidth)
+            {
+                right = TruncateAnsi(right, rightWidth);
+                rightVisible = rightWidth;
+            }
+
+            _frameBuffer.Append(right);
+            _frameBuffer.Append(' ', Math.Max(0, rightWidth - rightVisible));
+            _frameBuffer.AppendLine();
+        }
+    }
+
+    /// <summary>
+    /// Truncates a string that may contain ANSI escape sequences to at most
+    /// <paramref name="maxVisible"/> visible characters, preserving escape
+    /// sequences and appending a Reset at the end.
+    /// </summary>
+    private static string TruncateAnsi(string text, int maxVisible)
+    {
+        var sb = new StringBuilder();
+        var vis = 0;
+        for (var i = 0; i < text.Length && vis < maxVisible;)
+        {
+            if (text[i] == '\u001b')
+            {
+                var end = text.IndexOf('m', i);
+                if (end >= 0)
+                {
+                    sb.Append(text, i, end - i + 1);
+                    i = end + 1;
+                    continue;
+                }
+            }
+
+            sb.Append(text[i]);
+            vis++;
+            i++;
+        }
+
+        sb.Append(Reset);
+        return sb.ToString();
     }
 }
 
@@ -1267,6 +1529,8 @@ internal enum LocationSelectionMode
     Edge,
     Tile,
 }
+
+internal sealed record LoggedAction(int TurnNumber, int Player, string Description);
 
 internal sealed record MenuEntry(string Label, ActionSelectionMode Mode, CatanAction? Action);
 
@@ -1338,53 +1602,60 @@ internal sealed class Canvas
         _colors[y, x] = color;
     }
 
-    public void Print()
+    public void Print(StringBuilder buffer)
     {
-        for (var y = 0; y < Height; y++)
+        var termWidth = Math.Max(1, Console.WindowWidth - 1);
+
+        // Find the last row that has non-space content to avoid trailing blank lines
+        var lastUsedRow = Height - 1;
+        while (lastUsedRow >= 0)
         {
-            var lineHasContent = false;
+            var rowEmpty = true;
             for (var x = 0; x < Width; x++)
             {
-                if (_chars[y, x] != ' ')
+                if (_chars[lastUsedRow, x] != ' ')
                 {
-                    lineHasContent = true;
+                    rowEmpty = false;
                     break;
                 }
             }
 
-            if (!lineHasContent)
+            if (!rowEmpty)
             {
-                continue;
+                break;
             }
 
+            lastUsedRow--;
+        }
+
+        for (var y = 0; y <= lastUsedRow; y++)
+        {
             string? activeColor = null;
-            var trailingSpaceStart = Width;
-            for (var x = Width - 1; x >= 0; x--)
-            {
-                if (_chars[y, x] != ' ')
-                {
-                    trailingSpaceStart = x + 1;
-                    break;
-                }
-            }
-
-            for (var x = 0; x < trailingSpaceStart; x++)
+            var visibleChars = 0;
+            for (var x = 0; x < Width; x++)
             {
                 var color = _colors[y, x];
                 if (!string.Equals(color, activeColor, StringComparison.Ordinal))
                 {
-                    Console.Write(color ?? "\u001b[0m");
+                    buffer.Append(color ?? "\u001b[0m");
                     activeColor = color;
                 }
 
-                Console.Write(_chars[y, x]);
+                buffer.Append(_chars[y, x]);
+                visibleChars++;
             }
 
             if (activeColor is not null)
             {
-                Console.Write("\u001b[0m");
+                buffer.Append("\u001b[0m");
             }
-            Console.WriteLine();
+
+            if (visibleChars < termWidth)
+            {
+                buffer.Append(' ', termWidth - visibleChars);
+            }
+
+            buffer.AppendLine();
         }
     }
 }
