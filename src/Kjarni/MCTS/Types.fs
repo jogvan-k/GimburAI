@@ -40,6 +40,11 @@ and State(state: ICoreState) =
             _winRates.[i]
 
     member this.winRate = this.winRateFor state.PlayerTurn
+
+    member _.winCounts =
+        let vc = float (Math.Max(1, _visitCount))
+        _winRates |> Array.map (fun r -> r * vc)
+
     member _.visitCount = Math.Max(1, _visitCount)
     member _.playerTurn = state.PlayerTurn
 
@@ -78,6 +83,7 @@ type LogInfo =
         val mutable simulations: int
         val mutable elapsedTime: TimeSpan
         val mutable estimatedAiWinChance: float
+        val mutable winCounts: float array
         val mutable successfulTranspositionTableLookup: int
         val mutable transpositionTableSize: int
     end

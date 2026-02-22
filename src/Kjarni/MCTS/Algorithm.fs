@@ -95,10 +95,45 @@ let expansion (s: State, i, tTable: TranspositionTable Option) =
 
     | _ -> raise (Exception "Target leaf is already expanded")
 
-let rec simulationDistribution (state: ICoreState) =
+let defaultMaxRolloutDepth = 500
+
+let scoreBasedOutcome (state: ICoreState) =
+    let scores = state.Scores()
+    let outcome = emptyOutcome ()
+
+    // Find the maximum score among all players.
+    let mutable maxScore = System.Double.NegativeInfinity
+    for i in 1 .. maxTrackedPlayers do
+        let s = if i < scores.Length then scores.[i] else 0.
+        if s > maxScore then
+            maxScore <- s
+
+    if maxScore <= 0. then
+        // No one has any score; return draw (empty outcome).
+        outcome
+    else
+        // Count how many players share the top score.
+        let mutable tiedCount = 0
+        for i in 1 .. maxTrackedPlayers do
+            let s = if i < scores.Length then scores.[i] else 0.
+            if s = maxScore then
+                tiedCount <- tiedCount + 1
+
+        // Split the win equally among tied leaders.
+        let share = 1. / float tiedCount
+        for i in 1 .. maxTrackedPlayers do
+            let s = if i < scores.Length then scores.[i] else 0.
+            if s = maxScore then
+                outcome.[i] <- share
+
+        outcome
+
+let rec simulationDistribution (maxRolloutDepth: int) (state: ICoreState) (depth: int) =
     let actions = state.Actions()
     if Array.isEmpty actions then
         oneHotOutcome state.PlayerTurn
+    elif depth >= maxRolloutDepth then
+        scoreBasedOutcome state
     else
         let nextMove = actions |> Seq.sort |> Seq.head
         match nextMove with
@@ -107,14 +142,23 @@ let rec simulationDistribution (state: ICoreState) =
             if Array.isEmpty outcomes then
                 oneHotOutcome state.PlayerTurn
             else
-                let result = emptyOutcome ()
+                // Sample a single outcome weighted by probability (standard MCTS rollout).
+                // Computing the full expected value is intractable when stochastic
+                // actions are frequent (e.g., Catan dice rolls create 11^n branches).
+                let roll = Random.Shared.NextDouble()
+                let mutable cumulative = 0.
+                let mutable sampled = fst outcomes.[outcomes.Length - 1]
+                let mutable found = false
                 for nextState, probability in outcomes do
-                    if probability > 0. then
-                        addScaledOutcome result (simulationDistribution nextState) probability
-                result
-        | _ -> simulationDistribution (nextMove.DoCoreAction())
+                    if not found && probability > 0. then
+                        cumulative <- cumulative + probability
+                        if roll < cumulative then
+                            sampled <- nextState
+                            found <- true
+                simulationDistribution maxRolloutDepth sampled (depth + 1)
+        | _ -> simulationDistribution maxRolloutDepth (nextMove.DoCoreAction()) (depth + 1)
 
-let simulation (s: State) = simulationDistribution s.state
+let simulation (maxRolloutDepth: int) (s: State) = simulationDistribution maxRolloutDepth s.state 0
 
 let registerResult (s: State) (outcome: float array) = s.registerOutcome outcome
 
@@ -153,7 +197,7 @@ let extractBestPath (s: State) =
 
     path |> List.rev
 
-let search (root: State, maxSimulationCount, timer: Stopwatch, tTable, evaluateUntil: Int64 option) =
+let search (root: State, maxSimulationCount, timer: Stopwatch, tTable, evaluateUntil: Int64 option, maxRolloutDepth: int) =
     while root.visitCount < maxSimulationCount
           && (not evaluateUntil.IsSome
               || timer.ElapsedTicks < evaluateUntil.Value) do
@@ -168,14 +212,14 @@ let search (root: State, maxSimulationCount, timer: Stopwatch, tTable, evaluateU
 
             match expansion (s, a, tTable) with
             | Leaf a ->
-                let outcome = simulation a.state
+                let outcome = simulation maxRolloutDepth a.state
                 backPropagating root (a :: actionHistory) outcome
             | Terminal win -> backPropagating root actionHistory (oneHotOutcome win)
             | _ -> raise (Exception "Expanded to unexpected leaf type")
 
     extractBestPath root |> List.toArray
 
-let parallelSearch (root: State, maxSimulationCount, tTable, evaluateUntil: int) =
+let parallelSearch (root: State, maxSimulationCount, tTable, evaluateUntil: int, maxRolloutDepth: int) =
     let expression =
         async {
             let leaf, ah =
@@ -195,7 +239,7 @@ let parallelSearch (root: State, maxSimulationCount, tTable, evaluateUntil: int)
 
             let win, actionHistory =
                 match leaf with
-                | Leaf a -> simulation a.state, a :: ah
+                | Leaf a -> simulation maxRolloutDepth a.state, a :: ah
                 | Terminal win -> oneHotOutcome win, ah
                 | Unexplored _ -> failwith "Not Implemented"
 

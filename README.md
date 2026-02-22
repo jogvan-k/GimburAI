@@ -74,27 +74,27 @@ The goal is to train a neural network that evaluates board positions (state to w
 
 - [x] Heuristic evaluation function (weighted sum of VP, resources, board position, etc.)
 - [x] Greedy action selection: evaluate each legal action's resulting state, pick highest score
-- [ ] Use as default simulation policy (replaces random legal moves for higher quality rollouts)
+- [x] Use as default simulation policy (replaces random legal moves for higher quality rollouts)
 
 #### 2e: TUI for Manual Testing
 
-- [ ] Terminal-based game UI (board rendering, resource display, action selection)
-- [ ] Human-vs-AI mode
-- [ ] AI-vs-AI spectator mode
-- [ ] CLI `play` command wired to TUI
+- [x] Terminal-based game UI (board rendering, resource display, action selection)
+- [x] Human-vs-AI mode
+- [x] AI-vs-AI spectator mode
 
 #### 2f: Simulation Harness
 
-- [ ] Game simulation using greedy AI, run to completion
-- [ ] Game result recording (winner, final scores, turn count)
-- [ ] Batch simulation runner
-- [ ] CLI `simulate` command wired to real game logic
+- [x] Game simulation using greedy AI, run to completion
+- [x] Game result recording (winner, final scores, turn count)
+- [x] Batch simulation runner (multi-core parallel via `Parallel.For`)
+- [x] CLI `simulate` command wired to real game logic
+- [x] Training data export (state + winner label, aligned with `docs/state-serialization.md`)
 
 #### 2g: Testing
 
-- [ ] Unit tests for each rule subsystem
-- [ ] Integration tests: full random games complete without crashes
-- [ ] Regression tests for edge cases
+- [x] Unit tests for each rule subsystem
+- [x] Integration tests: full random games complete without crashes
+- [x] Regression tests for edge cases
 
 ### Phase 3: Training Data Generation & Model Training (Python)
 

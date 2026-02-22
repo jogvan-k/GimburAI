@@ -498,6 +498,16 @@ public sealed class CatanState : ICoreState
         return settlements + (cities * 2) + devVp + roadBonus + armyBonus;
     }
 
+    public double[] Scores()
+    {
+        var scores = new double[5]; // Indexed by Player enum (0 = None, 1-4 = Players)
+        for (var p = 1; p <= PlayerCount; p++)
+        {
+            scores[p] = VictoryPointsFor(p);
+        }
+        return scores;
+    }
+
     public ICoreAction[] Actions()
     {
         if (WinnerPlayer != 0)

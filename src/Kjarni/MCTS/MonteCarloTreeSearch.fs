@@ -20,7 +20,7 @@ let tTable (config: configuration) =
     else
         None
 
-type MonteCarloTreeSearch(st: searchTime, maxSimulationCount, config: configuration) =
+type MonteCarloTreeSearch(st: searchTime, maxSimulationCount: int, config: configuration, maxRolloutDepth: int) =
     let mutable _logInfos: LogInfo list = List.empty
 
     let extractWinChance (s: State) =
@@ -33,6 +33,9 @@ type MonteCarloTreeSearch(st: searchTime, maxSimulationCount, config: configurat
             |> Array.map (fun i -> extractionEvaluator (aiPlayer, i))
             |> Array.max
 
+    new(st: searchTime, maxSimulationCount: int, config: configuration) =
+        MonteCarloTreeSearch(st, maxSimulationCount, config, defaultMaxRolloutDepth)
+
     interface IGameAI with
         /// <summary></summary>
         /// <param name="state"></param>
@@ -44,14 +47,15 @@ type MonteCarloTreeSearch(st: searchTime, maxSimulationCount, config: configurat
 
             let result =
                 if config.HasFlag configuration.AsyncExecution then
-                    parallelSearch (root, maxSimulationCount, tTable, Utility.toMilliseconds st)
+                    parallelSearch (root, maxSimulationCount, tTable, Utility.toMilliseconds st, maxRolloutDepth)
                 else
-                    search (root, maxSimulationCount, timer, tTable, Utility.toStopwatchTics st)
+                    search (root, maxSimulationCount, timer, tTable, Utility.toStopwatchTics st, maxRolloutDepth)
 
             let mutable logInfo = LogInfo()
             logInfo.simulations <- root.visitCount
             logInfo.elapsedTime <- timer.Elapsed
             logInfo.estimatedAiWinChance <- extractWinChance root
+            logInfo.winCounts <- root.winCounts
 
             match tTable with
             | Some t ->

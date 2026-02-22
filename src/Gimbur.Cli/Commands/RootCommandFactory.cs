@@ -5,7 +5,7 @@ namespace Gimbur.Commands;
 
 internal static class RootCommandFactory
 {
-    private const string RootDescription = "Gimbur – Settlers of Catan simulator,";
+    private const string RootDescription = "Gimbur – Settlers of Catan simulator";
 
     internal static RootCommand Create()
     {
@@ -14,17 +14,6 @@ internal static class RootCommandFactory
         var configOption = new Option<FileInfo?>("--config", "-c")
         {
             Description = "Path to a configuration file",
-            Recursive = true,
-        };
-        var searchTimeOption = new Option<TimeSpan>("--search-time", "-s")
-        {
-            Description = "Time budget per move",
-            Recursive = true,
-            DefaultValueFactory = _ => TimeSpan.FromSeconds(2)
-        };
-        var maxSimulationsOption = new Option<uint?>("--max-simulations", "-m")
-        {
-            Description = "Maximum simulations per turn ",
             Recursive = true,
         };
         var seedOption = new Option<int?>("--seed")
@@ -39,7 +28,7 @@ internal static class RootCommandFactory
         };
         var mapConfigOption = new Option<string?>("--map-config")
         {
-            Description = "Map layout identifier",
+            Description = "Map layout identifier (standard or mini)",
             Recursive = true,
         };
         var verbosityOption = new Option<string>("--verbosity", "-v")
@@ -92,29 +81,23 @@ internal static class RootCommandFactory
         var globals = new
         {
             Config = configOption,
-            SearchTime = searchTimeOption,
-            MaxSimulations = maxSimulationsOption,
             Seed = seedOption,
             NoOfPlayers = noOfPlayersOption,
             MapConfiguration = mapConfigOption,
             Verbosity = verbosityOption,
             Quiet = quietOption,
             Verbose = verboseOption,
-
         };
 
         rootCommand.Options.Add(globals.Config);
-        rootCommand.Options.Add(globals.SearchTime);
-        rootCommand.Options.Add(globals.MaxSimulations);
         rootCommand.Options.Add(globals.Seed);
         rootCommand.Options.Add(globals.NoOfPlayers);
         rootCommand.Options.Add(globals.MapConfiguration);
         rootCommand.Options.Add(globals.Verbosity);
 
         rootCommand.Subcommands.Add(CreateSimulateCommand(globals));
-        rootCommand.Subcommands.Add(CreatePlayCommand(globals));
 
-        rootCommand.SetAction(parserResults => Console.WriteLine("Gimbur CLI placeholder – use --help to explore commands."));
+        rootCommand.SetAction(parserResults => Console.WriteLine("Gimbur CLI – use --help to explore commands."));
 
         return rootCommand;
     }
@@ -129,84 +112,63 @@ internal static class RootCommandFactory
 
         var exportOption = new Option<FileInfo?>("--export")
         {
-            Description = "Optional path to export game transcripts",
+            Description = "Optional path to export training data (state + win counts per line)",
+        };
+
+        var searchTimeOption = new Option<int>("--search-time")
+        {
+            Description = "MCTS search time limit in milliseconds per decision",
+            DefaultValueFactory = _ => 1000
+        };
+
+        var maxSimulationsOption = new Option<int>("--max-simulations")
+        {
+            Description = "Maximum MCTS simulations per decision (default: unlimited, time-limited)",
+            DefaultValueFactory = _ => int.MaxValue
+        };
+
+        var maxRolloutDepthOption = new Option<int>("--max-rollout-depth")
+        {
+            Description = "Maximum rollout depth for MCTS simulations (default: 500)",
+            DefaultValueFactory = _ => 500
         };
 
         var command = new Command("simulate", "Run Settlers of Catan AI self-play simulations.")
         {
           noOfGamesOption,
           exportOption,
+          searchTimeOption,
+          maxSimulationsOption,
+          maxRolloutDepthOption,
         };
 
         command.SetAction(parseResult =>
         {
-            FileInfo? config = parseResult.GetValue(globals.Config);
             uint noOfGames = parseResult.GetValue(noOfGamesOption);
-            TimeSpan searchTime = parseResult.GetValue(globals.SearchTime);
-            uint? maxSimulations = parseResult.GetValue(globals.MaxSimulations);
             int seed = parseResult.GetValue(globals.Seed) ?? new Random().Next();
             int noOfPlayers = parseResult.GetValue(globals.NoOfPlayers);
             string? mapConfig = parseResult.GetValue(globals.MapConfiguration);
             string? verbosity = ParseVerbosity(parseResult, globals);
             FileInfo? export = parseResult.GetValue(exportOption);
+            int searchTimeMs = parseResult.GetValue(searchTimeOption);
+            int maxSimulations = parseResult.GetValue(maxSimulationsOption);
+            int maxRolloutDepth = parseResult.GetValue(maxRolloutDepthOption);
 
             var options = new SimulationOptions
             {
                 NumberOfGames = noOfGames,
-                SearchTime = searchTime,
-                MaxSimulations = maxSimulations,
                 Seed = seed,
                 NumberOfPlayers = noOfPlayers,
                 MapConfig = mapConfig,
                 ExportPath = export,
-                Verbosity = verbosity ?? "normal"
+                Verbosity = verbosity ?? "normal",
+                SearchTimeMs = searchTimeMs,
+                MaxSimulations = maxSimulations,
+                MaxRolloutDepth = maxRolloutDepth,
             };
 
             var runner = new SimulationRunner(options);
             runner.Run();
-        });
-
-        return command;
-    }
-
-    private static Command CreatePlayCommand(dynamic globals)
-    {
-        var humanPositionOption = new Option<int?>("--player-position", "-p")
-        {
-            Description = "Board position (seat) for the human player",
-        };
-
-        var aiOption = new Option<string[]>("--ai", "-a")
-        {
-            Description = "AI identifiers for automated players",
-            AllowMultipleArgumentsPerToken = true,
-            DefaultValueFactory = _ => ["R", "R", "R"]
-        };
-
-        var command = new Command("play", "Play a Settlers of Catan match with human and AI players.")
-        {
-            humanPositionOption,
-            aiOption,
-        };
-
-        command.SetAction(parseResult =>
-        {
-            FileInfo? config = parseResult.GetValue(globals.Config);
-            int? humanPosition = parseResult.GetValue(humanPositionOption);
-            string[] ai = parseResult.GetValue(aiOption)!;
-            TimeSpan searchTime = parseResult.GetValue(globals.SearchTime);
-            uint? maxSimulations = parseResult.GetValue(globals.MaxSimulations);
-            string? mapConfig = parseResult.GetValue(globals.MapConfiguration);
-            string? verbosity = ParseVerbosity(parseResult, globals);
-
-            Console.WriteLine($"Config: {config?.FullName ?? "(null)"}");
-            Console.WriteLine($"verbosity: {verbosity}");
-            Console.WriteLine($"HumanPosition: {humanPosition?.ToString() ?? "(null)"}");
-            Console.WriteLine($"AI: {string.Join(",", ai)}");
-            Console.WriteLine($"SearchTime: {searchTime}");
-            Console.WriteLine($"MaxSimulations: {maxSimulations}");
-            Console.WriteLine($"MapConfiguration: {mapConfig}");
-            Console.WriteLine("TODO: implement interactive play mode");
         });
 
         return command;
@@ -225,7 +187,7 @@ internal static class RootCommandFactory
         }
         else
         {
-            verbosity = parseResult.GetValue(globals.Verbosity) ?? "diagnostic";
+            verbosity = parseResult.GetValue(globals.Verbosity) ?? "normal";
         }
 
         return verbosity;
