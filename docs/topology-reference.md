@@ -12,8 +12,16 @@ for the GimburAI engine. For the serialization format, see
 ### 1.1 Tile Coordinates (Axial)
 
 Tiles use **axial coordinates** `(q, r)` with the center tile at `(0, 0)`.
-A hex grid of radius `R` contains all tiles where `|q| <= R`, `|r| <= R`,
-and `|q + r| <= R`.
+
+**Circular boards**: A hex grid of radius `R` contains all tiles where
+`|q| <= R`, `|r| <= R`, and `|q + r| <= R`. The Mini (radius 1) and Standard
+(radius 2) maps use this layout.
+
+**Non-circular boards**: Some maps are defined by an explicit set of tile
+coordinates rather than a radius formula. The Small map, for example, uses two
+central hexes `(0,0)` and `(1,0)` with one layer of hexes around them,
+forming a 10-tile oval shape. All other topology rules (vertex triplets, edge
+identity, adjacency derivation) apply identically to non-circular boards.
 
 The 6 axial neighbor directions, clockwise from east:
 
@@ -84,8 +92,9 @@ Each port is a **coastal edge** — an edge on the board perimeter connecting
 two vertices.
 
 Port positions are determined by walking the ring of coastal edges clockwise
-from the top of the board and selecting evenly-spaced edges. For a hex board
-of radius `R`, there are `6 × (2R + 1)` coastal edges and `3 × (R + 1)` ports.
+from the top of the board and selecting evenly-spaced edges. For circular hex
+boards of radius `R`, the port count is `3 × (R + 1)`. For non-circular boards,
+the port count is specified explicitly when constructing the topology.
 
 **Port index**: Ports are numbered 0..N-1 in clockwise order from the top.
 
@@ -516,11 +525,410 @@ Each tile has exactly 6 boundary edges.
 
 ---
 
-## 5. Standard Map (Radius 2)
+## 5. Small Map (10 tiles, non-circular)
+
+![Small board topology indices](small-board-topology.svg)
+
+The Small map is a non-circular oval board built from two central hexes
+`(0,0)` and `(1,0)` plus one ring of hexes around them. This produces 10
+tiles arranged in rows of 3, 4, 3 (top to bottom).
+
+### 5.1 Counts
+
+| Element | Count |
+| --- | --- |
+| Tiles | 10 |
+| Vertices | 32 |
+| Edges | 41 |
+| Ports | 7 |
+| Coastal edges | 22 |
+| Interior edges | 19 |
+| Boundary vertices (degree 2) | 14 |
+| Interior vertices (degree 3) | 18 |
+
+Vertex tile-count distribution: 10 touch 1 tile, 8 touch 2 tiles, 14 touch 3 tiles.
+
+Tile rows (top-to-bottom): 3, 4, 3.
+
+Port types for the small map (assigned during setup): 3 generic (3:1) and
+4 resource-specific (2:1 wood, brick, sheep, wheat).
+
+### 5.2 Tile Table
+
+| Tile | q | r |
+| --- | --- | --- |
+| 0 | -1 | +1 |
+| 1 | +0 | +1 |
+| 2 | +1 | +1 |
+| 3 | -1 | +0 |
+| 4 | +0 | +0 |
+| 5 | +1 | +0 |
+| 6 | +2 | +0 |
+| 7 | +0 | -1 |
+| 8 | +1 | -1 |
+| 9 | +2 | -1 |
+
+### 5.3 Vertex Table
+
+| Vertex | Triplet (tile axial coords) |
+| --- | --- |
+| 0 | (-2, +2) (-1, +1) (-1, +2) |
+| 1 | (-1, +2) (+0, +1) (+0, +2) |
+| 2 | (+0, +2) (+1, +1) (+1, +2) |
+| 3 | (-2, +1) (-2, +2) (-1, +1) |
+| 4 | (-1, +1) (-1, +2) (+0, +1) |
+| 5 | (+0, +1) (+0, +2) (+1, +1) |
+| 6 | (+1, +1) (+1, +2) (+2, +1) |
+| 7 | (-2, +1) (-1, +0) (-1, +1) |
+| 8 | (-1, +1) (+0, +0) (+0, +1) |
+| 9 | (+0, +1) (+1, +0) (+1, +1) |
+| 10 | (+1, +1) (+2, +0) (+2, +1) |
+| 11 | (-2, +0) (-2, +1) (-1, +0) |
+| 12 | (-1, +0) (-1, +1) (+0, +0) |
+| 13 | (+0, +0) (+0, +1) (+1, +0) |
+| 14 | (+1, +0) (+1, +1) (+2, +0) |
+| 15 | (+2, +0) (+2, +1) (+3, +0) |
+| 16 | (-2, +0) (-1, -1) (-1, +0) |
+| 17 | (-1, +0) (+0, -1) (+0, +0) |
+| 18 | (+0, +0) (+1, -1) (+1, +0) |
+| 19 | (+1, +0) (+2, -1) (+2, +0) |
+| 20 | (+2, +0) (+3, -1) (+3, +0) |
+| 21 | (-1, -1) (-1, +0) (+0, -1) |
+| 22 | (+0, -1) (+0, +0) (+1, -1) |
+| 23 | (+1, -1) (+1, +0) (+2, -1) |
+| 24 | (+2, -1) (+2, +0) (+3, -1) |
+| 25 | (-1, -1) (+0, -2) (+0, -1) |
+| 26 | (+0, -1) (+1, -2) (+1, -1) |
+| 27 | (+1, -1) (+2, -2) (+2, -1) |
+| 28 | (+2, -1) (+3, -2) (+3, -1) |
+| 29 | (+0, -2) (+0, -1) (+1, -2) |
+| 30 | (+1, -2) (+1, -1) (+2, -2) |
+| 31 | (+2, -2) (+2, -1) (+3, -2) |
+
+### 5.4 Edge Table
+
+| Edge | Vertex A | Vertex B |
+| --- | --- | --- |
+| 0 | 0 | 3 |
+| 1 | 0 | 4 |
+| 2 | 1 | 4 |
+| 3 | 1 | 5 |
+| 4 | 2 | 5 |
+| 5 | 2 | 6 |
+| 6 | 3 | 7 |
+| 7 | 4 | 8 |
+| 8 | 5 | 9 |
+| 9 | 6 | 10 |
+| 10 | 7 | 11 |
+| 11 | 7 | 12 |
+| 12 | 8 | 12 |
+| 13 | 8 | 13 |
+| 14 | 9 | 13 |
+| 15 | 9 | 14 |
+| 16 | 10 | 14 |
+| 17 | 10 | 15 |
+| 18 | 11 | 16 |
+| 19 | 12 | 17 |
+| 20 | 13 | 18 |
+| 21 | 14 | 19 |
+| 22 | 15 | 20 |
+| 23 | 16 | 21 |
+| 24 | 17 | 21 |
+| 25 | 17 | 22 |
+| 26 | 18 | 22 |
+| 27 | 18 | 23 |
+| 28 | 19 | 23 |
+| 29 | 19 | 24 |
+| 30 | 20 | 24 |
+| 31 | 21 | 25 |
+| 32 | 22 | 26 |
+| 33 | 23 | 27 |
+| 34 | 24 | 28 |
+| 35 | 25 | 29 |
+| 36 | 26 | 29 |
+| 37 | 26 | 30 |
+| 38 | 27 | 30 |
+| 39 | 27 | 31 |
+| 40 | 28 | 31 |
+
+### 5.5 Coastal Edges (22 total)
+
+`0, 1, 2, 3, 4, 5, 6, 9, 10, 17, 18, 22, 23, 30, 31, 34, 35, 36, 37, 38, 39, 40`
+
+### 5.6 Port Table (7 ports)
+
+Ports are ordered clockwise from the top of the board. Each port is a
+coastal edge connecting two vertices on the board perimeter.
+
+| Port | Vertex A | Vertex B |
+| --- | --- | --- |
+| 0 | 4 | 1 |
+| 1 | 2 | 6 |
+| 2 | 15 | 20 |
+| 3 | 28 | 31 |
+| 4 | 30 | 26 |
+| 5 | 25 | 21 |
+| 6 | 11 | 7 |
+
+### 5.7 Tile -> Vertices
+
+Each tile has exactly 6 corner vertices.
+
+| Tile | Vertices |
+| --- | --- |
+| 0 | 0, 3, 4, 7, 8, 12 |
+| 1 | 1, 4, 5, 8, 9, 13 |
+| 2 | 2, 5, 6, 9, 10, 14 |
+| 3 | 7, 11, 12, 16, 17, 21 |
+| 4 | 8, 12, 13, 17, 18, 22 |
+| 5 | 9, 13, 14, 18, 19, 23 |
+| 6 | 10, 14, 15, 19, 20, 24 |
+| 7 | 17, 21, 22, 25, 26, 29 |
+| 8 | 18, 22, 23, 26, 27, 30 |
+| 9 | 19, 23, 24, 27, 28, 31 |
+
+### 5.8 Tile -> Edges
+
+Each tile has exactly 6 boundary edges.
+
+| Tile | Edges |
+| --- | --- |
+| 0 | 0, 1, 6, 7, 11, 12 |
+| 1 | 2, 3, 7, 8, 13, 14 |
+| 2 | 4, 5, 8, 9, 15, 16 |
+| 3 | 10, 11, 18, 19, 23, 24 |
+| 4 | 12, 13, 19, 20, 25, 26 |
+| 5 | 14, 15, 20, 21, 27, 28 |
+| 6 | 16, 17, 21, 22, 29, 30 |
+| 7 | 24, 25, 31, 32, 35, 36 |
+| 8 | 26, 27, 32, 33, 37, 38 |
+| 9 | 28, 29, 33, 34, 39, 40 |
+
+### 5.9 Tile -> Adjacent Tiles
+
+| Tile | Neighbors |
+| --- | --- |
+| 0 | 1, 3, 4 |
+| 1 | 0, 2, 4, 5 |
+| 2 | 1, 5, 6 |
+| 3 | 0, 4, 7 |
+| 4 | 0, 1, 3, 5, 7, 8 |
+| 5 | 1, 2, 4, 6, 8, 9 |
+| 6 | 2, 5, 9 |
+| 7 | 3, 4, 8 |
+| 8 | 4, 5, 7, 9 |
+| 9 | 5, 6, 8 |
+
+### 5.10 Vertex -> Tiles
+
+| Vertex | Tiles |
+| --- | --- |
+| 0 | 0 |
+| 1 | 1 |
+| 2 | 2 |
+| 3 | 0 |
+| 4 | 0, 1 |
+| 5 | 1, 2 |
+| 6 | 2 |
+| 7 | 0, 3 |
+| 8 | 0, 1, 4 |
+| 9 | 1, 2, 5 |
+| 10 | 2, 6 |
+| 11 | 3 |
+| 12 | 0, 3, 4 |
+| 13 | 1, 4, 5 |
+| 14 | 2, 5, 6 |
+| 15 | 6 |
+| 16 | 3 |
+| 17 | 3, 4, 7 |
+| 18 | 4, 5, 8 |
+| 19 | 5, 6, 9 |
+| 20 | 6 |
+| 21 | 3, 7 |
+| 22 | 4, 7, 8 |
+| 23 | 5, 8, 9 |
+| 24 | 6, 9 |
+| 25 | 7 |
+| 26 | 7, 8 |
+| 27 | 8, 9 |
+| 28 | 9 |
+| 29 | 7 |
+| 30 | 8 |
+| 31 | 9 |
+
+### 5.11 Vertex -> Edges
+
+| Vertex | Edges |
+| --- | --- |
+| 0 | 0, 1 |
+| 1 | 2, 3 |
+| 2 | 4, 5 |
+| 3 | 0, 6 |
+| 4 | 1, 2, 7 |
+| 5 | 3, 4, 8 |
+| 6 | 5, 9 |
+| 7 | 6, 10, 11 |
+| 8 | 7, 12, 13 |
+| 9 | 8, 14, 15 |
+| 10 | 9, 16, 17 |
+| 11 | 10, 18 |
+| 12 | 11, 12, 19 |
+| 13 | 13, 14, 20 |
+| 14 | 15, 16, 21 |
+| 15 | 17, 22 |
+| 16 | 18, 23 |
+| 17 | 19, 24, 25 |
+| 18 | 20, 26, 27 |
+| 19 | 21, 28, 29 |
+| 20 | 22, 30 |
+| 21 | 23, 24, 31 |
+| 22 | 25, 26, 32 |
+| 23 | 27, 28, 33 |
+| 24 | 29, 30, 34 |
+| 25 | 31, 35 |
+| 26 | 32, 36, 37 |
+| 27 | 33, 38, 39 |
+| 28 | 34, 40 |
+| 29 | 35, 36 |
+| 30 | 37, 38 |
+| 31 | 39, 40 |
+
+### 5.12 Vertex -> Adjacent Vertices
+
+| Vertex | Neighbors |
+| --- | --- |
+| 0 | 3, 4 |
+| 1 | 4, 5 |
+| 2 | 5, 6 |
+| 3 | 0, 7 |
+| 4 | 0, 1, 8 |
+| 5 | 1, 2, 9 |
+| 6 | 2, 10 |
+| 7 | 3, 11, 12 |
+| 8 | 4, 12, 13 |
+| 9 | 5, 13, 14 |
+| 10 | 6, 14, 15 |
+| 11 | 7, 16 |
+| 12 | 7, 8, 17 |
+| 13 | 8, 9, 18 |
+| 14 | 9, 10, 19 |
+| 15 | 10, 20 |
+| 16 | 11, 21 |
+| 17 | 12, 21, 22 |
+| 18 | 13, 22, 23 |
+| 19 | 14, 23, 24 |
+| 20 | 15, 24 |
+| 21 | 16, 17, 25 |
+| 22 | 17, 18, 26 |
+| 23 | 18, 19, 27 |
+| 24 | 19, 20, 28 |
+| 25 | 21, 29 |
+| 26 | 22, 29, 30 |
+| 27 | 23, 30, 31 |
+| 28 | 24, 31 |
+| 29 | 25, 26 |
+| 30 | 26, 27 |
+| 31 | 27, 28 |
+
+### 5.13 Edge -> Vertices
+
+| Edge | Vertex A | Vertex B |
+| --- | --- | --- |
+| 0 | 0 | 3 |
+| 1 | 0 | 4 |
+| 2 | 1 | 4 |
+| 3 | 1 | 5 |
+| 4 | 2 | 5 |
+| 5 | 2 | 6 |
+| 6 | 3 | 7 |
+| 7 | 4 | 8 |
+| 8 | 5 | 9 |
+| 9 | 6 | 10 |
+| 10 | 7 | 11 |
+| 11 | 7 | 12 |
+| 12 | 8 | 12 |
+| 13 | 8 | 13 |
+| 14 | 9 | 13 |
+| 15 | 9 | 14 |
+| 16 | 10 | 14 |
+| 17 | 10 | 15 |
+| 18 | 11 | 16 |
+| 19 | 12 | 17 |
+| 20 | 13 | 18 |
+| 21 | 14 | 19 |
+| 22 | 15 | 20 |
+| 23 | 16 | 21 |
+| 24 | 17 | 21 |
+| 25 | 17 | 22 |
+| 26 | 18 | 22 |
+| 27 | 18 | 23 |
+| 28 | 19 | 23 |
+| 29 | 19 | 24 |
+| 30 | 20 | 24 |
+| 31 | 21 | 25 |
+| 32 | 22 | 26 |
+| 33 | 23 | 27 |
+| 34 | 24 | 28 |
+| 35 | 25 | 29 |
+| 36 | 26 | 29 |
+| 37 | 26 | 30 |
+| 38 | 27 | 30 |
+| 39 | 27 | 31 |
+| 40 | 28 | 31 |
+
+### 5.14 Edge -> Tiles
+
+| Edge | Tiles |
+| --- | --- |
+| 0 | 0 |
+| 1 | 0 |
+| 2 | 1 |
+| 3 | 1 |
+| 4 | 2 |
+| 5 | 2 |
+| 6 | 0 |
+| 7 | 0, 1 |
+| 8 | 1, 2 |
+| 9 | 2 |
+| 10 | 3 |
+| 11 | 0, 3 |
+| 12 | 0, 4 |
+| 13 | 1, 4 |
+| 14 | 1, 5 |
+| 15 | 2, 5 |
+| 16 | 2, 6 |
+| 17 | 6 |
+| 18 | 3 |
+| 19 | 3, 4 |
+| 20 | 4, 5 |
+| 21 | 5, 6 |
+| 22 | 6 |
+| 23 | 3 |
+| 24 | 3, 7 |
+| 25 | 4, 7 |
+| 26 | 4, 8 |
+| 27 | 5, 8 |
+| 28 | 5, 9 |
+| 29 | 6, 9 |
+| 30 | 6 |
+| 31 | 7 |
+| 32 | 7, 8 |
+| 33 | 8, 9 |
+| 34 | 9 |
+| 35 | 7 |
+| 36 | 7 |
+| 37 | 8 |
+| 38 | 8 |
+| 39 | 9 |
+| 40 | 9 |
+
+---
+
+## 6. Standard Map (Radius 2)
 
 ![Board topology indices](board-topology.svg)
 
-### 5.1 Counts
+### 6.1 Counts
 
 | Element | Count |
 | --- | --- |
@@ -540,7 +948,7 @@ Tile rows (top-to-bottom): 3, 4, 5, 4, 3.
 Port types for the standard map (assigned during setup): 4 generic (3:1) and
 5 resource-specific (2:1 wood, brick, sheep, wheat, ore).
 
-### 5.2 Tile Table
+### 6.2 Tile Table
 
 | Tile | q | r |
 | --- | --- | --- |
@@ -564,7 +972,7 @@ Port types for the standard map (assigned during setup): 4 generic (3:1) and
 | 17 | +1 | -2 |
 | 18 | +2 | -2 |
 
-### 5.3 Vertex Table
+### 6.3 Vertex Table
 
 | Vertex | Triplet (tile axial coords) |
 | --- | --- |
@@ -623,7 +1031,7 @@ Port types for the standard map (assigned during setup): 4 generic (3:1) and
 | 52 | (+1, -3) (+1, -2) (+2, -3) |
 | 53 | (+2, -3) (+2, -2) (+3, -3) |
 
-### 5.4 Edge Table
+### 6.4 Edge Table
 
 | Edge | Vertex A | Vertex B |
 | --- | --- | --- |
@@ -700,11 +1108,11 @@ Port types for the standard map (assigned during setup): 4 generic (3:1) and
 | 70 | 52 | 49 |
 | 71 | 53 | 50 |
 
-### 5.5 Coastal Edges (30 total)
+### 6.5 Coastal Edges (30 total)
 
 `0, 1, 2, 3, 4, 5, 7, 9, 13, 14, 15, 22, 27, 28, 29, 38, 39, 45, 52, 53, 54, 59, 64, 65, 66, 67, 68, 69, 70, 71`
 
-### 5.6 Port Table (9 ports)
+### 6.6 Port Table (9 ports)
 
 Ports are ordered clockwise from the top of the board. Each port is a
 coastal edge connecting two vertices on the board perimeter.
@@ -721,7 +1129,7 @@ coastal edge connecting two vertices on the board perimeter.
 | 7 | 27 | 21 |
 | 8 | 11 | 7 |
 
-### 5.7 Tile -> Vertices
+### 6.7 Tile -> Vertices
 
 Each tile has exactly 6 corner vertices.
 
@@ -747,7 +1155,7 @@ Each tile has exactly 6 corner vertices.
 | 17 | 40, 44, 45, 48, 49, 52 |
 | 18 | 41, 45, 46, 49, 50, 53 |
 
-### 5.8 Tile -> Edges
+### 6.8 Tile -> Edges
 
 Each tile has exactly 6 boundary edges.
 
@@ -773,7 +1181,7 @@ Each tile has exactly 6 boundary edges.
 | 17 | 56, 60, 61, 63, 67, 70 |
 | 18 | 57, 62, 63, 65, 68, 71 |
 
-### 5.9 Tile -> Adjacent Tiles
+### 6.9 Tile -> Adjacent Tiles
 
 | Tile | Neighbors |
 | --- | --- |
@@ -797,7 +1205,7 @@ Each tile has exactly 6 boundary edges.
 | 17 | 13, 14, 16, 18 |
 | 18 | 14, 15, 17 |
 
-### 5.10 Vertex -> Tiles
+### 6.10 Vertex -> Tiles
 
 Each vertex touches 1, 2, or 3 on-board tiles.
 
@@ -862,7 +1270,7 @@ Each vertex touches 1, 2, or 3 on-board tiles.
 | 52 | 17 |
 | 53 | 18 |
 
-### 5.11 Vertex -> Edges
+### 6.11 Vertex -> Edges
 
 | Vertex | Edges |
 | --- | --- |
@@ -921,7 +1329,7 @@ Each vertex touches 1, 2, or 3 on-board tiles.
 | 52 | 67, 70 |
 | 53 | 68, 71 |
 
-### 5.12 Vertex -> Adjacent Vertices
+### 6.12 Vertex -> Adjacent Vertices
 
 | Vertex | Neighbors |
 | --- | --- |
@@ -980,7 +1388,7 @@ Each vertex touches 1, 2, or 3 on-board tiles.
 | 52 | 48, 49 |
 | 53 | 49, 50 |
 
-### 5.13 Edge -> Vertices
+### 6.13 Edge -> Vertices
 
 | Edge | Vertex A | Vertex B |
 | --- | --- | --- |
@@ -1057,7 +1465,7 @@ Each vertex touches 1, 2, or 3 on-board tiles.
 | 70 | 52 | 49 |
 | 71 | 53 | 50 |
 
-### 5.14 Edge -> Tiles
+### 6.14 Edge -> Tiles
 
 | Edge | Tiles |
 | --- | --- |
@@ -1136,7 +1544,7 @@ Each vertex touches 1, 2, or 3 on-board tiles.
 
 ---
 
-## 6. Regeneration
+## 7. Regeneration
 
 All tables and diagrams in this document are generated by
 `scripts/generate_board_topology_svg.py`:
@@ -1145,12 +1553,15 @@ All tables and diagrams in this document are generated by
 # Generate SVG diagram
 python3 scripts/generate_board_topology_svg.py standard
 python3 scripts/generate_board_topology_svg.py mini
+python3 scripts/generate_board_topology_svg.py small
 
 # Dump index tables (tile, vertex, edge, coastal)
 python3 scripts/generate_board_topology_svg.py standard --dump-tables
 python3 scripts/generate_board_topology_svg.py mini --dump-tables
+python3 scripts/generate_board_topology_svg.py small --dump-tables
 
 # Dump adjacency tables
 python3 scripts/generate_board_topology_svg.py standard --dump-adjacency
 python3 scripts/generate_board_topology_svg.py mini --dump-adjacency
+python3 scripts/generate_board_topology_svg.py small --dump-adjacency
 ```
