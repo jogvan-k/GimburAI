@@ -302,22 +302,22 @@ internal class SimulationRunner
             return;
         }
 
-        // Format: one result per line
-        // "rollouts|p1_wins,p2_wins,...,pN_wins|serialized_state"
+        // Format: one result per line (tab-separated)
+        // "rollouts\tp1_wins,p2_wins,...,pN_wins\tserialized_state"
         // Win counts are raw MCTS simulation wins (not normalized).
         // Win rate = winCount / rollouts.
         var sb = new StringBuilder(stats.Results.Count * 600);
         foreach (var result in stats.Results)
         {
             sb.Append(result.Rollouts);
-            sb.Append('|');
+            sb.Append('\t');
             // Win counts for players 1..N (skip index 0 which is unused).
             var counts = result.WinCounts
                 .Skip(1)
                 .Take(stats.PlayerCount)
                 .Select(c => c.ToString("F2"));
             sb.Append(string.Join(',', counts));
-            sb.Append('|');
+            sb.Append('\t');
             sb.AppendLine(result.SerializedState);
         }
 
