@@ -516,17 +516,14 @@ public class CatanStateTests
         ResourceType resource,
         int value)
     {
-        var topology = state.Board.Topology;
-        var resourceBase =
-            (topology.TileCount * 2)
-            + 1
-            + 2
-            + 2
-            + topology.VertexCount
-            + topology.EdgeCount
-            + topology.PortCount;
-        var index = resourceBase + ((player - 1) * 5) + ResourceIndex(resource);
-        return ReplaceToken(serialized, index, value);
+        // Section 7 (index 7): per-player resources, 5 chars per player, '/' between players
+        var sections = serialized.Split('|');
+        var groups = sections[7].Split('/');
+        var chars = groups[player - 1].ToCharArray();
+        chars[ResourceIndex(resource)] = CrockfordBase32.Encode(value);
+        groups[player - 1] = new string(chars);
+        sections[7] = string.Join('/', groups);
+        return string.Join('|', sections);
     }
 
     private static string SetDevCard(
@@ -536,19 +533,14 @@ public class CatanStateTests
         DevCardType card,
         int value)
     {
-        var topology = state.Board.Topology;
-        var devBase =
-            (topology.TileCount * 2)
-            + 1
-            + 2
-            + 2
-            + topology.VertexCount
-            + topology.EdgeCount
-            + topology.PortCount
-            + (state.PlayerCount * 5)
-            + state.PlayerCount;
-        var index = devBase + ((player - 1) * 5) + (int)card;
-        return ReplaceToken(serialized, index, value);
+        // Section 9 (index 9): per-player dev cards, 5 chars per player, '/' between players
+        var sections = serialized.Split('|');
+        var groups = sections[9].Split('/');
+        var chars = groups[player - 1].ToCharArray();
+        chars[(int)card] = CrockfordBase32.Encode(value);
+        groups[player - 1] = new string(chars);
+        sections[9] = string.Join('/', groups);
+        return string.Join('|', sections);
     }
 
     private static int ResourceIndex(ResourceType resource) => resource switch
@@ -560,11 +552,4 @@ public class CatanStateTests
         ResourceType.Ore => 4,
         _ => throw new ArgumentOutOfRangeException(nameof(resource), resource, null),
     };
-
-    private static string ReplaceToken(string serialized, int index, int value)
-    {
-        var tokens = serialized.Split('|');
-        tokens[index] = value.ToString("D2");
-        return string.Join('|', tokens);
-    }
 }
