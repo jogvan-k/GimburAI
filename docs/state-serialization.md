@@ -1,6 +1,6 @@
 # State Serialization
 
-This document defines a fixed-length, human-readable board state serialization for 2-4 players, plus a reversible compact form for transformer ingestion. Counts are given for both the **mini map** (radius 1) and the **standard map** (radius 2).
+This document defines a fixed-length, human-readable board state serialization for 2-4 players, plus a reversible compact form for transformer ingestion. Counts are given for the **mini map** (radius 1), the **small map** (10 tiles, non-circular), and the **standard map** (radius 2).
 
 ## Encoding Overview
 
@@ -54,7 +54,7 @@ All values below are shown in decimal. In serialized form each value is a **sing
 - `1`..`4` = road by player 1..4
 
 ### Port Types (Harbors)
-Each port is a coastal edge connecting two vertices on the board perimeter (see `docs/topology-reference.md` §5.6). Only the **type** is variable and needs serialization:
+Each port is a coastal edge connecting two vertices on the board perimeter (see `docs/topology-reference.md` §4.6, §5.6, §6.6). Only the **type** is variable and needs serialization:
 - `1` = 3:1 generic
 - `2` = wood
 - `3` = brick
@@ -68,13 +68,13 @@ Tokens are emitted in the order below. All counts are fixed-length. Major sectio
 
 Let `T` = number of tiles, `V` = number of vertices, `E` = number of edges, `P` = number of ports, `N` = number of players.
 
-| Parameter | Mini | Standard |
-|-----------|------|----------|
-| T (tiles) | 7 | 19 |
-| V (vertices) | 24 | 54 |
-| E (edges) | 30 | 72 |
-| P (ports) | 6 | 9 |
-| N (players) | 2 | 3–4 |
+| Parameter | Mini | Small | Standard |
+|-----------|------|-------|----------|
+| T (tiles) | 7 | 10 | 19 |
+| V (vertices) | 24 | 32 | 54 |
+| E (edges) | 30 | 41 | 72 |
+| P (ports) | 6 | 7 | 9 |
+| N (players) | 2 | 2–3 | 3–4 |
 
 ### 1) Tiles
 
@@ -84,7 +84,7 @@ For each tile index `t` in order:
 
 Tokens within this section are separated by `/`.
 
-**Tokens**: `T * 2` — mini: 14, standard: 38.
+**Tokens**: `T * 2` — mini: 14, small: 20, standard: 38.
 
 ### 2) Robber
 
@@ -111,14 +111,14 @@ Tokens within this section are separated by `/`.
 For each vertex index `v`:
 - `vertex[v].occupancy` (0..8)
 
-**Tokens**: `V` — mini: 24, standard: 54.
+**Tokens**: `V` — mini: 24, small: 32, standard: 54.
 
 ### 6) Edges
 
 For each edge index `e`:
 - `edge[e].occupancy` (0..4)
 
-**Tokens**: `E` — mini: 30, standard: 72.
+**Tokens**: `E` — mini: 30, small: 41, standard: 72.
 
 ### 7) Ports / Harbors
 
@@ -127,36 +127,36 @@ For each **port index** `p` (0..P-1), in the fixed order defined by the topology
 
 Port positions (which two boundary vertices each port connects) are fixed by the board topology and do not need to be serialized. Only the randomly assigned type is stored.
 
-**Tokens**: `P` — mini: 6, standard: 9.
+**Tokens**: `P` — mini: 6, small: 7, standard: 9.
 
 ### 8) Per-Player Resources (5 per player)
 
 For each player in order (1..N):
-- `resources[wood, brick, sheep, wheat, ore]` (0..19 standard, 0..10 mini; all fit in single base-32 char)
+- `resources[wood, brick, sheep, wheat, ore]` (0..19 standard, 0..14 small, 0..10 mini; all fit in single base-32 char)
 
 Each player's 5 resource tokens are concatenated; players are separated by `/`.
 
-**Tokens**: `5 * N` — mini: 10, standard: 15–20.
+**Tokens**: `5 * N` — mini: 10, small: 10–15, standard: 15–20.
 
 ### 9) Per-Player Knights Played
 
 For each player (1..N):
-- `knightsPlayed` (0..14 standard, 0..7 mini)
+- `knightsPlayed` (0..14 standard, 0..10 small, 0..7 mini)
 
 Players are separated by `/`.
 
-**Tokens**: `1 * N` — mini: 2, standard: 3–4.
+**Tokens**: `1 * N` — mini: 2, small: 2–3, standard: 3–4.
 
 ### 10) Per-Player Dev Cards in Hand (5 per player)
 
 Order: `[knight, victoryPoint, roadBuilding, monopoly, yearOfPlenty]`
 
 For each player (1..N):
-- `devCards[5]` (0..14 standard, 0..7 mini; per card type)
+- `devCards[5]` (0..14 standard, 0..10 small, 0..7 mini; per card type)
 
 Each player's 5 dev-card tokens are concatenated; players are separated by `/`.
 
-**Tokens**: `5 * N` — mini: 10, standard: 15–20.
+**Tokens**: `5 * N` — mini: 10, small: 10–15, standard: 15–20.
 
 ## Total Token Count
 
@@ -173,6 +173,16 @@ Let `T`, `V`, `E`, `P` be map-dependent and `N` be the number of players.
 (14 + 24 + 30 + 6 + 5) + 11*2
 = 79 + 22 = 101 tokens
 ```
+
+### Small Map (T=10, V=32, E=41, P=7)
+
+```
+(20 + 32 + 41 + 7 + 5) + 11*N
+= 105 + 11*N
+```
+
+- 2 players: `105 + 22 = 127` tokens
+- 3 players: `105 + 33 = 138` tokens
 
 ### Standard Map (T=19, V=54, E=72, P=9)
 
@@ -212,6 +222,34 @@ Board state:
 Full serialized (sections separated by `|`):
 ```
 1/6/2/4/3/5/4/A/0/0/4/9/5/3|4|17|00|000001000000000200000000|000001000000000000000000000000|134132|21010/00130|0/0|00000/00000
+```
+
+### Small Map (2 players, early game)
+
+After initial placement (1 round): each player has placed 1 settlement and 1 road. One turn has begun (player 2 is about to roll).
+
+Tile layout (10 tiles): wheat/3, brick/4, sheep/5, wood/A, brick/B, wood/C, ore/6, wheat/9, sheep/8, desert/0.
+
+Tiles (resource/pip pairs separated by `/`):
+```
+4/3/2/4/3/5/1/A/2/B/1/C/5/6/4/9/3/8/0/0
+```
+
+Board state:
+- **Robber**: tile 9 (desert)
+- **Current turn**: player 2, pre-roll (stage 4)
+- **Longest road / largest army**: none / none
+- **Vertices**: player 1 settlements on v0 and v7; player 2 settlements on v1 and v2
+- **Edges**: player 1 roads on e0 and e6; player 2 roads on e2 and e4
+- **Ports**: generic, wood, wheat, generic, sheep, generic, brick
+- **Player 1 resources**: wood=1, brick=0, sheep=0, wheat=1, ore=0
+- **Player 2 resources**: wood=0, brick=0, sheep=1, wheat=0, ore=0
+- **Knights played**: 0 / 0
+- **Dev cards**: none / none
+
+Full serialized (sections separated by `|`):
+```
+4/3/2/4/3/5/1/A/2/B/1/C/5/6/4/9/3/8/0/0|9|24|00|12200001000000000000000000000000|10202010000000000000000000000000000000000|1251413|10010/00100|0/0|00000/00000
 ```
 
 ### Standard Map (3 players, mid-game)
@@ -260,6 +298,19 @@ Compact string (`101` characters):
 1624354A004953417000000010000000002000000000000010000000000000000000000001341322101000130000000000000
 ```
 
+### Small Map Example
+
+From the human-readable example above:
+```
+4324351A2B1C56493800 9 24 00 12200001000000000000000000000000 10202010000000000000000000000000000000000 1251413 1001000100 00 0000000000
+```
+(spaces added for clarity — actual compact form has no spaces)
+
+Compact string (`127` characters):
+```
+4324351A2B1C5649380092400122000010000000000000000000000001020201000000000000000000000000000000000012514131001000100000000000000
+```
+
 ### Standard Map Example
 
 Compact string (`211` characters):
@@ -269,6 +320,8 @@ Compact string (`211` characters):
 
 Compact string lengths:
 - **Mini map** (2 players): `101` characters
+- **Small map** (2 players): `127` characters
+- **Small map** (3 players): `138` characters
 - **Standard map** (3 players): `211` characters
 - **Standard map** (4 players): `222` characters
 
@@ -277,7 +330,7 @@ This yields a compact, fixed-length string that is reversible to the human-reada
 ## Notes and Constraints
 
 - All indices and ordering are defined in `docs/board-topology.md` and `docs/topology-reference.md`.
-- Port positions are fixed by the topology. Standard map: 4 generic (3:1) + 5 resource-specific (2:1) = 9 ports. Mini map: 3 generic (3:1) + 3 resource-specific (2:1) = 6 ports.
+- Port positions are fixed by the topology. Standard map: 4 generic (3:1) + 5 resource-specific (2:1) = 9 ports. Small map: 3 generic (3:1) + 4 resource-specific (2:1) = 7 ports. Mini map: 3 generic (3:1) + 3 resource-specific (2:1) = 6 ports.
 - Desert tiles must have number token `0`.
 - Turn stage `0`–`3` applies during initial placement. Turn stages `4`–`7` apply during normal play.
 - If `currentPlayer = 0`, the game has not started or is between rounds.

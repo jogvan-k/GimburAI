@@ -28,7 +28,7 @@ internal static class RootCommandFactory
         };
         var mapConfigOption = new Option<string?>("--map-config")
         {
-            Description = "Map layout identifier (standard or mini)",
+            Description = "Map layout identifier (mini, small, or standard)",
             Recursive = true,
         };
         var verbosityOption = new Option<string>("--verbosity", "-v")

@@ -222,4 +222,35 @@ public sealed class GameConfig
         cityCost: StandardCityCost,
         devCardCost: StandardDevCardCost,
         initialPlacementRounds: 1);
+
+    /// <summary>
+    /// Small 2-3 player Catan game configuration.
+    /// 10-tile oval board, 7 VP to win, 2 initial placement rounds.
+    /// Intermediate supply limits and dev card pool between Mini and Standard.
+    /// </summary>
+    public static GameConfig Small { get; } = new(
+        map: MapConfig.Small,
+        minPlayers: 2,
+        maxPlayers: 3,
+        maxSettlements: 5,
+        maxCities: 3,
+        maxRoads: 12,
+        victoryPointsToWin: 7,
+        longestRoadMinimum: 5,
+        largestArmyMinimum: 3,
+        discardThreshold: 6,
+        resourceCardsPerType: 14,
+        devCardCounts: ImmutableDictionary.CreateRange(new[]
+        {
+            KeyValuePair.Create(DevCardType.Knight, 10),
+            KeyValuePair.Create(DevCardType.VictoryPoint, 3),
+            KeyValuePair.Create(DevCardType.RoadBuilding, 1),
+            KeyValuePair.Create(DevCardType.Monopoly, 1),
+            KeyValuePair.Create(DevCardType.YearOfPlenty, 1),
+        }),
+        roadCost: StandardRoadCost,
+        settlementCost: StandardSettlementCost,
+        cityCost: StandardCityCost,
+        devCardCost: StandardDevCardCost,
+        initialPlacementRounds: 2);
 }

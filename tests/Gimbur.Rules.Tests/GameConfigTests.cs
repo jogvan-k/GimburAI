@@ -190,6 +190,81 @@ public class GameConfigTests
         Assert.That(GameConfig.Mini.DevCardCost, Is.EqualTo(GameConfig.Standard.DevCardCost));
     }
 
+    // ── Small config values ─────────────────────────────────────────
+
+    [Test]
+    public void Small_PlayerRange_2To3()
+    {
+        Assert.That(GameConfig.Small.MinPlayers, Is.EqualTo(2));
+        Assert.That(GameConfig.Small.MaxPlayers, Is.EqualTo(3));
+    }
+
+    [Test]
+    public void Small_BuildingSupply()
+    {
+        Assert.That(GameConfig.Small.MaxSettlements, Is.EqualTo(5));
+        Assert.That(GameConfig.Small.MaxCities, Is.EqualTo(3));
+        Assert.That(GameConfig.Small.MaxRoads, Is.EqualTo(12));
+    }
+
+    [Test]
+    public void Small_VictoryConditions()
+    {
+        Assert.That(GameConfig.Small.VictoryPointsToWin, Is.EqualTo(7));
+        Assert.That(GameConfig.Small.LongestRoadMinimum, Is.EqualTo(5));
+        Assert.That(GameConfig.Small.LargestArmyMinimum, Is.EqualTo(3));
+    }
+
+    [Test]
+    public void Small_DiscardThreshold_Is6()
+    {
+        Assert.That(GameConfig.Small.DiscardThreshold, Is.EqualTo(6));
+    }
+
+    [Test]
+    public void Small_ResourceCardsPerType_Is14()
+    {
+        Assert.That(GameConfig.Small.ResourceCardsPerType, Is.EqualTo(14));
+    }
+
+    [Test]
+    public void Small_InitialPlacementRounds_Is2()
+    {
+        Assert.That(GameConfig.Small.InitialPlacementRounds, Is.EqualTo(2));
+    }
+
+    [Test]
+    public void Small_Map_IsSmall()
+    {
+        Assert.That(GameConfig.Small.Map, Is.SameAs(MapConfig.Small));
+    }
+
+    [Test]
+    public void Small_DevCardCounts()
+    {
+        var counts = GameConfig.Small.DevCardCounts;
+        Assert.That(counts[DevCardType.Knight], Is.EqualTo(10));
+        Assert.That(counts[DevCardType.VictoryPoint], Is.EqualTo(3));
+        Assert.That(counts[DevCardType.RoadBuilding], Is.EqualTo(1));
+        Assert.That(counts[DevCardType.Monopoly], Is.EqualTo(1));
+        Assert.That(counts[DevCardType.YearOfPlenty], Is.EqualTo(1));
+    }
+
+    [Test]
+    public void Small_TotalDevCards_Is16()
+    {
+        Assert.That(GameConfig.Small.TotalDevCards, Is.EqualTo(16));
+    }
+
+    [Test]
+    public void Small_SharesSameBuildingCosts()
+    {
+        Assert.That(GameConfig.Small.RoadCost, Is.EqualTo(GameConfig.Standard.RoadCost));
+        Assert.That(GameConfig.Small.SettlementCost, Is.EqualTo(GameConfig.Standard.SettlementCost));
+        Assert.That(GameConfig.Small.CityCost, Is.EqualTo(GameConfig.Standard.CityCost));
+        Assert.That(GameConfig.Small.DevCardCost, Is.EqualTo(GameConfig.Standard.DevCardCost));
+    }
+
     // ── Supply limit enforcement via Board ──────────────────────────
 
     private Board CreateMiniBoard(int seed = 42)

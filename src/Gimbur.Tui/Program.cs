@@ -43,7 +43,12 @@ internal static class Program
         Console.WriteLine();
 
         var mapChoice = PromptMapTopology();
-        var config = mapChoice == MapChoice.Mini ? GameConfig.Mini : GameConfig.Standard;
+        var config = mapChoice switch
+        {
+            MapChoice.Mini => GameConfig.Mini,
+            MapChoice.Small => GameConfig.Small,
+            _ => GameConfig.Standard,
+        };
         var players = PromptPlayerCount(config.MinPlayers, config.MaxPlayers);
         var controllers = PromptPlayerControllers(players);
 
@@ -861,7 +866,7 @@ internal static class Program
     {
         while (true)
         {
-            Console.Write("Select map topology ([m]ini/[s]tandard): ");
+            Console.Write("Select map topology ([m]ini/[sm]all/[s]tandard): ");
             var input = Console.ReadLine()?.Trim().ToLowerInvariant();
 
             if (input is "m" or "mini")
@@ -869,12 +874,17 @@ internal static class Program
                 return MapChoice.Mini;
             }
 
+            if (input is "sm" or "small")
+            {
+                return MapChoice.Small;
+            }
+
             if (input is "s" or "standard")
             {
                 return MapChoice.Standard;
             }
 
-            Console.WriteLine("Please enter 'mini' (or 'm') or 'standard' (or 's').");
+            Console.WriteLine("Please enter 'mini' (or 'm'), 'small' (or 'sm'), or 'standard' (or 's').");
         }
     }
 
@@ -1663,5 +1673,6 @@ internal sealed class Canvas
 internal enum MapChoice
 {
     Mini,
+    Small,
     Standard,
 }

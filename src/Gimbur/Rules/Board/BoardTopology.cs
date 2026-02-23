@@ -35,8 +35,9 @@ public readonly record struct VertexKey(HexCoord A, HexCoord B, HexCoord C) : IC
 }
 
 /// <summary>
-/// Immutable board topology for a hex grid of a given radius.
+/// Immutable board topology for a hex grid.
 /// Computes tile positions, vertices, edges, ports, and all adjacency lookups.
+/// Supports both circular boards (defined by radius) and arbitrary tile sets.
 /// </summary>
 /// <remarks>
 /// All indices follow the ordering defined in docs/topology-reference.md:
@@ -46,9 +47,6 @@ public readonly record struct VertexKey(HexCoord A, HexCoord B, HexCoord C) : IC
 /// </remarks>
 public sealed class BoardTopology
 {
-    /// <summary>Board radius (1 = mini 7-tile, 2 = standard 19-tile).</summary>
-    public int Radius { get; }
-
     // ── Constants (must be initialized before static instances) ────
 
     private static readonly double Sqrt3 = Math.Sqrt(3.0);
@@ -103,22 +101,49 @@ public sealed class BoardTopology
     // ── Precomputed instances ───────────────────────────────────────
 
     /// <summary>Standard 19-tile board (radius 2).</summary>
-    public static BoardTopology Standard { get; } = new(2);
+    public static BoardTopology Standard { get; } = FromRadius(2);
 
     /// <summary>Mini 7-tile board (radius 1).</summary>
-    public static BoardTopology Mini { get; } = new(1);
+    public static BoardTopology Mini { get; } = FromRadius(1);
 
-    // ── Constructor ─────────────────────────────────────────────────
+    /// <summary>
+    /// Small 10-tile board: two central hexes (0,0) and (1,0) with one layer
+    /// of hexes around them. Non-circular oval shape.
+    /// </summary>
+    public static BoardTopology Small { get; } = FromTiles(GenerateSmallTileCoords(), portCount: 7);
 
-    public BoardTopology(int radius)
+    // ── Factory methods ─────────────────────────────────────────────
+
+    /// <summary>
+    /// Creates a circular board topology of the given radius.
+    /// Radius 1 = 7 tiles (mini), radius 2 = 19 tiles (standard).
+    /// Port count is computed as 3 * (radius + 1).
+    /// </summary>
+    public static BoardTopology FromRadius(int radius)
     {
         if (radius < 1)
             throw new ArgumentOutOfRangeException(nameof(radius), radius, "Radius must be >= 1");
 
-        Radius = radius;
+        var tileCoords = GenerateCircularTileCoords(radius);
+        return new BoardTopology(tileCoords, portCount: 3 * (radius + 1));
+    }
 
-        // 1) Generate tile coordinates, sorted by screen position.
-        var tileCoords = GenerateTileCoords(radius);
+    /// <summary>
+    /// Creates a board topology from an explicit set of tile coordinates.
+    /// </summary>
+    public static BoardTopology FromTiles(IEnumerable<HexCoord> tiles, int portCount)
+    {
+        return new BoardTopology(tiles.ToList(), portCount);
+    }
+
+    // ── Constructor ─────────────────────────────────────────────────
+
+    private BoardTopology(List<HexCoord> tileCoords, int portCount)
+    {
+        if (tileCoords.Count == 0)
+            throw new ArgumentException("Must provide at least one tile", nameof(tileCoords));
+
+        // 1) Sort tile coordinates by screen position.
         var tileSet = tileCoords.ToHashSet();
         Tiles = [.. SortByScreenPosition(tileCoords)];
 
@@ -147,12 +172,15 @@ public sealed class BoardTopology
         CoastalEdges = [.. FindCoastalEdges(edgeList, edgeTiles)];
 
         // 5) Generate ports.
-        Ports = [.. GeneratePorts(radius, vertexList, vertexIndex, edgeList, edgeTiles)];
+        Ports = [.. GeneratePorts(portCount, vertexList, vertexIndex, edgeList, edgeTiles)];
     }
 
     // ── Tile generation ─────────────────────────────────────────────
 
-    private static List<HexCoord> GenerateTileCoords(int radius)
+    /// <summary>
+    /// Generates tile coordinates for a circular hex grid of the given radius.
+    /// </summary>
+    private static List<HexCoord> GenerateCircularTileCoords(int radius)
     {
         var tiles = new List<HexCoord>();
         for (var r = -radius; r <= radius; r++)
@@ -163,6 +191,23 @@ public sealed class BoardTopology
                 tiles.Add(new HexCoord(q, r));
         }
         return tiles;
+    }
+
+    /// <summary>
+    /// Generates tile coordinates for the small oval board: two central hexes
+    /// (0,0) and (1,0) with one layer of hexes around them, totalling 10 tiles.
+    /// </summary>
+    private static List<HexCoord> GenerateSmallTileCoords()
+    {
+        var centers = new[] { new HexCoord(0, 0), new HexCoord(1, 0) };
+        var tileSet = new HashSet<HexCoord>();
+        foreach (var center in centers)
+        {
+            tileSet.Add(center);
+            foreach (var dir in HexCoord.Directions)
+                tileSet.Add(center + dir);
+        }
+        return [.. tileSet];
     }
 
     // ── Screen-position sorting ─────────────────────────────────────
@@ -413,7 +458,7 @@ public sealed class BoardTopology
     // ── Port generation ─────────────────────────────────────────────
 
     private static List<(int, int)> GeneratePorts(
-        int radius,
+        int portCount,
         List<VertexKey> vertices,
         Dictionary<VertexKey, int> vertexIndex,
         List<(int A, int B)> edges,
@@ -501,11 +546,10 @@ public sealed class BoardTopology
 
         // Select evenly-spaced port positions along the ring.
         var total = ringEdges.Count;
-        var nports = 3 * (radius + 1);
-        var ports = new List<(int, int)>(nports);
-        for (var i = 0; i < nports; i++)
+        var ports = new List<(int, int)>(portCount);
+        for (var i = 0; i < portCount; i++)
         {
-            var pos = (1 + i * total / nports) % total;
+            var pos = (1 + i * total / portCount) % total;
             ports.Add(ringEdges[pos]);
         }
 

@@ -13,7 +13,6 @@ public class BoardTopologyTests
         var t = BoardTopology.Standard;
         Assert.Multiple(() =>
         {
-            Assert.That(t.Radius, Is.EqualTo(2));
             Assert.That(t.TileCount, Is.EqualTo(19));
             Assert.That(t.VertexCount, Is.EqualTo(54));
             Assert.That(t.EdgeCount, Is.EqualTo(72));
@@ -159,7 +158,6 @@ public class BoardTopologyTests
         var t = BoardTopology.Mini;
         Assert.Multiple(() =>
         {
-            Assert.That(t.Radius, Is.EqualTo(1));
             Assert.That(t.TileCount, Is.EqualTo(7));
             Assert.That(t.VertexCount, Is.EqualTo(24));
             Assert.That(t.EdgeCount, Is.EqualTo(30));
@@ -205,13 +203,170 @@ public class BoardTopologyTests
         });
     }
 
+    // ── Small map (10 tiles, non-circular) ─────────────────────────
+
+    [Test]
+    public void Small_HasCorrectCounts()
+    {
+        var t = BoardTopology.Small;
+        Assert.Multiple(() =>
+        {
+            Assert.That(t.TileCount, Is.EqualTo(10));
+            Assert.That(t.VertexCount, Is.EqualTo(32));
+            Assert.That(t.EdgeCount, Is.EqualTo(41));
+            Assert.That(t.PortCount, Is.EqualTo(7));
+            Assert.That(t.CoastalEdges.Length, Is.EqualTo(22));
+        });
+    }
+
+    [Test]
+    public void Small_TileCoordinatesMatchExpected()
+    {
+        var t = BoardTopology.Small;
+        // Sorted by screen position: top row, middle row, bottom row.
+        Assert.Multiple(() =>
+        {
+            Assert.That(t.Tiles[0], Is.EqualTo(new HexCoord(-1, 1)));
+            Assert.That(t.Tiles[1], Is.EqualTo(new HexCoord(0, 1)));
+            Assert.That(t.Tiles[2], Is.EqualTo(new HexCoord(1, 1)));
+            Assert.That(t.Tiles[3], Is.EqualTo(new HexCoord(-1, 0)));
+            Assert.That(t.Tiles[4], Is.EqualTo(new HexCoord(0, 0)));
+            Assert.That(t.Tiles[5], Is.EqualTo(new HexCoord(1, 0)));
+            Assert.That(t.Tiles[6], Is.EqualTo(new HexCoord(2, 0)));
+            Assert.That(t.Tiles[7], Is.EqualTo(new HexCoord(0, -1)));
+            Assert.That(t.Tiles[8], Is.EqualTo(new HexCoord(1, -1)));
+            Assert.That(t.Tiles[9], Is.EqualTo(new HexCoord(2, -1)));
+        });
+    }
+
+    [Test]
+    public void Small_PortVertexPairsMatchExpected()
+    {
+        var t = BoardTopology.Small;
+        var expected = new (int, int)[]
+        {
+            (4, 1), (2, 6), (15, 20), (28, 31), (30, 26), (25, 21), (11, 7),
+        };
+
+        Assert.That(t.Ports.Length, Is.EqualTo(7));
+        for (var i = 0; i < expected.Length; i++)
+        {
+            Assert.That(t.Ports[i], Is.EqualTo(expected[i]),
+                $"Port P{i} mismatch");
+        }
+    }
+
+    [Test]
+    public void Small_EachTileHas6Vertices()
+    {
+        var t = BoardTopology.Small;
+        for (var ti = 0; ti < t.TileCount; ti++)
+        {
+            Assert.That(t.TileVertices[ti].Length, Is.EqualTo(6),
+                $"Tile {ti} should have 6 vertices");
+        }
+    }
+
+    [Test]
+    public void Small_EachTileHas6Edges()
+    {
+        var t = BoardTopology.Small;
+        for (var ti = 0; ti < t.TileCount; ti++)
+        {
+            Assert.That(t.TileEdges[ti].Length, Is.EqualTo(6),
+                $"Tile {ti} should have 6 edges");
+        }
+    }
+
+    [Test]
+    public void Small_VertexDegrees()
+    {
+        var t = BoardTopology.Small;
+        var degree2 = 0;
+        var degree3 = 0;
+        for (var vi = 0; vi < t.VertexCount; vi++)
+        {
+            var deg = t.VertexEdges[vi].Length;
+            Assert.That(deg, Is.EqualTo(2).Or.EqualTo(3),
+                $"Vertex {vi} has unexpected degree {deg}");
+            if (deg == 2) degree2++;
+            else degree3++;
+        }
+        Assert.Multiple(() =>
+        {
+            Assert.That(degree2, Is.EqualTo(14), "Boundary vertices (degree 2)");
+            Assert.That(degree3, Is.EqualTo(18), "Interior vertices (degree 3)");
+        });
+    }
+
+    [Test]
+    public void Small_EdgeEndpointsAreOrdered()
+    {
+        var t = BoardTopology.Small;
+        for (var ei = 0; ei < t.EdgeCount; ei++)
+        {
+            var (a, b) = t.Edges[ei];
+            Assert.That(a, Is.LessThan(b),
+                $"Edge {ei} endpoints not ordered: ({a}, {b})");
+        }
+    }
+
+    [Test]
+    public void Small_CoastalEdgesHaveExactlyOneOnBoardTile()
+    {
+        var t = BoardTopology.Small;
+        foreach (var ei in t.CoastalEdges)
+        {
+            Assert.That(t.EdgeTiles[ei].Length, Is.EqualTo(1),
+                $"Coastal edge {ei} should border exactly 1 tile");
+        }
+    }
+
+    [Test]
+    public void Small_InteriorEdgesHaveTwoOnBoardTiles()
+    {
+        var t = BoardTopology.Small;
+        var coastalSet = t.CoastalEdges.ToHashSet();
+        for (var ei = 0; ei < t.EdgeCount; ei++)
+        {
+            if (!coastalSet.Contains(ei))
+            {
+                Assert.That(t.EdgeTiles[ei].Length, Is.EqualTo(2),
+                    $"Interior edge {ei} should border exactly 2 tiles");
+            }
+        }
+    }
+
+    [Test]
+    public void Small_CenterTilesHave6Neighbors()
+    {
+        var t = BoardTopology.Small;
+        // Tile 4 is (0,0) and tile 5 is (1,0) -- the two central tiles.
+        Assert.That(t.TileNeighbors[4].Length, Is.EqualTo(6),
+            "Center tile (0,0) should have 6 neighbors");
+        Assert.That(t.TileNeighbors[5].Length, Is.EqualTo(6),
+            "Center tile (1,0) should have 6 neighbors");
+    }
+
+    [Test]
+    public void Small_CornerTilesHave3Neighbors()
+    {
+        var t = BoardTopology.Small;
+        // Tile 0 is (-1,1) -- a corner tile.
+        Assert.That(t.TileNeighbors[0].Length, Is.EqualTo(3),
+            "Corner tile (-1,1) should have 3 neighbors");
+        // Tile 2 is (1,1) -- another corner tile.
+        Assert.That(t.TileNeighbors[2].Length, Is.EqualTo(3),
+            "Corner tile (1,1) should have 3 neighbors");
+    }
+
     // ── Adjacency symmetry ──────────────────────────────────────────
 
     [TestCase(1)]
     [TestCase(2)]
     public void TileNeighbors_AreSymmetric(int radius)
     {
-        var t = new BoardTopology(radius);
+        var t = BoardTopology.FromRadius(radius);
         for (var ti = 0; ti < t.TileCount; ti++)
         {
             foreach (var neighbor in t.TileNeighbors[ti])
@@ -226,7 +381,7 @@ public class BoardTopologyTests
     [TestCase(2)]
     public void VertexNeighbors_AreSymmetric(int radius)
     {
-        var t = new BoardTopology(radius);
+        var t = BoardTopology.FromRadius(radius);
         for (var vi = 0; vi < t.VertexCount; vi++)
         {
             foreach (var neighbor in t.VertexNeighbors[vi])
@@ -241,7 +396,7 @@ public class BoardTopologyTests
     [TestCase(2)]
     public void EdgeEndpoints_AppearInVertexEdges(int radius)
     {
-        var t = new BoardTopology(radius);
+        var t = BoardTopology.FromRadius(radius);
         for (var ei = 0; ei < t.EdgeCount; ei++)
         {
             var (a, b) = t.Edges[ei];
@@ -260,7 +415,62 @@ public class BoardTopologyTests
     {
         // For a planar graph: V - E + F = 2
         // F = tiles + 1 (outer face)
-        var t = new BoardTopology(radius);
+        var t = BoardTopology.FromRadius(radius);
+        var v = t.VertexCount;
+        var e = t.EdgeCount;
+        var f = t.TileCount + 1;
+        Assert.That(v - e + f, Is.EqualTo(2),
+            $"Euler's formula: {v} - {e} + {f} = {v - e + f}, expected 2");
+    }
+
+    // ── Small-specific adjacency and Euler tests ────────────────────
+
+    [Test]
+    public void Small_TileNeighbors_AreSymmetric()
+    {
+        var t = BoardTopology.Small;
+        for (var ti = 0; ti < t.TileCount; ti++)
+        {
+            foreach (var neighbor in t.TileNeighbors[ti])
+            {
+                Assert.That(t.TileNeighbors[neighbor], Does.Contain(ti),
+                    $"Tile {ti} -> {neighbor} but not {neighbor} -> {ti}");
+            }
+        }
+    }
+
+    [Test]
+    public void Small_VertexNeighbors_AreSymmetric()
+    {
+        var t = BoardTopology.Small;
+        for (var vi = 0; vi < t.VertexCount; vi++)
+        {
+            foreach (var neighbor in t.VertexNeighbors[vi])
+            {
+                Assert.That(t.VertexNeighbors[neighbor], Does.Contain(vi),
+                    $"Vertex {vi} -> {neighbor} but not {neighbor} -> {vi}");
+            }
+        }
+    }
+
+    [Test]
+    public void Small_EdgeEndpoints_AppearInVertexEdges()
+    {
+        var t = BoardTopology.Small;
+        for (var ei = 0; ei < t.EdgeCount; ei++)
+        {
+            var (a, b) = t.Edges[ei];
+            Assert.That(t.VertexEdges[a], Does.Contain(ei),
+                $"Edge {ei}: vertex {a} should list this edge");
+            Assert.That(t.VertexEdges[b], Does.Contain(ei),
+                $"Edge {ei}: vertex {b} should list this edge");
+        }
+    }
+
+    [Test]
+    public void Small_EulersFormula_VMinusEPlusFEquals2()
+    {
+        var t = BoardTopology.Small;
         var v = t.VertexCount;
         var e = t.EdgeCount;
         var f = t.TileCount + 1;

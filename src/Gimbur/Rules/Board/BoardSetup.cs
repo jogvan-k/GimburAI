@@ -143,31 +143,114 @@ public sealed class BoardSetup
         for (var ti = 0; ti < topology.TileCount; ti++)
             byCoord[topology.Tiles[ti]] = ti;
 
-        var dirs = HexCoord.Directions;
-        var ringDirs = new[] { dirs[2], dirs[1], dirs[0], dirs[5], dirs[4], dirs[3] };
+        var remaining = new HashSet<HexCoord>(topology.Tiles);
         var order = new List<int>(topology.TileCount);
 
-        for (var radius = topology.Radius; radius >= 1; radius--)
+        // Peel rings from outside in, walking each boundary ring clockwise.
+        while (remaining.Count > 0)
         {
-            var current = new HexCoord(-radius, radius);
-            foreach (var dir in ringDirs)
+            // Find boundary tiles: tiles with at least one neighbor missing from remaining.
+            var boundary = new HashSet<HexCoord>();
+            foreach (var coord in remaining)
             {
-                for (var step = 0; step < radius; step++)
+                foreach (var dir in HexCoord.Directions)
                 {
-                    order.Add(byCoord[current]);
-                    current += dir;
+                    if (!remaining.Contains(coord + dir))
+                    {
+                        boundary.Add(coord);
+                        break;
+                    }
                 }
             }
-        }
 
-        // Center tile for odd-count boards (both standard and mini).
-        if (byCoord.TryGetValue(new HexCoord(0, 0), out var center))
-            order.Add(center);
+            // If all remaining tiles are interior (single tile or fully surrounded group),
+            // all remaining tiles are boundary.
+            if (boundary.Count == 0)
+                boundary = new HashSet<HexCoord>(remaining);
+
+            // Walk the boundary ring clockwise starting from the topmost-leftmost tile.
+            var ring = WalkBoundaryRingClockwise(boundary);
+            foreach (var coord in ring)
+            {
+                order.Add(byCoord[coord]);
+                remaining.Remove(coord);
+            }
+        }
 
         if (order.Count != topology.TileCount)
             throw new InvalidOperationException(
                 $"Spiral order built {order.Count} tiles for topology with {topology.TileCount} tiles.");
 
         return [.. order];
+    }
+
+    /// <summary>
+    /// Walks a set of boundary hex coordinates in clockwise order,
+    /// starting from the topmost (then leftmost by screen position) tile.
+    /// </summary>
+    private static List<HexCoord> WalkBoundaryRingClockwise(HashSet<HexCoord> boundary)
+    {
+        if (boundary.Count <= 1)
+            return [.. boundary];
+
+        // Sort by screen position to find the start tile (topmost-leftmost).
+        var sorted = boundary.OrderBy(c =>
+        {
+            var (x, y) = BoardTopology.AxialToPixel(c);
+            return (y, x);
+        }).ToList();
+
+        var start = sorted[0];
+        var result = new List<HexCoord> { start };
+        var visited = new HashSet<HexCoord> { start };
+        var current = start;
+
+        // Direction order for clockwise traversal: SW, W, NW, NE, E, SE
+        // This is dirs[2], dirs[3], dirs[4], dirs[5], dirs[0], dirs[1]
+        // Starting from the top, we want to go right first, then spiral clockwise.
+        // Use direction priority: E, SE, SW, W, NW, NE (clockwise from east).
+        var cwDirs = new[] { HexCoord.Directions[0], HexCoord.Directions[1],
+                             HexCoord.Directions[2], HexCoord.Directions[3],
+                             HexCoord.Directions[4], HexCoord.Directions[5] };
+
+        // For each step, try to go to the next clockwise unvisited neighbor in the boundary.
+        // Use the direction we came from to determine the preferred search order.
+        var prevDir = 2; // Assume we "came from" the SW direction (so we prefer going right/E first)
+
+        while (result.Count < boundary.Count)
+        {
+            var found = false;
+            // Try directions starting from the one 120 degrees CW from the incoming direction
+            // (turn back and sweep clockwise). This ensures clockwise traversal.
+            for (var d = 0; d < 6; d++)
+            {
+                // Start searching from the direction opposite to prevDir, rotated CW by 2
+                var dirIdx = (prevDir + 4 + d) % 6;
+                var neighbor = current + HexCoord.Directions[dirIdx];
+                if (boundary.Contains(neighbor) && !visited.Contains(neighbor))
+                {
+                    visited.Add(neighbor);
+                    result.Add(neighbor);
+                    current = neighbor;
+                    prevDir = dirIdx;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+                break; // Disconnected boundary; add remaining tiles sorted by screen position.
+        }
+
+        // If some boundary tiles weren't reached (disconnected), append them sorted.
+        if (result.Count < boundary.Count)
+        {
+            foreach (var coord in sorted)
+            {
+                if (!visited.Contains(coord))
+                    result.Add(coord);
+            }
+        }
+
+        return result;
     }
 }

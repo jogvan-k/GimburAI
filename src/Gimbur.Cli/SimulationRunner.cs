@@ -259,6 +259,7 @@ internal class SimulationRunner
         return _options.MapConfig?.ToLowerInvariant() switch
         {
             "mini" or "m" => GameConfig.Mini,
+            "small" or "sm" => GameConfig.Small,
             "standard" or "s" or null or "" => GameConfig.Standard,
             _ => GameConfig.Standard,
         };

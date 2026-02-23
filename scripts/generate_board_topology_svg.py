@@ -5,6 +5,7 @@ Generate SVG diagrams and topology data for Catan board maps.
 Supports multiple map layouts:
   standard  -- 19-tile radius-2 hex grid (rows of 3,4,5,4,3)
   mini      -- 7-tile radius-1 hex grid (rows of 2,3,2)
+  small     -- 10-tile non-circular oval (rows of 3,4,3)
 
 Pointy-top hexagons, board viewed top-down.
 Tiles numbered top-to-bottom, left-to-right (by screen position).
@@ -40,6 +41,22 @@ def hex_corner_xy(cx, cy, i):
 MAP_LAYOUTS = {
     "standard": {"radius": 2, "expected_tiles": 19},
     "mini": {"radius": 1, "expected_tiles": 7},
+    "small": {
+        "tiles": [
+            (-1, 1),
+            (0, 1),
+            (1, 1),
+            (-1, 0),
+            (0, 0),
+            (1, 0),
+            (2, 0),
+            (0, -1),
+            (1, -1),
+            (2, -1),
+        ],
+        "port_count": 7,
+        "expected_tiles": 10,
+    },
 }
 
 
@@ -200,7 +217,7 @@ def find_coastal_edges(tiles, edges):
 # ── Port generation ──────────────────────────────────────────────────
 
 
-def make_ports(tiles, vertices, v_index, edges, radius):
+def make_ports(tiles, vertices, v_index, edges, port_count):
     """
     Compute port positions from the coastal edge ring.
 
@@ -209,10 +226,8 @@ def make_ports(tiles, vertices, v_index, edges, radius):
     Each port is a coastal edge connecting two vertices (one or both may
     be boundary degree-2 vertices).
 
-    For a hex board of radius R:
-      - coastal edges: 6 * (2R + 1)
-      - ports: 3 * (R + 1)
-      - port positions in the ring: (1 + floor(i * total / nports)) % total
+    Parameters:
+      port_count -- number of ports to place around the board.
 
     Returns list of (vertex_a, vertex_b) pairs (by vertex index), ordered
     clockwise from the top of the board.
@@ -260,7 +275,7 @@ def make_ports(tiles, vertices, v_index, edges, radius):
 
     # Select port positions: evenly spaced along the ring
     total = len(ring_edges)
-    nports = 3 * (radius + 1)
+    nports = port_count
     ports = []
     for i in range(nports):
         pos = (1 + (i * total) // nports) % total
@@ -515,12 +530,17 @@ def main():
             layout_name = arg
 
     layout = MAP_LAYOUTS[layout_name]
-    tiles = make_tile_coords(layout["radius"])
+    if "radius" in layout:
+        tiles = make_tile_coords(layout["radius"])
+        port_count = 3 * (layout["radius"] + 1)
+    else:
+        tiles = list(layout["tiles"])
+        port_count = layout["port_count"]
     expected = layout["expected_tiles"]
     assert len(tiles) == expected, f"Expected {expected} tiles, got {len(tiles)}"
 
     vertices, v_index, edges = make_vertices_and_edges(tiles)
-    ports = make_ports(tiles, vertices, v_index, edges, layout["radius"])
+    ports = make_ports(tiles, vertices, v_index, edges, port_count)
 
     if "--dump-tables" in sys.argv:
         dump_tables(tiles, vertices, v_index, edges, ports)
