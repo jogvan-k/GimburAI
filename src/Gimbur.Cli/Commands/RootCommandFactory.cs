@@ -112,7 +112,7 @@ internal static class RootCommandFactory
 
         var exportOption = new Option<FileInfo?>("--export")
         {
-            Description = "Optional path to export training data (state + win counts per line)",
+            Description = "Path to export training data as JSONL (one JSON object per game)",
         };
 
         var searchTimeOption = new Option<int>("--search-time")

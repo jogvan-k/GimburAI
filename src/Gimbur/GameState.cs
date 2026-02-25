@@ -431,6 +431,17 @@ public sealed class CatanState : ICoreState
 
     public string SerializeHumanReadable() => CatanStateSerializer.SerializeHumanReadable(this);
 
+    /// <summary>
+    /// Serializes the board-invariant portion: tiles and ports, separated by '|'.
+    /// </summary>
+    public string SerializeBoard() => CatanStateSerializer.SerializeBoard(this);
+
+    /// <summary>
+    /// Serializes the turn-specific state (sections 2–6, 8–10) in compact form,
+    /// excluding tiles and ports which are board-invariant.
+    /// </summary>
+    public string SerializeStateOnly() => CatanStateSerializer.SerializeStateOnly(this);
+
     public static CatanState DeserializeHumanReadable(
         GameConfig config,
         int playerCount,

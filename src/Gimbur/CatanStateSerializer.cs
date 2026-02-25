@@ -415,6 +415,98 @@ internal static class CatanStateSerializer
         return DeserializeHumanReadable(config, playerCount, sb.ToString());
     }
 
+    /// <summary>
+    /// Serializes the board-invariant portion: tiles (section 1) and ports (section 7),
+    /// separated by '|'. This is stable across turns within a single game.
+    /// Format: "{tile_chars}|{port_chars}"
+    /// </summary>
+    public static string SerializeBoard(CatanState state)
+    {
+        var topology = state.Board.Topology;
+        var sb = new StringBuilder((topology.TileCount * 2) + 1 + topology.PortCount);
+
+        // Tiles — resource/pip pairs concatenated
+        for (var ti = 0; ti < topology.TileCount; ti++)
+        {
+            sb.Append(CrockfordBase32.Encode((int)state.Board.TileResource(ti)));
+            sb.Append(TilePip.Encode(state.Board.TileNumber(ti)));
+        }
+
+        // Ports
+        sb.Append('|');
+        for (var pi = 0; pi < topology.PortCount; pi++)
+        {
+            sb.Append(CrockfordBase32.Encode((int)state.Board.PortType(pi)));
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Serializes the turn-specific state (sections 2–6, 8–10) in compact form
+    /// (no separators). This excludes tiles and ports which are board-invariant.
+    /// Layout: [robber:1][player:1][stage:1][longestRoad:1][largestArmy:1]
+    ///         [vertices:V][edges:E][resources:5*N][knights:N][devCards:5*N]
+    /// </summary>
+    public static string SerializeStateOnly(CatanState state)
+    {
+        var topology = state.Board.Topology;
+        var playerCount = state.PlayerCount;
+        var capacity = 1 + 2 + 2 + topology.VertexCount + topology.EdgeCount
+                       + (5 * playerCount) + playerCount + (5 * playerCount);
+        var sb = new StringBuilder(capacity);
+
+        // Section 2: Robber
+        sb.Append(CrockfordBase32.Encode(state.Board.RobberTile));
+
+        // Section 3: Current Turn (player + stage)
+        sb.Append(CrockfordBase32.Encode(state.CurrentPlayer));
+        sb.Append(CrockfordBase32.Encode((int)state.Stage));
+
+        // Section 4: Longest Road / Largest Army
+        sb.Append(CrockfordBase32.Encode(state.LongestRoadOwner));
+        sb.Append(CrockfordBase32.Encode(state.LargestArmyOwner));
+
+        // Section 5: Vertices
+        for (var vi = 0; vi < topology.VertexCount; vi++)
+        {
+            sb.Append(CrockfordBase32.Encode(state.Board.VertexOccupancy[vi].ToToken()));
+        }
+
+        // Section 6: Edges
+        for (var ei = 0; ei < topology.EdgeCount; ei++)
+        {
+            sb.Append(CrockfordBase32.Encode(state.Board.EdgeOccupancy[ei].ToToken()));
+        }
+
+        // Section 8: Per-Player Resources (concatenated, no '/' separators)
+        for (var player = 1; player <= playerCount; player++)
+        {
+            sb.Append(CrockfordBase32.Encode(state._resources[player, CatanState.ResourceToIndex(ResourceType.Wood)]));
+            sb.Append(CrockfordBase32.Encode(state._resources[player, CatanState.ResourceToIndex(ResourceType.Brick)]));
+            sb.Append(CrockfordBase32.Encode(state._resources[player, CatanState.ResourceToIndex(ResourceType.Sheep)]));
+            sb.Append(CrockfordBase32.Encode(state._resources[player, CatanState.ResourceToIndex(ResourceType.Wheat)]));
+            sb.Append(CrockfordBase32.Encode(state._resources[player, CatanState.ResourceToIndex(ResourceType.Ore)]));
+        }
+
+        // Section 9: Per-Player Knights Played (concatenated)
+        for (var player = 1; player <= playerCount; player++)
+        {
+            sb.Append(CrockfordBase32.Encode(state._knightsPlayed[player]));
+        }
+
+        // Section 10: Per-Player Dev Cards (concatenated)
+        for (var player = 1; player <= playerCount; player++)
+        {
+            for (var card = 0; card < CatanState.DevCardCount; card++)
+            {
+                sb.Append(CrockfordBase32.Encode(state._devCards[player, card]));
+            }
+        }
+
+        return sb.ToString();
+    }
+
     private static int? InferPendingSettlementVertex(Board board, int currentPlayer, TurnStage stage)
     {
         if (stage is not (TurnStage.PlaceFirstRoad or TurnStage.PlaceSecondRoad))
