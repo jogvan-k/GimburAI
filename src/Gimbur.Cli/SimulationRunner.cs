@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 using Gimbur;
 using Gimbur.Rules;
 using Kjarni;
@@ -42,28 +43,46 @@ internal record SimulationOptions
 }
 
 /// <summary>
-/// Per-state MCTS result: the serialized state before the action is taken,
-/// the win counts from the MCTS root node after search (raw counts, not
-/// normalized), and the number of rollouts (simulations) performed.
-/// Win rates can be inferred as winCounts[i] / rollouts.
+/// Per-state record capturing the serialized state and any MCTS search results.
+/// States without MCTS search have Simulations=0 and empty Wins.
 /// </summary>
-internal record SimulationResult
+internal record StateRecord
 {
+    public required int PlayerTurn { get; init; }
     public required string SerializedState { get; init; }
-    public required float[] WinCounts { get; init; }
-    public required int Rollouts { get; init; }
+    public int Simulations { get; init; }
+    public int ElapsedMs { get; init; }
+    public double WinRate { get; init; }
+
+    /// <summary>
+    /// Raw MCTS win counts, 0-indexed (index 0 = player 1). Empty if no search.
+    /// </summary>
+    public required double[] Wins { get; init; }
 }
 
 /// <summary>
-/// Aggregate container for all simulation results plus metadata.
+/// Complete result for a single game, including metadata and all state records.
+/// </summary>
+internal record GameResult
+{
+    public required int Seed { get; init; }
+    public required string Map { get; init; }
+    public required int Players { get; init; }
+    public required int Winner { get; init; }
+    public required int Turns { get; init; }
+    public required int SearchTimeMs { get; init; }
+    public required int MaxSimulations { get; init; }
+    public required int MaxRolloutDepth { get; init; }
+    public required string BoardSerialized { get; init; }
+    public required List<StateRecord> States { get; init; }
+}
+
+/// <summary>
+/// Aggregate container for all game results plus timing metadata.
 /// </summary>
 internal record SimulationStats
 {
-    public required List<SimulationResult> Results { get; init; }
-    public required int PlayerCount { get; init; }
-    public required string MapConfig { get; init; }
-    public required int SearchTimeMs { get; init; }
-    public required int MaxSimulations { get; init; }
+    public required List<GameResult> Games { get; init; }
     public required int TotalGames { get; init; }
     public required TimeSpan TotalElapsed { get; init; }
     public required TimeSpan AverageTimePerGame { get; init; }
@@ -108,7 +127,7 @@ internal class SimulationRunner
             Console.WriteLine();
         }
 
-        var gameResults = new ConcurrentBag<(int GameNumber, List<SimulationResult> Results, TimeSpan Elapsed)>();
+        var gameResults = new ConcurrentBag<(int GameNumber, GameResult Result, TimeSpan Elapsed)>();
 
         var totalStopwatch = Stopwatch.StartNew();
 
@@ -122,33 +141,30 @@ internal class SimulationRunner
             var rng = new Random(gameSeed);
 
             var gameStopwatch = Stopwatch.StartNew();
-            var results = RunSingleGame(config, playerCount, rng, gameIndex + 1);
+            var result = RunSingleGame(config, playerCount, rng, gameSeed, gameIndex + 1);
             gameStopwatch.Stop();
 
-            gameResults.Add((gameIndex + 1, results, gameStopwatch.Elapsed));
+            gameResults.Add((gameIndex + 1, result, gameStopwatch.Elapsed));
 
             if (!_quiet)
             {
                 Console.WriteLine(
-                    $"Game {gameIndex + 1}: {results.Count} decision points, " +
+                    $"Game {gameIndex + 1}: {result.States.Count} states, " +
+                    $"winner=P{result.Winner}, turns={result.Turns}, " +
                     $"{gameStopwatch.Elapsed.TotalSeconds:F1}s");
             }
         });
 
         totalStopwatch.Stop();
 
-        var allResults = gameResults
+        var allGames = gameResults
             .OrderBy(g => g.GameNumber)
-            .SelectMany(g => g.Results)
+            .Select(g => g.Result)
             .ToList();
 
         var stats = new SimulationStats
         {
-            Results = allResults,
-            PlayerCount = playerCount,
-            MapConfig = _options.MapConfig ?? "standard",
-            SearchTimeMs = _options.SearchTimeMs,
-            MaxSimulations = _options.MaxSimulations,
+            Games = allGames,
             TotalGames = (int)_options.NumberOfGames,
             TotalElapsed = totalStopwatch.Elapsed,
             AverageTimePerGame = TimeSpan.FromTicks(totalStopwatch.Elapsed.Ticks / Math.Max(1, (int)_options.NumberOfGames)),
@@ -161,14 +177,15 @@ internal class SimulationRunner
 
         if (_options.ExportPath is not null)
         {
-            ExportTrainingData(stats, _options.ExportPath);
+            ExportJsonl(stats, _options.ExportPath);
         }
     }
 
-    private List<SimulationResult> RunSingleGame(
+    private GameResult RunSingleGame(
         GameConfig config,
         int playerCount,
         Random rng,
+        int gameSeed,
         int gameNumber)
     {
         var state = new CatanState(config, playerCount, rng);
@@ -178,7 +195,10 @@ internal class SimulationRunner
             _options.MctsConfig,
             _options.MaxRolloutDepth);
         var ai = (IGameAI)mcts;
-        var results = new List<SimulationResult>();
+        var states = new List<StateRecord>();
+
+        // Capture the board serialization once (invariant across turns).
+        var boardSerialized = state.SerializeBoard();
 
         // Total action counter guards against infinite loops from non-advancing
         // actions (e.g., cyclic bank trades) where TurnNumber never increments.
@@ -188,7 +208,10 @@ internal class SimulationRunner
 
         while (state.WinnerPlayer == 0)
         {
-            // Only record MCTS decision points during the main BuildTrade stage.
+            // Record every actionable state.
+            var actions = state.Actions();
+            if (actions.Length == 0) break;
+
             if (state.Stage == TurnStage.BuildTrade)
             {
                 // Progress reporting: log on turn 1 and then every 10 turns.
@@ -197,31 +220,40 @@ internal class SimulationRunner
                     lastReportedTurn = state.TurnNumber;
                     Console.WriteLine(
                         $"  Game {gameNumber}: turn {state.TurnNumber}, " +
-                        $"{results.Count} decisions so far...");
+                        $"{states.Count} states so far...");
                 }
 
-                var serialized = state.SerializeHumanReadable();
+                var serialized = state.SerializeStateOnly();
 
                 // Run MCTS from the current state.
                 var bestPath = ai.DetermineAction(state);
                 var logInfo = mcts.LatestLogInfo();
 
-                // Convert double[] win counts to float[].
-                var winCounts = new float[logInfo.winCounts.Length];
-                for (var i = 0; i < logInfo.winCounts.Length; i++)
+                // Convert 1-indexed winCounts to 0-indexed doubles.
+                var wins = new double[playerCount];
+                for (var i = 0; i < playerCount; i++)
                 {
-                    winCounts[i] = (float)logInfo.winCounts[i];
+                    if (i + 1 < logInfo.winCounts.Length)
+                    {
+                        wins[i] = logInfo.winCounts[i + 1];
+                    }
                 }
 
-                results.Add(new SimulationResult
+                var winRate = logInfo.simulations > 0
+                    ? logInfo.estimatedAiWinChance
+                    : 0.0;
+
+                states.Add(new StateRecord
                 {
+                    PlayerTurn = state.CurrentPlayer,
                     SerializedState = serialized,
-                    WinCounts = winCounts,
-                    Rollouts = logInfo.simulations,
+                    Simulations = logInfo.simulations,
+                    ElapsedMs = (int)logInfo.elapsedTime.TotalMilliseconds,
+                    WinRate = winRate,
+                    Wins = wins,
                 });
 
                 // Apply the best action from MCTS.
-                var actions = state.Actions();
                 if (bestPath.Length > 0 && bestPath[0] < actions.Length)
                 {
                     state = (CatanState)actions[bestPath[0]].DoCoreAction();
@@ -233,11 +265,19 @@ internal class SimulationRunner
             }
             else
             {
-                // For non-BuildTrade stages (dice rolls, setup, etc.), use greedy/comparable sort.
-                var actions = state.Actions();
-                if (actions.Length == 0) break;
+                // Non-BuildTrade stages: record state with no MCTS data.
+                var serialized = state.SerializeStateOnly();
+                states.Add(new StateRecord
+                {
+                    PlayerTurn = state.CurrentPlayer,
+                    SerializedState = serialized,
+                    Simulations = 0,
+                    ElapsedMs = 0,
+                    WinRate = 0.0,
+                    Wins = [],
+                });
 
-                // Sort by IComparable and pick first (same as MCTS rollout policy).
+                // Use greedy/comparable sort (same as MCTS rollout policy).
                 Array.Sort(actions);
                 state = (CatanState)actions[0].DoCoreAction();
             }
@@ -251,7 +291,19 @@ internal class SimulationRunner
             }
         }
 
-        return results;
+        return new GameResult
+        {
+            Seed = gameSeed,
+            Map = _options.MapConfig ?? "standard",
+            Players = playerCount,
+            Winner = state.WinnerPlayer,
+            Turns = state.TurnNumber,
+            SearchTimeMs = _options.SearchTimeMs,
+            MaxSimulations = _options.MaxSimulations,
+            MaxRolloutDepth = _options.MaxRolloutDepth,
+            BoardSerialized = boardSerialized,
+            States = states,
+        };
     }
 
     private GameConfig ResolveGameConfig()
@@ -282,48 +334,104 @@ internal class SimulationRunner
         Console.WriteLine();
         Console.WriteLine("=== Simulation Summary ===");
         Console.WriteLine($"Total games: {stats.TotalGames}");
-        Console.WriteLine($"Total decision points: {stats.Results.Count}");
+
+        var totalStates = stats.Games.Sum(g => g.States.Count);
+        var mctsStates = stats.Games.Sum(g => g.States.Count(s => s.Simulations > 0));
+        Console.WriteLine($"Total states: {totalStates} ({mctsStates} with MCTS)");
         Console.WriteLine($"Total time: {stats.TotalElapsed.TotalSeconds:F2}s");
         Console.WriteLine($"Avg time/game: {stats.AverageTimePerGame.TotalSeconds:F3}s");
-        Console.WriteLine($"MCTS search time: {stats.SearchTimeMs}ms");
-        Console.WriteLine($"MCTS max simulations: {(stats.MaxSimulations == int.MaxValue ? "unlimited" : stats.MaxSimulations.ToString())}");
 
-        if (stats.Results.Count > 0)
+        if (mctsStates > 0)
         {
-            var avgRollouts = stats.Results.Average(r => r.Rollouts);
-            Console.WriteLine($"Avg rollouts/decision: {avgRollouts:F0}");
+            var avgRollouts = stats.Games
+                .SelectMany(g => g.States)
+                .Where(s => s.Simulations > 0)
+                .Average(s => s.Simulations);
+            Console.WriteLine($"Avg rollouts/MCTS decision: {avgRollouts:F0}");
+        }
+
+        var wins = new int[5]; // index 0 = no winner
+        foreach (var game in stats.Games)
+        {
+            if (game.Winner >= 0 && game.Winner < wins.Length)
+            {
+                wins[game.Winner]++;
+            }
+        }
+
+        if (stats.TotalGames > 1)
+        {
+            var winParts = new List<string>();
+            for (var p = 1; p < wins.Length; p++)
+            {
+                if (wins[p] > 0)
+                {
+                    winParts.Add($"P{p}={wins[p]}");
+                }
+            }
+
+            if (wins[0] > 0)
+            {
+                winParts.Add($"none={wins[0]}");
+            }
+
+            Console.WriteLine($"Wins: {string.Join(", ", winParts)}");
         }
     }
 
-    private static void ExportTrainingData(SimulationStats stats, FileInfo exportPath)
+    private static void ExportJsonl(SimulationStats stats, FileInfo exportPath)
     {
-        if (stats.Results.Count == 0)
+        if (stats.Games.Count == 0)
         {
             Console.WriteLine("No simulation results to export.");
             return;
         }
 
-        // Format: one result per line (tab-separated)
-        // "rollouts\tp1_wins,p2_wins,...,pN_wins\tserialized_state"
-        // Win counts are raw MCTS simulation wins (not normalized).
-        // Win rate = winCount / rollouts.
-        var sb = new StringBuilder(stats.Results.Count * 600);
-        foreach (var result in stats.Results)
+        var jsonOptions = new JsonSerializerOptions
         {
-            sb.Append(result.Rollouts);
-            sb.Append('\t');
-            // Win counts for players 1..N (skip index 0 which is unused).
-            var counts = result.WinCounts
-                .Skip(1)
-                .Take(stats.PlayerCount)
-                .Select(c => c.ToString("F2"));
-            sb.Append(string.Join(',', counts));
-            sb.Append('\t');
-            sb.AppendLine(result.SerializedState);
-        }
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        };
 
         Directory.CreateDirectory(exportPath.DirectoryName ?? ".");
-        File.WriteAllText(exportPath.FullName, sb.ToString());
-        Console.WriteLine($"Exported {stats.Results.Count} simulation results to {exportPath.FullName}");
+        using var writer = new StreamWriter(exportPath.FullName, append: false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+        foreach (var game in stats.Games)
+        {
+            var jsonObj = new
+            {
+                version = 1,
+                game.Seed,
+                game.Map,
+                game.Players,
+                game.Winner,
+                game.Turns,
+                constraints = new
+                {
+                    game.SearchTimeMs,
+                    game.MaxSimulations,
+                    game.MaxRolloutDepth,
+                },
+                board = new
+                {
+                    serialized = game.BoardSerialized,
+                    permutations = Array.Empty<string>(),
+                },
+                states = game.States.Select(s => new
+                {
+                    s.PlayerTurn,
+                    s.SerializedState,
+                    s.Simulations,
+                    s.ElapsedMs,
+                    s.WinRate,
+                    s.Wins,
+                    permutations = Array.Empty<string>(),
+                }).ToArray(),
+            };
+
+            writer.WriteLine(JsonSerializer.Serialize(jsonObj, jsonOptions));
+        }
+
+        var totalStates = stats.Games.Sum(g => g.States.Count);
+        Console.WriteLine($"Exported {stats.Games.Count} game(s) ({totalStates} states) to {exportPath.FullName}");
     }
 }
