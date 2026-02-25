@@ -14,72 +14,6 @@ This document defines a fixed-length, human-readable board state serialization f
 
 Each character encodes a value 0–31. All fields except tile numbers use this alphabet.
 
-### Tile Number Alphabet (Pip Encoding)
-
-Tile numbers are encoded as **lowercase letters** (`a`–`k`), intentionally disjoint from the Crockford base-32 alphabet so a tokenizer can distinguish tile likelihood tokens from all other field types. Characters are ordered by ascending pip count; within each pip level, "low" (below 7) comes before "high" (above 7).
-
-| Char | Pips | Side | Number |
-|------|------|------|--------|
-| `a`  | 0    | —    | 0 (desert) |
-| `b`  | 1    | low  | 2  |
-| `c`  | 1    | high | 12 |
-| `d`  | 2    | low  | 3  |
-| `e`  | 2    | high | 11 |
-| `f`  | 3    | low  | 4  |
-| `g`  | 3    | high | 10 |
-| `h`  | 4    | low  | 5  |
-| `i`  | 4    | high | 9  |
-| `j`  | 5    | low  | 6  |
-| `k`  | 5    | high | 8  |
-
-## Enumerations
-
-All values below are shown in decimal. In serialized form each value is a **single** Crockford base-32 character.
-
-### Resource Types (tile and ports)
-- `0` = desert
-- `1` = wood
-- `2` = brick
-- `3` = sheep
-- `4` = wheat
-- `5` = ore
-
-### Number Tokens (tile)
-
-Tile numbers are **not** encoded as Crockford base-32. They use the separate lowercase pip alphabet defined above (see §Tile Number Alphabet). This encodes the probability of rolling the number (pip count) and whether it is below or above 7, rather than the raw numeric value.
-
-### Player Ids
-- `0` = none/unassigned
-- `1`..`4` = player 1..4
-
-### Turn Stage
-- `0` = initial placement: place 1st settlement
-- `1` = initial placement: place 1st road
-- `2` = initial placement: place 2nd settlement
-- `3` = initial placement: place 2nd road
-- `4` = pre-roll
-- `5` = choose robber location
-- `6` = choose player to rob from
-- `7` = build/trade
-
-### Vertex Occupancy
-- `0` = empty
-- `1`..`4` = settlement by player 1..4
-- `5`..`8` = city by player 1..4 (city = player id + 4)
-
-### Edge Occupancy
-- `0` = empty
-- `1`..`4` = road by player 1..4
-
-### Port Types (Harbors)
-Each port is a coastal edge connecting two vertices on the board perimeter (see `docs/topology-reference.md` §4.6, §5.6, §6.6). Only the **type** is variable and needs serialization:
-- `1` = 3:1 generic
-- `2` = wood
-- `3` = brick
-- `4` = sheep
-- `5` = wheat
-- `6` = ore
-
 ## Serialization Layout
 
 Tokens are emitted in the order below. All counts are fixed-length. Major sections are separated by `|`. Within per-player sections (resources, knights, dev cards) individual players are separated by `/`. Tile tokens are concatenated directly without separators.
@@ -96,56 +30,94 @@ Let `T` = number of tiles, `V` = number of vertices, `E` = number of edges, `P` 
 
 ### 1) Tiles
 
-For each tile index `t` in order:
-- `tile[t].resource` — Crockford base-32 (0..5)
-- `tile[t].number` — lowercase pip letter (`a`..`k`)
+For each tile index `t` in order, two tokens:
+- `tile[t].resource` — Crockford base-32, using these **resource type** values:
+  - `0` = desert, `1` = wood, `2` = brick, `3` = sheep, `4` = wheat, `5` = ore
+- `tile[t].number` — lowercase pip letter (`a`..`k`), using a separate **tile number alphabet** intentionally disjoint from Crockford base-32 so a tokenizer can distinguish tile likelihood tokens from all other fields. Characters are ordered by ascending pip count; within each pip level, "low" (below 7) comes before "high" (above 7):
 
-Tokens are concatenated directly (no separators).
+| Char | Pips | Side | Number |
+|------|------|------|--------|
+| `a`  | 0    | —    | 0 (desert) |
+| `b`  | 1    | low  | 2  |
+| `c`  | 1    | high | 12 |
+| `d`  | 2    | low  | 3  |
+| `e`  | 2    | high | 11 |
+| `f`  | 3    | low  | 4  |
+| `g`  | 3    | high | 10 |
+| `h`  | 4    | low  | 5  |
+| `i`  | 4    | high | 9  |
+| `j`  | 5    | low  | 6  |
+| `k`  | 5    | high | 8  |
+
+Desert tiles must have pip letter `a` (= number 0). Tokens are concatenated directly (no separators).
 
 **Tokens**: `T * 2` — mini: 14, small: 20, standard: 38.
 
-### 2) Robber
+### 2) Ports / Harbors
+
+Each port is a coastal edge connecting two vertices on the board perimeter (see `docs/topology-reference.md` §4.6, §5.6, §6.6). Port positions are fixed by the board topology and do not need to be serialized. Only the randomly assigned type is stored.
+
+For each **port index** `p` (0..P-1), in the fixed order defined by the topology:
+- `port[p].type` — **port type** value:
+  - `1` = 3:1 generic
+  - `2` = wood
+  - `3` = brick
+  - `4` = sheep
+  - `5` = wheat
+  - `6` = ore
+
+Standard map: 4 generic (3:1) + 5 resource-specific (2:1) = 9 ports. Small map: 3 generic (3:1) + 4 resource-specific (2:1) = 7 ports. Mini map: 3 generic (3:1) + 3 resource-specific (2:1) = 6 ports.
+
+**Tokens**: `P` — mini: 6, small: 7, standard: 9.
+
+### 3) Robber
 
 - `robber.tileIndex` (0..T-1)
 
 **Tokens**: 1.
 
-### 3) Current Turn
+### 4) Current Turn
 
-- `currentPlayer` (0..4)
-- `turnStage` (0..7)
+- `currentPlayer` — **player id**: `0` = none/unassigned, `1`..`4` = player 1..4
+- `turnStage` — **turn stage** value:
+  - `0` = initial placement: place 1st settlement
+  - `1` = initial placement: place 1st road
+  - `2` = initial placement: place 2nd settlement
+  - `3` = initial placement: place 2nd road
+  - `4` = pre-roll
+  - `5` = choose robber location
+  - `6` = choose player to rob from
+  - `7` = build/trade
+
+Turn stages `0`–`3` apply during initial placement. Turn stages `4`–`7` apply during normal play. If `currentPlayer = 0`, the game has not started or is between rounds.
 
 **Tokens**: 2.
 
-### 4) Longest Road / Largest Army
+### 5) Longest Road / Largest Army
 
-- `longestRoadOwner` (0..4)
-- `largestArmyOwner` (0..4)
+- `longestRoadOwner` — player id (0..4, where 0 = none)
+- `largestArmyOwner` — player id (0..4, where 0 = none)
 
 **Tokens**: 2.
 
-### 5) Vertices
+### 6) Vertices
 
 For each vertex index `v`:
-- `vertex[v].occupancy` (0..8)
+- `vertex[v].occupancy` — **vertex occupancy** value:
+  - `0` = empty
+  - `1`..`4` = settlement by player 1..4
+  - `5`..`8` = city by player 1..4 (city = player id + 4)
 
 **Tokens**: `V` — mini: 24, small: 32, standard: 54.
 
-### 6) Edges
+### 7) Edges
 
 For each edge index `e`:
-- `edge[e].occupancy` (0..4)
+- `edge[e].occupancy` — **edge occupancy** value:
+  - `0` = empty
+  - `1`..`4` = road by player 1..4
 
 **Tokens**: `E` — mini: 30, small: 41, standard: 72.
-
-### 7) Ports / Harbors
-
-For each **port index** `p` (0..P-1), in the fixed order defined by the topology (see `docs/topology-reference.md`):
-- `port[p].type` (1..6)
-
-Port positions (which two boundary vertices each port connects) are fixed by the board topology and do not need to be serialized. Only the randomly assigned type is stored.
-
-**Tokens**: `P` — mini: 6, small: 7, standard: 9.
 
 ### 8) Per-Player Resources (5 per player)
 
@@ -181,7 +153,7 @@ Each player's 5 dev-card tokens are concatenated; players are separated by `/`.
 Let `T`, `V`, `E`, `P` be map-dependent and `N` be the number of players.
 
 ```
-(2*T) + 1 + 2 + 2 + V + E + P + (5*N) + (1*N) + (5*N)
+(2*T) + P + 1 + 2 + 2 + V + E + (5*N) + (1*N) + (5*N)
 = (2*T + V + E + P + 5) + 11*N
 ```
 
@@ -212,26 +184,20 @@ Let `T`, `V`, `E`, `P` be map-dependent and `N` be the number of players.
 - 3 players: `178 + 33 = 211` tokens
 - 4 players: `178 + 44 = 222` tokens
 
-## Human-Readable Example
+## Human-Readable Examples
 
 ### Mini Map (2 players, early game)
 
 After initial placement (1 round): each player has placed 1 settlement and 1 road. A few turns have passed.
 
-Tile layout (7 tiles): wood/6, brick/4, sheep/5, wheat/10, desert/0, wheat/9, ore/3.
-
-Tiles (resource/pip pairs concatenated):
-```
-1j2f3h4g0a4i5d
-```
-
 Board state:
+- **Tiles** (7 tiles): wood/6, brick/4, sheep/5, wheat/10, desert/0, wheat/9, ore/3
+- **Ports**: generic, sheep, generic, brick, generic, wood
 - **Robber**: tile 4 (desert)
 - **Current turn**: player 1, build/trade (stage 7)
 - **Longest road / largest army**: none / none
 - **Vertices**: player 1 settlement on vertex 6, player 2 settlement on vertex 14
 - **Edges**: player 1 road on edge 5, player 2 road on edge 13
-- **Ports**: generic, sheep, generic, brick, generic, wood
 - **Player 1 resources**: wood=2, brick=1, sheep=0, wheat=1, ore=0
 - **Player 2 resources**: wood=0, brick=0, sheep=1, wheat=3, ore=0
 - **Knights played**: 0 / 0
@@ -239,27 +205,26 @@ Board state:
 
 Full serialized (sections separated by `|`):
 ```
-1j2f3h4g0a4i5d|4|17|00|000001000000000200000000|000001000000000000000000000000|134132|21010/00130|0/0|00000/00000
+1j2f3h4g0a4i5d|134132|4|17|00|000001000000000200000000|000001000000000000000000000000|21010/00130|0/0|00000/00000
+├── 1:tiles ─┤ │2:   ││ │  │  └──── 6:vertices ──────┤ ├──────── 7:edges ───────────┤ ├─ 8:res ─┤ │   ├ 10:dev ─┤
+               ├Ports┤│ │  │                                                                      └── 9: Knights played
+                      │ │  └── 5:longest-road/largest-army
+                      │ └── 4:current-turn (player=1, stage=7)
+                      └── 3:robber (tile 4)
 ```
 
 ### Small Map (2 players, early game)
 
 After initial placement (1 round): each player has placed 1 settlement and 1 road. One turn has begun (player 2 is about to roll).
 
-Tile layout (10 tiles): wheat/3, brick/4, sheep/5, wood/10, brick/11, wood/12, ore/6, wheat/9, sheep/8, desert/0.
-
-Tiles (resource/pip pairs concatenated):
-```
-4d2f3h1g2e1c5j4i3k0a
-```
-
 Board state:
+- **Tiles** (10 tiles): wheat/3, brick/4, sheep/5, wood/10, brick/11, wood/12, ore/6, wheat/9, sheep/8, desert/0
+- **Ports**: generic, wood, wheat, generic, sheep, generic, brick
 - **Robber**: tile 9 (desert)
 - **Current turn**: player 2, pre-roll (stage 4)
 - **Longest road / largest army**: none / none
 - **Vertices**: player 1 settlements on v0 and v7; player 2 settlements on v1 and v2
 - **Edges**: player 1 roads on e0 and e6; player 2 roads on e2 and e4
-- **Ports**: generic, wood, wheat, generic, sheep, generic, brick
 - **Player 1 resources**: wood=1, brick=0, sheep=0, wheat=1, ore=0
 - **Player 2 resources**: wood=0, brick=0, sheep=1, wheat=0, ore=0
 - **Knights played**: 0 / 0
@@ -267,27 +232,26 @@ Board state:
 
 Full serialized (sections separated by `|`):
 ```
-4d2f3h1g2e1c5j4i3k0a|9|24|00|12200001000000000000000000000000|10202010000000000000000000000000000000000|1251413|10010/00100|0/0|00000/00000
+4d2f3h1g2e1c5j4i3k0a|1251413|9|24|00|12200001000000000000000000000000|10202010000000000000000000000000000000000|10010/00100|0/0|00000/00000
+├──── 1:tiles ─────┤ │2:    ││ │  │  ├───────── 6:vertices ─────────┤ ├──────────── 7:edges ──────────────────┤ ├─ 8:res ──┤│   ├ 10:dev ─┤
+                     ├ports ┤│ │  │                                                                                         └── 9: Knights played
+                             │ │  └── 5:longest-road/largest-army
+                             │ └── 4:current-turn (player=2, stage=4)
+                             └── 3:robber (tile 9)
 ```
 
 ### Standard Map (3 players, mid-game)
 
 Several turns in: players have built additional roads, player 2 has upgraded a settlement to a city, robber has been moved. Player 1 has played 2 knights.
 
-Tile layout (19 tiles): wood/5, ore/2, brick/6, wheat/3, wood/8, sheep/10, wheat/9, ore/12, sheep/11, wood/4, brick/8, sheep/10, wheat/9, ore/4, sheep/5, brick/6, wood/3, wheat/11, desert/0.
-
-Tiles (resource/pip pairs concatenated):
-```
-1h5b2j4d1k3g4i5c3e1f2k3g4i5f3h2j1d4e0a
-```
-
 Board state:
+- **Tiles** (19 tiles): wood/5, ore/2, brick/6, wheat/3, wood/8, sheep/10, wheat/9, ore/12, sheep/11, wood/4, brick/8, sheep/10, wheat/9, ore/4, sheep/5, brick/6, wood/3, wheat/11, desert/0
+- **Ports**: generic, generic, wood, generic, brick, sheep, wheat, ore, generic
 - **Robber**: tile 5 (sheep/10 — blocking a productive hex)
 - **Current turn**: player 2, build/trade (stage 7)
 - **Longest road**: none; **Largest army**: player 1
 - **Vertices**: player 1 settlements on v8 and v35; player 2 city on v18, settlement on v44; player 3 settlements on v24 and v31
 - **Edges**: player 1 roads on e6, e16, e49, e41; player 2 roads on e25, e32, e55, e61; player 3 roads on e34, e35, e42, e48
-- **Ports**: generic, generic, wood, generic, brick, sheep, wheat, ore, generic
 - **Player 1 resources**: wood=3, brick=1, sheep=2, wheat=0, ore=1
 - **Player 2 resources**: wood=0, brick=2, sheep=1, wheat=4, ore=3
 - **Player 3 resources**: wood=1, brick=0, sheep=3, wheat=2, ore=0
@@ -296,45 +260,21 @@ Board state:
 
 Full serialized:
 ```
-1h5b2j4d1k3g4i5c3e1f2k3g4i5f3h2j1d4e0a|5|27|01|000000001000000000600000000000000200000000000000030003|000000100000000000200000010020000100300000020010000000001000200000000000|112134561|31201/02143/10320|2/0/1|10000/01010/00100
+1h5b2j4d1k3g4i5c3e1f2k3g4i5f3h2j1d4e0a|112134561|5|27|01|000000001000000000600000000000000200000000000000030003 ...
+├──────────── 1:tiles ───────────────┤ ├2:ports┤ │ │  │  ├────────────────────── 6:vertices ─────────────────── ...
+                                                 │ │  │
+                                                 │ │  └── 5:longest-road=0/largest-army=1 (player 1)
+                                                 │ └── 4:current-turn (player=2, stage=7)
+                                                 └── 3:robber (tile 5)
+
+... 0003|000000100000000000200000010020000100300000020010000000001000200000000000|31201/02143/10320|2/0/1|10000/01010/00100
+───────┤ ├─────────────────────────────── 7:edges ──────────────────────────────┤ ├─8:resources ──┤ │     ├ 10:dev-cards ─┤
+                                                                                                    └── 9: Knights played
 ```
 
 ## Compact Form (Transformer Ingestion)
 
 Remove all `/` and `|` separators. The result is a fixed-length string, one character per token (Crockford base-32 uppercase/digits for most fields, lowercase `a`–`k` for tile numbers). Since tiles are already concatenated without separators, only `|` (section boundaries) and `/` (player separators in sections 8–10) are stripped.
-
-### Mini Map Example
-
-From the human-readable example above:
-```
-1j2f3h4g0a4i5d 4 17 00 000001000000000200000000 000001000000000000000000000000 134132 2101000130 00 0000000000
-```
-(spaces added for clarity — actual compact form has no spaces)
-
-Compact string (`101` characters):
-```
-1j2f3h4g0a4i5d417000000010000000002000000000000010000000000000000000000001341322101000130000000000000
-```
-
-### Small Map Example
-
-From the human-readable example above:
-```
-4d2f3h1g2e1c5j4i3k0a 9 24 00 12200001000000000000000000000000 10202010000000000000000000000000000000000 1251413 1001000100 00 0000000000
-```
-(spaces added for clarity — actual compact form has no spaces)
-
-Compact string (`127` characters):
-```
-4d2f3h1g2e1c5j4i3k0a92400122000010000000000000000000000001020201000000000000000000000000000000000012514131001000100000000000000
-```
-
-### Standard Map Example
-
-Compact string (`211` characters):
-```
-1h5b2j4d1k3g4i5c3e1f2k3g4i5f3h2j1d4e0a52701000000001000000000600000000000000200000000000000030003000000100000000000200000010020000100300000020010000000001000200000000000112134561312010214310320201100000101000100
-```
 
 Compact string lengths:
 - **Mini map** (2 players): `101` characters
@@ -343,12 +283,6 @@ Compact string lengths:
 - **Standard map** (3 players): `211` characters
 - **Standard map** (4 players): `222` characters
 
-This yields a compact, fixed-length string that is reversible to the human-readable form by re-inserting separators at the known fixed positions.
-
 ## Notes and Constraints
 
-- All indices and ordering are defined in `docs/board-topology.md` and `docs/topology-reference.md`.
-- Port positions are fixed by the topology. Standard map: 4 generic (3:1) + 5 resource-specific (2:1) = 9 ports. Small map: 3 generic (3:1) + 4 resource-specific (2:1) = 7 ports. Mini map: 3 generic (3:1) + 3 resource-specific (2:1) = 6 ports.
-- Desert tiles must have pip letter `a` (= number 0).
-- Turn stage `0`–`3` applies during initial placement. Turn stages `4`–`7` apply during normal play.
-- If `currentPlayer = 0`, the game has not started or is between rounds.
+- All indices and ordering are defined in `docs/board-topology.md`.
