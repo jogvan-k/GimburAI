@@ -13,16 +13,10 @@ internal static class CatanStateSerializer
     {
         var sb = new StringBuilder(256);
 
-        // Section 1: Tiles — resource/pip pairs separated by '/'
+        // Section 1: Tiles — resource/pip pairs concatenated (no separators)
         for (var ti = 0; ti < state.Board.Topology.TileCount; ti++)
         {
-            if (ti > 0)
-            {
-                sb.Append('/');
-            }
-
             sb.Append(CrockfordBase32.Encode((int)state.Board.TileResource(ti)));
-            sb.Append('/');
             sb.Append(TilePip.Encode(state.Board.TileNumber(ti)));
         }
 
@@ -127,20 +121,20 @@ internal static class CatanStateSerializer
 
         var topology = config.Map.Topology;
 
-        // Section 1: Tiles — resource/pip pairs separated by '/'
-        var tileTokens = sections[0].Split('/');
-        if (tileTokens.Length != topology.TileCount * 2)
+        // Section 1: Tiles — resource/pip pairs concatenated (2*T chars)
+        var tileSection = sections[0];
+        if (tileSection.Length != topology.TileCount * 2)
         {
             throw new InvalidOperationException(
-                $"Tile section has {tileTokens.Length} tokens, expected {topology.TileCount * 2}.");
+                $"Tile section has {tileSection.Length} chars, expected {topology.TileCount * 2}.");
         }
 
         var tileResources = new ResourceType[topology.TileCount];
         var tileNumbers = new int[topology.TileCount];
         for (var ti = 0; ti < topology.TileCount; ti++)
         {
-            tileResources[ti] = (ResourceType)CrockfordBase32.Decode(tileTokens[ti * 2][0]);
-            tileNumbers[ti] = TilePip.Decode(tileTokens[(ti * 2) + 1][0]);
+            tileResources[ti] = (ResourceType)CrockfordBase32.Decode(tileSection[ti * 2]);
+            tileNumbers[ti] = TilePip.Decode(tileSection[(ti * 2) + 1]);
         }
 
         // Section 2: Robber (single char)
@@ -333,16 +327,11 @@ internal static class CatanStateSerializer
         var topology = config.Map.Topology;
         var pos = 0;
 
-        // Section 1: Tiles — 2*TileCount chars, insert '/' between each char
+        // Section 1: Tiles — 2*TileCount chars, concatenated directly (no separators)
         var tileLen = topology.TileCount * 2;
         var sb = new StringBuilder(compact.Length + 32);
         for (var i = 0; i < tileLen; i++)
         {
-            if (i > 0)
-            {
-                sb.Append('/');
-            }
-
             sb.Append(compact[pos++]);
         }
 

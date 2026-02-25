@@ -4,7 +4,7 @@ This document defines a fixed-length, human-readable board state serialization f
 
 ## Encoding Overview
 
-- **Human-readable form**: single-character tokens. Most fields use Crockford base-32 (uppercase + digits). Tile number tokens use a separate lowercase alphabet (`a`–`k`) encoding pip count and side. `/` separates tokens within tiles and players within per-player sections; `|` separates major sections.
+- **Human-readable form**: single-character tokens. Most fields use Crockford base-32 (uppercase + digits). Tile number tokens use a separate lowercase alphabet (`a`–`k`) encoding pip count and side. `/` separates players within per-player sections; `|` separates major sections. Tiles are concatenated directly without separators.
 - **Compact form**: strip all `/` and `|` separators to produce a fixed-length string, one character per token.
 - **Indexing**: all indices are 0-based and refer to the topology in `docs/board-topology.md`.
 
@@ -82,7 +82,7 @@ Each port is a coastal edge connecting two vertices on the board perimeter (see 
 
 ## Serialization Layout
 
-Tokens are emitted in the order below. All counts are fixed-length. Major sections are separated by `|`. Within tiles each token is separated by `/`. Within per-player sections (resources, knights, dev cards) individual players are separated by `/`.
+Tokens are emitted in the order below. All counts are fixed-length. Major sections are separated by `|`. Within per-player sections (resources, knights, dev cards) individual players are separated by `/`. Tile tokens are concatenated directly without separators.
 
 Let `T` = number of tiles, `V` = number of vertices, `E` = number of edges, `P` = number of ports, `N` = number of players.
 
@@ -100,7 +100,7 @@ For each tile index `t` in order:
 - `tile[t].resource` — Crockford base-32 (0..5)
 - `tile[t].number` — lowercase pip letter (`a`..`k`)
 
-Tokens within this section are separated by `/`.
+Tokens are concatenated directly (no separators).
 
 **Tokens**: `T * 2` — mini: 14, small: 20, standard: 38.
 
@@ -220,9 +220,9 @@ After initial placement (1 round): each player has placed 1 settlement and 1 roa
 
 Tile layout (7 tiles): wood/6, brick/4, sheep/5, wheat/10, desert/0, wheat/9, ore/3.
 
-Tiles (resource/pip pairs separated by `/`):
+Tiles (resource/pip pairs concatenated):
 ```
-1/j/2/f/3/h/4/g/0/a/4/i/5/d
+1j2f3h4g0a4i5d
 ```
 
 Board state:
@@ -239,7 +239,7 @@ Board state:
 
 Full serialized (sections separated by `|`):
 ```
-1/j/2/f/3/h/4/g/0/a/4/i/5/d|4|17|00|000001000000000200000000|000001000000000000000000000000|134132|21010/00130|0/0|00000/00000
+1j2f3h4g0a4i5d|4|17|00|000001000000000200000000|000001000000000000000000000000|134132|21010/00130|0/0|00000/00000
 ```
 
 ### Small Map (2 players, early game)
@@ -248,9 +248,9 @@ After initial placement (1 round): each player has placed 1 settlement and 1 roa
 
 Tile layout (10 tiles): wheat/3, brick/4, sheep/5, wood/10, brick/11, wood/12, ore/6, wheat/9, sheep/8, desert/0.
 
-Tiles (resource/pip pairs separated by `/`):
+Tiles (resource/pip pairs concatenated):
 ```
-4/d/2/f/3/h/1/g/2/e/1/c/5/j/4/i/3/k/0/a
+4d2f3h1g2e1c5j4i3k0a
 ```
 
 Board state:
@@ -267,7 +267,7 @@ Board state:
 
 Full serialized (sections separated by `|`):
 ```
-4/d/2/f/3/h/1/g/2/e/1/c/5/j/4/i/3/k/0/a|9|24|00|12200001000000000000000000000000|10202010000000000000000000000000000000000|1251413|10010/00100|0/0|00000/00000
+4d2f3h1g2e1c5j4i3k0a|9|24|00|12200001000000000000000000000000|10202010000000000000000000000000000000000|1251413|10010/00100|0/0|00000/00000
 ```
 
 ### Standard Map (3 players, mid-game)
@@ -276,9 +276,9 @@ Several turns in: players have built additional roads, player 2 has upgraded a s
 
 Tile layout (19 tiles): wood/5, ore/2, brick/6, wheat/3, wood/8, sheep/10, wheat/9, ore/12, sheep/11, wood/4, brick/8, sheep/10, wheat/9, ore/4, sheep/5, brick/6, wood/3, wheat/11, desert/0.
 
-Tiles (resource/pip pairs separated by `/`):
+Tiles (resource/pip pairs concatenated):
 ```
-1/h/5/b/2/j/4/d/1/k/3/g/4/i/5/c/3/e/1/f/2/k/3/g/4/i/5/f/3/h/2/j/1/d/4/e/0/a
+1h5b2j4d1k3g4i5c3e1f2k3g4i5f3h2j1d4e0a
 ```
 
 Board state:
@@ -296,12 +296,12 @@ Board state:
 
 Full serialized:
 ```
-1/h/5/b/2/j/4/d/1/k/3/g/4/i/5/c/3/e/1/f/2/k/3/g/4/i/5/f/3/h/2/j/1/d/4/e/0/a|5|27|01|000000001000000000600000000000000200000000000000030003|000000100000000000200000010020000100300000020010000000001000200000000000|112134561|31201/02143/10320|2/0/1|10000/01010/00100
+1h5b2j4d1k3g4i5c3e1f2k3g4i5f3h2j1d4e0a|5|27|01|000000001000000000600000000000000200000000000000030003|000000100000000000200000010020000100300000020010000000001000200000000000|112134561|31201/02143/10320|2/0/1|10000/01010/00100
 ```
 
 ## Compact Form (Transformer Ingestion)
 
-Remove all `/` and `|` separators. The result is a fixed-length string, one character per token (Crockford base-32 uppercase/digits for most fields, lowercase `a`–`k` for tile numbers).
+Remove all `/` and `|` separators. The result is a fixed-length string, one character per token (Crockford base-32 uppercase/digits for most fields, lowercase `a`–`k` for tile numbers). Since tiles are already concatenated without separators, only `|` (section boundaries) and `/` (player separators in sections 8–10) are stripped.
 
 ### Mini Map Example
 
