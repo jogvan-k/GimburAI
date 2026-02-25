@@ -133,6 +133,11 @@ internal static class RootCommandFactory
             DefaultValueFactory = _ => 500
         };
 
+        var noSymmetriesOption = new Option<bool>("--no-symmetries")
+        {
+            Description = "Disable board symmetry permutations in exported training data",
+        };
+
         var command = new Command("simulate", "Run Settlers of Catan AI self-play simulations.")
         {
           noOfGamesOption,
@@ -140,6 +145,7 @@ internal static class RootCommandFactory
           searchTimeOption,
           maxSimulationsOption,
           maxRolloutDepthOption,
+          noSymmetriesOption,
         };
 
         command.SetAction(parseResult =>
@@ -153,6 +159,7 @@ internal static class RootCommandFactory
             int searchTimeMs = parseResult.GetValue(searchTimeOption);
             int maxSimulations = parseResult.GetValue(maxSimulationsOption);
             int maxRolloutDepth = parseResult.GetValue(maxRolloutDepthOption);
+            bool noSymmetries = parseResult.GetValue(noSymmetriesOption);
 
             var options = new SimulationOptions
             {
@@ -165,6 +172,7 @@ internal static class RootCommandFactory
                 SearchTimeMs = searchTimeMs,
                 MaxSimulations = maxSimulations,
                 MaxRolloutDepth = maxRolloutDepth,
+                Symmetries = !noSymmetries,
             };
 
             var runner = new SimulationRunner(options);

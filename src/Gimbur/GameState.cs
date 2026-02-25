@@ -437,8 +437,8 @@ public sealed class CatanState : ICoreState
     public string SerializeBoard() => CatanStateSerializer.SerializeBoard(this);
 
     /// <summary>
-    /// Serializes the turn-specific state (sections 2–6, 8–10) in compact form,
-    /// excluding tiles and ports which are board-invariant.
+    /// Serializes the turn-specific state (sections 2–6, 8–10) in human-readable
+    /// form, excluding tiles and ports which are board-invariant.
     /// </summary>
     public string SerializeStateOnly() => CatanStateSerializer.SerializeStateOnly(this);
 
