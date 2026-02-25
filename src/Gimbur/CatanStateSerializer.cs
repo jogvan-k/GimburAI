@@ -443,45 +443,58 @@ internal static class CatanStateSerializer
     }
 
     /// <summary>
-    /// Serializes the turn-specific state (sections 2–6, 8–10) in compact form
-    /// (no separators). This excludes tiles and ports which are board-invariant.
-    /// Layout: [robber:1][player:1][stage:1][longestRoad:1][largestArmy:1]
-    ///         [vertices:V][edges:E][resources:5*N][knights:N][devCards:5*N]
+    /// Serializes the turn-specific state (sections 2–6, 8–10) in human-readable
+    /// form. This excludes tiles (section 1) and ports (section 7) which are
+    /// board-invariant. Sections are separated by '|' and per-player groups
+    /// within sections 8–10 are separated by '/'.
+    /// Layout: robber|playerStage|longestLargest|vertices|edges|resources|knights|devCards
     /// </summary>
     public static string SerializeStateOnly(CatanState state)
     {
         var topology = state.Board.Topology;
         var playerCount = state.PlayerCount;
+        // Capacity: tokens + 8 section '|' separators + player '/' separators
         var capacity = 1 + 2 + 2 + topology.VertexCount + topology.EdgeCount
-                       + (5 * playerCount) + playerCount + (5 * playerCount);
+                       + (5 * playerCount) + playerCount + (5 * playerCount)
+                       + 8 + (3 * (playerCount - 1));
         var sb = new StringBuilder(capacity);
 
         // Section 2: Robber
         sb.Append(CrockfordBase32.Encode(state.Board.RobberTile));
 
         // Section 3: Current Turn (player + stage)
+        sb.Append('|');
         sb.Append(CrockfordBase32.Encode(state.CurrentPlayer));
         sb.Append(CrockfordBase32.Encode((int)state.Stage));
 
         // Section 4: Longest Road / Largest Army
+        sb.Append('|');
         sb.Append(CrockfordBase32.Encode(state.LongestRoadOwner));
         sb.Append(CrockfordBase32.Encode(state.LargestArmyOwner));
 
         // Section 5: Vertices
+        sb.Append('|');
         for (var vi = 0; vi < topology.VertexCount; vi++)
         {
             sb.Append(CrockfordBase32.Encode(state.Board.VertexOccupancy[vi].ToToken()));
         }
 
         // Section 6: Edges
+        sb.Append('|');
         for (var ei = 0; ei < topology.EdgeCount; ei++)
         {
             sb.Append(CrockfordBase32.Encode(state.Board.EdgeOccupancy[ei].ToToken()));
         }
 
-        // Section 8: Per-Player Resources (concatenated, no '/' separators)
+        // Section 8: Per-Player Resources (5 chars per player, '/' between players)
+        sb.Append('|');
         for (var player = 1; player <= playerCount; player++)
         {
+            if (player > 1)
+            {
+                sb.Append('/');
+            }
+
             sb.Append(CrockfordBase32.Encode(state._resources[player, CatanState.ResourceToIndex(ResourceType.Wood)]));
             sb.Append(CrockfordBase32.Encode(state._resources[player, CatanState.ResourceToIndex(ResourceType.Brick)]));
             sb.Append(CrockfordBase32.Encode(state._resources[player, CatanState.ResourceToIndex(ResourceType.Sheep)]));
@@ -489,15 +502,27 @@ internal static class CatanStateSerializer
             sb.Append(CrockfordBase32.Encode(state._resources[player, CatanState.ResourceToIndex(ResourceType.Ore)]));
         }
 
-        // Section 9: Per-Player Knights Played (concatenated)
+        // Section 9: Per-Player Knights Played ('/' between players)
+        sb.Append('|');
         for (var player = 1; player <= playerCount; player++)
         {
+            if (player > 1)
+            {
+                sb.Append('/');
+            }
+
             sb.Append(CrockfordBase32.Encode(state._knightsPlayed[player]));
         }
 
-        // Section 10: Per-Player Dev Cards (concatenated)
+        // Section 10: Per-Player Dev Cards (5 chars per player, '/' between players)
+        sb.Append('|');
         for (var player = 1; player <= playerCount; player++)
         {
+            if (player > 1)
+            {
+                sb.Append('/');
+            }
+
             for (var card = 0; card < CatanState.DevCardCount; card++)
             {
                 sb.Append(CrockfordBase32.Encode(state._devCards[player, card]));

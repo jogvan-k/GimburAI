@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
@@ -40,6 +41,12 @@ internal record SimulationOptions
     /// When exceeded, rollout terminates with score-based outcome.
     /// </summary>
     public int MaxRolloutDepth { get; init; } = 500;
+
+    /// <summary>
+    /// Whether to include board symmetry permutations in the export.
+    /// Defaults to true (all valid symmetries for the map).
+    /// </summary>
+    public bool Symmetries { get; init; } = true;
 }
 
 /// <summary>
@@ -110,6 +117,11 @@ internal class SimulationRunner
         var config = ResolveGameConfig();
         var playerCount = ResolvePlayerCount(config);
 
+        // Precompute symmetry permutations (same for all games with the same topology).
+        var symmetryPerms = _options.Symmetries
+            ? BoardSymmetry.GetPermutations(config.Map.Topology)
+            : [];
+
         if (!_quiet)
         {
             Console.WriteLine($"Starting {_options.NumberOfGames} game simulation(s)...");
@@ -122,6 +134,18 @@ internal class SimulationRunner
             if (_options.ExportPath is not null)
             {
                 Console.WriteLine($"  Export: {_options.ExportPath.FullName}");
+                if (_options.Symmetries)
+                {
+                    Console.WriteLine($"  Symmetries: {symmetryPerms.Length} permutation(s)");
+                    if (symmetryPerms.Length == 0 && _options.Symmetries)
+                    {
+                        Console.WriteLine("  WARNING: No symmetries available for this map. Permutation arrays will be empty.");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("  Symmetries: disabled");
+                }
             }
 
             Console.WriteLine();
@@ -177,7 +201,7 @@ internal class SimulationRunner
 
         if (_options.ExportPath is not null)
         {
-            ExportJsonl(stats, _options.ExportPath);
+            ExportJsonl(stats, _options.ExportPath, symmetryPerms);
         }
     }
 
@@ -208,14 +232,21 @@ internal class SimulationRunner
 
         while (state.WinnerPlayer == 0)
         {
-            // Record every actionable state.
             var actions = state.Actions();
             if (actions.Length == 0) break;
 
-            if (state.Stage == TurnStage.BuildTrade)
+            if (actions.Length == 1)
             {
+                // Forced action (e.g., dice roll) — no decision to make.
+                // Apply it without recording or running MCTS.
+                state = (CatanState)actions[0].DoCoreAction();
+            }
+            else
+            {
+                // Multiple actions available — run MCTS to decide.
                 // Progress reporting: log on turn 1 and then every 10 turns.
-                if (!_quiet && (lastReportedTurn < 0 || state.TurnNumber / 10 > lastReportedTurn / 10))
+                if (!_quiet && state.Stage == TurnStage.BuildTrade
+                    && (lastReportedTurn < 0 || state.TurnNumber / 10 > lastReportedTurn / 10))
                 {
                     lastReportedTurn = state.TurnNumber;
                     Console.WriteLine(
@@ -262,24 +293,6 @@ internal class SimulationRunner
                 {
                     break;
                 }
-            }
-            else
-            {
-                // Non-BuildTrade stages: record state with no MCTS data.
-                var serialized = state.SerializeStateOnly();
-                states.Add(new StateRecord
-                {
-                    PlayerTurn = state.CurrentPlayer,
-                    SerializedState = serialized,
-                    Simulations = 0,
-                    ElapsedMs = 0,
-                    WinRate = 0.0,
-                    Wins = [],
-                });
-
-                // Use greedy/comparable sort (same as MCTS rollout policy).
-                Array.Sort(actions);
-                state = (CatanState)actions[0].DoCoreAction();
             }
 
             totalActions++;
@@ -379,7 +392,10 @@ internal class SimulationRunner
         }
     }
 
-    private static void ExportJsonl(SimulationStats stats, FileInfo exportPath)
+    private static void ExportJsonl(
+        SimulationStats stats,
+        FileInfo exportPath,
+        ImmutableArray<SymmetryPermutation> symmetryPerms)
     {
         if (stats.Games.Count == 0)
         {
@@ -397,6 +413,11 @@ internal class SimulationRunner
 
         foreach (var game in stats.Games)
         {
+            // Compute board permutations once per game.
+            var boardPermutations = symmetryPerms.Length > 0
+                ? symmetryPerms.Select(p => BoardSymmetry.PermuteBoard(game.BoardSerialized, p)).ToArray()
+                : Array.Empty<string>();
+
             var jsonObj = new
             {
                 version = 1,
@@ -414,7 +435,7 @@ internal class SimulationRunner
                 board = new
                 {
                     serialized = game.BoardSerialized,
-                    permutations = Array.Empty<string>(),
+                    permutations = boardPermutations,
                 },
                 states = game.States.Select(s => new
                 {
@@ -424,7 +445,9 @@ internal class SimulationRunner
                     s.ElapsedMs,
                     s.WinRate,
                     s.Wins,
-                    permutations = Array.Empty<string>(),
+                    permutations = symmetryPerms.Length > 0
+                        ? symmetryPerms.Select(p => BoardSymmetry.PermuteState(s.SerializedState, p)).ToArray()
+                        : Array.Empty<string>(),
                 }).ToArray(),
             };
 
