@@ -4,15 +4,33 @@ This document defines a fixed-length, human-readable board state serialization f
 
 ## Encoding Overview
 
-- **Human-readable form**: single-character Crockford base-32 tokens. `/` separates tokens within tiles and players within per-player sections; `|` separates major sections.
-- **Compact form**: strip all `/` and `|` separators to produce a fixed-length string of Crockford base-32 characters.
+- **Human-readable form**: single-character tokens. Most fields use Crockford base-32 (uppercase + digits). Tile number tokens use a separate lowercase alphabet (`a`–`k`) encoding pip count and side. `/` separates tokens within tiles and players within per-player sections; `|` separates major sections.
+- **Compact form**: strip all `/` and `|` separators to produce a fixed-length string, one character per token.
 - **Indexing**: all indices are 0-based and refer to the topology in `docs/board-topology.md`.
 
 ### Crockford Base-32 Alphabet
 
 `0123456789ABCDEFGHJKMNPQRSTVWXYZ`
 
-Each character encodes a value 0–31. All fields in this schema fit within that range.
+Each character encodes a value 0–31. All fields except tile numbers use this alphabet.
+
+### Tile Number Alphabet (Pip Encoding)
+
+Tile numbers are encoded as **lowercase letters** (`a`–`k`), intentionally disjoint from the Crockford base-32 alphabet so a tokenizer can distinguish tile likelihood tokens from all other field types. Characters are ordered by ascending pip count; within each pip level, "low" (below 7) comes before "high" (above 7).
+
+| Char | Pips | Side | Number |
+|------|------|------|--------|
+| `a`  | 0    | —    | 0 (desert) |
+| `b`  | 1    | low  | 2  |
+| `c`  | 1    | high | 12 |
+| `d`  | 2    | low  | 3  |
+| `e`  | 2    | high | 11 |
+| `f`  | 3    | low  | 4  |
+| `g`  | 3    | high | 10 |
+| `h`  | 4    | low  | 5  |
+| `i`  | 4    | high | 9  |
+| `j`  | 5    | low  | 6  |
+| `k`  | 5    | high | 8  |
 
 ## Enumerations
 
@@ -27,8 +45,8 @@ All values below are shown in decimal. In serialized form each value is a **sing
 - `5` = ore
 
 ### Number Tokens (tile)
-- `0` = no token (desert)
-- `2`..`12` = usual pip values (with `7` unused in standard play)
+
+Tile numbers are **not** encoded as Crockford base-32. They use the separate lowercase pip alphabet defined above (see §Tile Number Alphabet). This encodes the probability of rolling the number (pip count) and whether it is below or above 7, rather than the raw numeric value.
 
 ### Player Ids
 - `0` = none/unassigned
@@ -79,8 +97,8 @@ Let `T` = number of tiles, `V` = number of vertices, `E` = number of edges, `P` 
 ### 1) Tiles
 
 For each tile index `t` in order:
-- `tile[t].resource` (0..5)
-- `tile[t].number` (0..C, i.e. 0..12)
+- `tile[t].resource` — Crockford base-32 (0..5)
+- `tile[t].number` — lowercase pip letter (`a`..`k`)
 
 Tokens within this section are separated by `/`.
 
@@ -200,11 +218,11 @@ Let `T`, `V`, `E`, `P` be map-dependent and `N` be the number of players.
 
 After initial placement (1 round): each player has placed 1 settlement and 1 road. A few turns have passed.
 
-Tile layout (7 tiles): wood/6, brick/4, sheep/5, wheat/A, desert/0, wheat/9, ore/3.
+Tile layout (7 tiles): wood/6, brick/4, sheep/5, wheat/10, desert/0, wheat/9, ore/3.
 
 Tiles (resource/pip pairs separated by `/`):
 ```
-1/6/2/4/3/5/4/A/0/0/4/9/5/3
+1/j/2/f/3/h/4/g/0/a/4/i/5/d
 ```
 
 Board state:
@@ -221,18 +239,18 @@ Board state:
 
 Full serialized (sections separated by `|`):
 ```
-1/6/2/4/3/5/4/A/0/0/4/9/5/3|4|17|00|000001000000000200000000|000001000000000000000000000000|134132|21010/00130|0/0|00000/00000
+1/j/2/f/3/h/4/g/0/a/4/i/5/d|4|17|00|000001000000000200000000|000001000000000000000000000000|134132|21010/00130|0/0|00000/00000
 ```
 
 ### Small Map (2 players, early game)
 
 After initial placement (1 round): each player has placed 1 settlement and 1 road. One turn has begun (player 2 is about to roll).
 
-Tile layout (10 tiles): wheat/3, brick/4, sheep/5, wood/A, brick/B, wood/C, ore/6, wheat/9, sheep/8, desert/0.
+Tile layout (10 tiles): wheat/3, brick/4, sheep/5, wood/10, brick/11, wood/12, ore/6, wheat/9, sheep/8, desert/0.
 
 Tiles (resource/pip pairs separated by `/`):
 ```
-4/3/2/4/3/5/1/A/2/B/1/C/5/6/4/9/3/8/0/0
+4/d/2/f/3/h/1/g/2/e/1/c/5/j/4/i/3/k/0/a
 ```
 
 Board state:
@@ -249,22 +267,22 @@ Board state:
 
 Full serialized (sections separated by `|`):
 ```
-4/3/2/4/3/5/1/A/2/B/1/C/5/6/4/9/3/8/0/0|9|24|00|12200001000000000000000000000000|10202010000000000000000000000000000000000|1251413|10010/00100|0/0|00000/00000
+4/d/2/f/3/h/1/g/2/e/1/c/5/j/4/i/3/k/0/a|9|24|00|12200001000000000000000000000000|10202010000000000000000000000000000000000|1251413|10010/00100|0/0|00000/00000
 ```
 
 ### Standard Map (3 players, mid-game)
 
 Several turns in: players have built additional roads, player 2 has upgraded a settlement to a city, robber has been moved. Player 1 has played 2 knights.
 
-Tile layout (19 tiles): wood/5, ore/2, brick/6, wheat/3, wood/8, sheep/A, wheat/9, ore/C, sheep/B, wood/4, brick/8, sheep/A, wheat/9, ore/4, sheep/5, brick/6, wood/3, wheat/B, desert/0.
+Tile layout (19 tiles): wood/5, ore/2, brick/6, wheat/3, wood/8, sheep/10, wheat/9, ore/12, sheep/11, wood/4, brick/8, sheep/10, wheat/9, ore/4, sheep/5, brick/6, wood/3, wheat/11, desert/0.
 
 Tiles (resource/pip pairs separated by `/`):
 ```
-1/5/5/2/2/6/4/3/1/8/3/A/4/9/5/C/3/B/1/4/2/8/3/A/4/9/5/4/3/5/2/6/1/3/4/B/0/0
+1/h/5/b/2/j/4/d/1/k/3/g/4/i/5/c/3/e/1/f/2/k/3/g/4/i/5/f/3/h/2/j/1/d/4/e/0/a
 ```
 
 Board state:
-- **Robber**: tile 5 (sheep/A — blocking a productive hex)
+- **Robber**: tile 5 (sheep/10 — blocking a productive hex)
 - **Current turn**: player 2, build/trade (stage 7)
 - **Longest road**: none; **Largest army**: player 1
 - **Vertices**: player 1 settlements on v8 and v35; player 2 city on v18, settlement on v44; player 3 settlements on v24 and v31
@@ -278,44 +296,44 @@ Board state:
 
 Full serialized:
 ```
-1/5/5/2/2/6/4/3/1/8/3/A/4/9/5/C/3/B/1/4/2/8/3/A/4/9/5/4/3/5/2/6/1/3/4/B/0/0|5|27|01|000000001000000000600000000000000200000000000000030003|000000100000000000200000010020000100300000020010000000001000200000000000|112134561|31201/02143/10320|2/0/1|10000/01010/00100
+1/h/5/b/2/j/4/d/1/k/3/g/4/i/5/c/3/e/1/f/2/k/3/g/4/i/5/f/3/h/2/j/1/d/4/e/0/a|5|27|01|000000001000000000600000000000000200000000000000030003|000000100000000000200000010020000100300000020010000000001000200000000000|112134561|31201/02143/10320|2/0/1|10000/01010/00100
 ```
 
 ## Compact Form (Transformer Ingestion)
 
-Remove all `/` and `|` separators. The result is a fixed-length string of Crockford base-32 characters, one character per token.
+Remove all `/` and `|` separators. The result is a fixed-length string, one character per token (Crockford base-32 uppercase/digits for most fields, lowercase `a`–`k` for tile numbers).
 
 ### Mini Map Example
 
 From the human-readable example above:
 ```
-1624354A004953 4 17 00 000001000000000200000000 000001000000000000000000000000 134132 2101000130 00 0000000000
+1j2f3h4g0a4i5d 4 17 00 000001000000000200000000 000001000000000000000000000000 134132 2101000130 00 0000000000
 ```
 (spaces added for clarity — actual compact form has no spaces)
 
 Compact string (`101` characters):
 ```
-1624354A004953417000000010000000002000000000000010000000000000000000000001341322101000130000000000000
+1j2f3h4g0a4i5d417000000010000000002000000000000010000000000000000000000001341322101000130000000000000
 ```
 
 ### Small Map Example
 
 From the human-readable example above:
 ```
-4324351A2B1C56493800 9 24 00 12200001000000000000000000000000 10202010000000000000000000000000000000000 1251413 1001000100 00 0000000000
+4d2f3h1g2e1c5j4i3k0a 9 24 00 12200001000000000000000000000000 10202010000000000000000000000000000000000 1251413 1001000100 00 0000000000
 ```
 (spaces added for clarity — actual compact form has no spaces)
 
 Compact string (`127` characters):
 ```
-4324351A2B1C5649380092400122000010000000000000000000000001020201000000000000000000000000000000000012514131001000100000000000000
+4d2f3h1g2e1c5j4i3k0a92400122000010000000000000000000000001020201000000000000000000000000000000000012514131001000100000000000000
 ```
 
 ### Standard Map Example
 
 Compact string (`211` characters):
 ```
-15522643183A495C3B14283A49543526134B0052701000000001000000000600000000000000200000000000000030003000000100000000000200000010020000100300000020010000000001000200000000000112134561312010214310320201100000101000100
+1h5b2j4d1k3g4i5c3e1f2k3g4i5f3h2j1d4e0a52701000000001000000000600000000000000200000000000000030003000000100000000000200000010020000100300000020010000000001000200000000000112134561312010214310320201100000101000100
 ```
 
 Compact string lengths:
@@ -331,6 +349,6 @@ This yields a compact, fixed-length string that is reversible to the human-reada
 
 - All indices and ordering are defined in `docs/board-topology.md` and `docs/topology-reference.md`.
 - Port positions are fixed by the topology. Standard map: 4 generic (3:1) + 5 resource-specific (2:1) = 9 ports. Small map: 3 generic (3:1) + 4 resource-specific (2:1) = 7 ports. Mini map: 3 generic (3:1) + 3 resource-specific (2:1) = 6 ports.
-- Desert tiles must have number token `0`.
+- Desert tiles must have pip letter `a` (= number 0).
 - Turn stage `0`–`3` applies during initial placement. Turn stages `4`–`7` apply during normal play.
 - If `currentPlayer = 0`, the game has not started or is between rounds.
