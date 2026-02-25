@@ -644,7 +644,7 @@ public sealed class CatanState : ICoreState
 
             sb.Append(CrockfordBase32.Encode((int)Board.TileResource(ti)));
             sb.Append('/');
-            sb.Append(CrockfordBase32.Encode(Board.TileNumber(ti)));
+            sb.Append(TilePip.Encode(Board.TileNumber(ti)));
         }
 
         // Section 2: Robber
@@ -761,7 +761,7 @@ public sealed class CatanState : ICoreState
         for (var ti = 0; ti < topology.TileCount; ti++)
         {
             tileResources[ti] = (ResourceType)CrockfordBase32.Decode(tileTokens[ti * 2][0]);
-            tileNumbers[ti] = CrockfordBase32.Decode(tileTokens[(ti * 2) + 1][0]);
+            tileNumbers[ti] = TilePip.Decode(tileTokens[(ti * 2) + 1][0]);
         }
 
         // Section 2: Robber (single char)
