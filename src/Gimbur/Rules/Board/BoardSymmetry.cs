@@ -212,8 +212,8 @@ public static class BoardSymmetry
 
     /// <summary>
     /// Applies a symmetry permutation to a serialized board string.
-    /// Board format: "{tile_chars}|{port_chars}" where tiles are 2 chars each
-    /// (resource + pip) and ports are 1 char each.
+    /// Board format: "{tile_chars}|{port_chars}" where tiles are 3 chars each
+    /// (resource + pips + side) and ports are 1 char each.
     /// </summary>
     public static string PermuteBoard(string boardSerialized, SymmetryPermutation perm)
     {
@@ -228,9 +228,9 @@ public static class BoardSymmetry
         var tileCount = perm.Tiles.Length;
         var portCount = perm.Ports.Length;
 
-        if (tileSection.Length != tileCount * 2)
+        if (tileSection.Length != tileCount * 3)
             throw new ArgumentException(
-                $"Tile section has {tileSection.Length} chars, expected {tileCount * 2}.");
+                $"Tile section has {tileSection.Length} chars, expected {tileCount * 3}.");
         if (portSection.Length != portCount)
             throw new ArgumentException(
                 $"Port section has {portSection.Length} chars, expected {portCount}.");
@@ -244,12 +244,13 @@ public static class BoardSymmetry
 
         var sb = new StringBuilder(boardSerialized.Length);
 
-        // Permute tiles (2 chars each)
+        // Permute tiles (3 chars each: resource + pips + side)
         for (var ti = 0; ti < tileCount; ti++)
         {
             var srcTile = tileInv[ti];
-            sb.Append(tileSection[srcTile * 2]);
-            sb.Append(tileSection[srcTile * 2 + 1]);
+            sb.Append(tileSection[srcTile * 3]);
+            sb.Append(tileSection[srcTile * 3 + 1]);
+            sb.Append(tileSection[srcTile * 3 + 2]);
         }
 
         sb.Append('|');
@@ -283,10 +284,10 @@ public static class BoardSymmetry
         var vertexCount = perm.Vertices.Length;
         var edgeCount = perm.Edges.Length;
 
-        // Validate vertex and edge section lengths.
-        if (sections[3].Length != vertexCount)
+        // Validate vertex section (2 chars per vertex) and edge section lengths.
+        if (sections[3].Length != vertexCount * 2)
             throw new ArgumentException(
-                $"Vertex section has {sections[3].Length} chars, expected {vertexCount}.");
+                $"Vertex section has {sections[3].Length} chars, expected {vertexCount * 2}.");
         if (sections[4].Length != edgeCount)
             throw new ArgumentException(
                 $"Edge section has {sections[4].Length} chars, expected {edgeCount}.");
@@ -310,14 +311,16 @@ public static class BoardSymmetry
         sb.Append('|');
         sb.Append(sections[2]);
 
-        // Section 3: Vertices — permute
+        // Section 3: Vertices — permute (2 chars per vertex: building + player)
         sb.Append('|');
         for (var vi = 0; vi < vertexCount; vi++)
         {
-            sb.Append(sections[3][vertexInv[vi]]);
+            var srcVertex = vertexInv[vi];
+            sb.Append(sections[3][srcVertex * 2]);
+            sb.Append(sections[3][srcVertex * 2 + 1]);
         }
 
-        // Section 4: Edges — permute
+        // Section 4: Edges — permute (1 char per edge: player ID)
         sb.Append('|');
         for (var ei = 0; ei < edgeCount; ei++)
         {

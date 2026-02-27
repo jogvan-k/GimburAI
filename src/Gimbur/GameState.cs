@@ -449,7 +449,7 @@ public sealed class CatanState : ICoreState
 
     /// <summary>
     /// Produces the compact form: strips all '/' and '|' separators from the
-    /// human-readable form, yielding a fixed-length Crockford base-32 string.
+    /// human-readable form, yielding a fixed-length token string.
     /// </summary>
     public string SerializeCompact() => CatanStateSerializer.SerializeCompact(this);
 
@@ -517,12 +517,13 @@ public sealed class CatanState : ICoreState
 
         for (var vi = 0; vi < Board.Topology.VertexCount; vi++)
         {
-            hash.Add(Board.VertexOccupancy[vi].ToToken());
+            hash.Add((int)Board.VertexOccupancy[vi].Building);
+            hash.Add(Board.VertexOccupancy[vi].Player);
         }
 
         for (var ei = 0; ei < Board.Topology.EdgeCount; ei++)
         {
-            hash.Add(Board.EdgeOccupancy[ei].ToToken());
+            hash.Add(Board.EdgeOccupancy[ei].Player);
         }
 
         for (var pi = 0; pi < Board.Topology.PortCount; pi++)

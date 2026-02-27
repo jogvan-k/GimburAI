@@ -415,6 +415,7 @@ public class BoardSymmetryTests
         var state = CreateTestState(config, playerCount: 2);
 
         // Serialize the full human-readable state (all 10 sections).
+        // New section order: tiles[0]|ports[1]|robber[2]|playerStage[3]|longestLargest[4]|vertices[5]|edges[6]|resources[7]|knights[8]|devCards[9]
         var fullStr = state.SerializeHumanReadable();
         var fullSections = fullStr.Split('|');
 
@@ -422,15 +423,15 @@ public class BoardSymmetryTests
         // and permute the state-only sections.
         foreach (var perm in perms)
         {
-            // Permute board part (sections 0 tiles, 6 ports).
-            var boardStr = fullSections[0] + "|" + fullSections[6];
+            // Permute board part (sections 0 tiles, 1 ports).
+            var boardStr = fullSections[0] + "|" + fullSections[1];
             var permBoard = BoardSymmetry.PermuteBoard(boardStr, perm);
             var permBoardSections = permBoard.Split('|');
 
-            // Permute state-only part (sections 1-5, 7-9 → mapped to state-only sections 0-7).
+            // Permute state-only part (sections 2-9 → mapped to state-only sections 0-7).
             var stateOnlyStr = string.Join('|',
-                fullSections[1], fullSections[2], fullSections[3],
-                fullSections[4], fullSections[5],
+                fullSections[2], fullSections[3], fullSections[4],
+                fullSections[5], fullSections[6],
                 fullSections[7], fullSections[8], fullSections[9]);
             var permState = BoardSymmetry.PermuteState(stateOnlyStr, perm);
             var permStateSections = permState.Split('|');
@@ -438,12 +439,12 @@ public class BoardSymmetryTests
             // Reassemble full permuted string in 10-section format.
             var permFull = string.Join('|',
                 permBoardSections[0],   // tiles
+                permBoardSections[1],   // ports
                 permStateSections[0],   // robber
                 permStateSections[1],   // playerStage
                 permStateSections[2],   // longestLargest
                 permStateSections[3],   // vertices
                 permStateSections[4],   // edges
-                permBoardSections[1],   // ports
                 permStateSections[5],   // resources
                 permStateSections[6],   // knights
                 permStateSections[7]);  // devCards
