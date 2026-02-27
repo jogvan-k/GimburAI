@@ -1006,11 +1006,11 @@ public class ActionMechanicsTests
         Gimbur.CatanState state,
         int player)
     {
-        // Section 3 (index 3): 2 chars — longestRoadOwner + largestArmyOwner
+        // Section 4 (index 4): 2 player-id chars — longestRoadOwner + largestArmyOwner
         var sections = serialized.Split('|');
-        var chars = sections[3].ToCharArray();
-        chars[1] = CrockfordBase32.Encode(player);
-        sections[3] = new string(chars);
+        var chars = sections[4].ToCharArray();
+        chars[1] = StateToken.EncodePlayer(player);
+        sections[4] = new string(chars);
         return string.Join('|', sections);
     }
 

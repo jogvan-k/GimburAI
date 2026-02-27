@@ -6,53 +6,58 @@ namespace Gimbur;
 /// <summary>
 /// Handles serialization and deserialization of <see cref="CatanState"/>
 /// in both human-readable (section-delimited) and compact (fixed-length) forms.
+/// Uses semantically disjoint character alphabets as defined in
+/// <c>docs/state-serialization.md</c>.
 /// </summary>
 internal static class CatanStateSerializer
 {
     public static string SerializeHumanReadable(CatanState state)
     {
-        var sb = new StringBuilder(256);
+        var sb = new StringBuilder(320);
 
-        // Section 1: Tiles — resource/pip pairs concatenated (no separators)
+        // Section 1: Tiles — 3 tokens each: resource + pips + side (no separators)
         for (var ti = 0; ti < state.Board.Topology.TileCount; ti++)
         {
-            sb.Append(CrockfordBase32.Encode((int)state.Board.TileResource(ti)));
-            sb.Append(TilePip.Encode(state.Board.TileNumber(ti)));
+            sb.Append(StateToken.EncodeResource(state.Board.TileResource(ti)));
+            sb.Append(StateToken.EncodeTilePips(state.Board.TileNumber(ti)));
+            sb.Append(StateToken.EncodeTileSide(state.Board.TileNumber(ti)));
         }
 
-        // Section 2: Robber
-        sb.Append('|');
-        sb.Append(CrockfordBase32.Encode(state.Board.RobberTile));
-
-        // Section 3: Current Turn (player + stage, concatenated)
-        sb.Append('|');
-        sb.Append(CrockfordBase32.Encode(state.CurrentPlayer));
-        sb.Append(CrockfordBase32.Encode((int)state.Stage));
-
-        // Section 4: Longest Road / Largest Army (concatenated)
-        sb.Append('|');
-        sb.Append(CrockfordBase32.Encode(state.LongestRoadOwner));
-        sb.Append(CrockfordBase32.Encode(state.LargestArmyOwner));
-
-        // Section 5: Vertices (concatenated)
-        sb.Append('|');
-        for (var vi = 0; vi < state.Board.Topology.VertexCount; vi++)
-        {
-            sb.Append(CrockfordBase32.Encode(state.Board.VertexOccupancy[vi].ToToken()));
-        }
-
-        // Section 6: Edges (concatenated)
-        sb.Append('|');
-        for (var ei = 0; ei < state.Board.Topology.EdgeCount; ei++)
-        {
-            sb.Append(CrockfordBase32.Encode(state.Board.EdgeOccupancy[ei].ToToken()));
-        }
-
-        // Section 7: Ports (concatenated)
+        // Section 2: Ports
         sb.Append('|');
         for (var pi = 0; pi < state.Board.Topology.PortCount; pi++)
         {
-            sb.Append(CrockfordBase32.Encode((int)state.Board.PortType(pi)));
+            sb.Append(StateToken.EncodePort(state.Board.PortType(pi)));
+        }
+
+        // Section 3: Robber
+        sb.Append('|');
+        sb.Append(CrockfordBase32.Encode(state.Board.RobberTile));
+
+        // Section 4: Current Turn (player + stage, concatenated)
+        sb.Append('|');
+        sb.Append(StateToken.EncodePlayer(state.CurrentPlayer));
+        sb.Append(StateToken.EncodeTurnStage(state.Stage));
+
+        // Section 5: Longest Road / Largest Army (concatenated)
+        sb.Append('|');
+        sb.Append(StateToken.EncodePlayer(state.LongestRoadOwner));
+        sb.Append(StateToken.EncodePlayer(state.LargestArmyOwner));
+
+        // Section 6: Vertices — 2 tokens each: building + player
+        sb.Append('|');
+        for (var vi = 0; vi < state.Board.Topology.VertexCount; vi++)
+        {
+            var occ = state.Board.VertexOccupancy[vi];
+            sb.Append(StateToken.EncodeBuilding(occ.Building));
+            sb.Append(StateToken.EncodePlayer(occ.Player));
+        }
+
+        // Section 7: Edges — 1 player ID token each
+        sb.Append('|');
+        for (var ei = 0; ei < state.Board.Topology.EdgeCount; ei++)
+        {
+            sb.Append(StateToken.EncodePlayer(state.Board.EdgeOccupancy[ei].Player));
         }
 
         // Section 8: Per-Player Resources (5 chars per player, '/' between players)
@@ -111,7 +116,7 @@ internal static class CatanStateSerializer
             throw new ArgumentException("Serialized state cannot be empty.", nameof(serialized));
         }
 
-        // Format: tiles|robber|currentTurn|longestArmy|vertices|edges|ports|resources|knights|devCards
+        // Format: tiles|ports|robber|currentTurn|longestArmy|vertices|edges|resources|knights|devCards
         var sections = serialized.Split('|');
         if (sections.Length != 10)
         {
@@ -121,70 +126,73 @@ internal static class CatanStateSerializer
 
         var topology = config.Map.Topology;
 
-        // Section 1: Tiles — resource/pip pairs concatenated (2*T chars)
+        // Section 1: Tiles — 3 tokens each: resource + pips + side (3*T chars)
         var tileSection = sections[0];
-        if (tileSection.Length != topology.TileCount * 2)
+        if (tileSection.Length != topology.TileCount * 3)
         {
             throw new InvalidOperationException(
-                $"Tile section has {tileSection.Length} chars, expected {topology.TileCount * 2}.");
+                $"Tile section has {tileSection.Length} chars, expected {topology.TileCount * 3}.");
         }
 
         var tileResources = new ResourceType[topology.TileCount];
         var tileNumbers = new int[topology.TileCount];
         for (var ti = 0; ti < topology.TileCount; ti++)
         {
-            tileResources[ti] = (ResourceType)CrockfordBase32.Decode(tileSection[ti * 2]);
-            tileNumbers[ti] = TilePip.Decode(tileSection[(ti * 2) + 1]);
+            tileResources[ti] = StateToken.DecodeResource(tileSection[ti * 3]);
+            tileNumbers[ti] = StateToken.DecodeTileNumber(tileSection[(ti * 3) + 1], tileSection[(ti * 3) + 2]);
         }
 
-        // Section 2: Robber (single char)
-        var robberTile = CrockfordBase32.Decode(sections[1][0]);
-
-        // Section 3: Current Turn (2 chars: player + stage)
-        var currentPlayer = CrockfordBase32.Decode(sections[2][0]);
-        var stage = (TurnStage)CrockfordBase32.Decode(sections[2][1]);
-
-        // Section 4: Longest Road / Largest Army (2 chars)
-        var longestRoadOwner = CrockfordBase32.Decode(sections[3][0]);
-        var largestArmyOwner = CrockfordBase32.Decode(sections[3][1]);
-
-        // Section 5: Vertices (concatenated single chars)
-        if (sections[4].Length != topology.VertexCount)
+        // Section 2: Ports
+        var portSection = sections[1];
+        if (portSection.Length != topology.PortCount)
         {
             throw new InvalidOperationException(
-                $"Vertex section has {sections[4].Length} chars, expected {topology.VertexCount}.");
-        }
-
-        var vertices = new VertexOccupancy[topology.VertexCount];
-        for (var vi = 0; vi < topology.VertexCount; vi++)
-        {
-            vertices[vi] = VertexOccupancy.FromToken(CrockfordBase32.Decode(sections[4][vi]));
-        }
-
-        // Section 6: Edges (concatenated single chars)
-        if (sections[5].Length != topology.EdgeCount)
-        {
-            throw new InvalidOperationException(
-                $"Edge section has {sections[5].Length} chars, expected {topology.EdgeCount}.");
-        }
-
-        var edges = new EdgeOccupancy[topology.EdgeCount];
-        for (var ei = 0; ei < topology.EdgeCount; ei++)
-        {
-            edges[ei] = EdgeOccupancy.FromToken(CrockfordBase32.Decode(sections[5][ei]));
-        }
-
-        // Section 7: Ports (concatenated single chars)
-        if (sections[6].Length != topology.PortCount)
-        {
-            throw new InvalidOperationException(
-                $"Port section has {sections[6].Length} chars, expected {topology.PortCount}.");
+                $"Port section has {portSection.Length} chars, expected {topology.PortCount}.");
         }
 
         var ports = new PortType[topology.PortCount];
         for (var pi = 0; pi < topology.PortCount; pi++)
         {
-            ports[pi] = (PortType)CrockfordBase32.Decode(sections[6][pi]);
+            ports[pi] = StateToken.DecodePort(portSection[pi]);
+        }
+
+        // Section 3: Robber (single char)
+        var robberTile = CrockfordBase32.Decode(sections[2][0]);
+
+        // Section 4: Current Turn (2 chars: player + stage)
+        var currentPlayer = StateToken.DecodePlayer(sections[3][0]);
+        var stage = StateToken.DecodeTurnStage(sections[3][1]);
+
+        // Section 5: Longest Road / Largest Army (2 chars)
+        var longestRoadOwner = StateToken.DecodePlayer(sections[4][0]);
+        var largestArmyOwner = StateToken.DecodePlayer(sections[4][1]);
+
+        // Section 6: Vertices — 2 chars each (building + player)
+        if (sections[5].Length != topology.VertexCount * 2)
+        {
+            throw new InvalidOperationException(
+                $"Vertex section has {sections[5].Length} chars, expected {topology.VertexCount * 2}.");
+        }
+
+        var vertices = new VertexOccupancy[topology.VertexCount];
+        for (var vi = 0; vi < topology.VertexCount; vi++)
+        {
+            var building = StateToken.DecodeBuilding(sections[5][vi * 2]);
+            var player = StateToken.DecodePlayer(sections[5][(vi * 2) + 1]);
+            vertices[vi] = new VertexOccupancy(building, player);
+        }
+
+        // Section 7: Edges — 1 char each (player ID)
+        if (sections[6].Length != topology.EdgeCount)
+        {
+            throw new InvalidOperationException(
+                $"Edge section has {sections[6].Length} chars, expected {topology.EdgeCount}.");
+        }
+
+        var edges = new EdgeOccupancy[topology.EdgeCount];
+        for (var ei = 0; ei < topology.EdgeCount; ei++)
+        {
+            edges[ei] = new EdgeOccupancy(StateToken.DecodePlayer(sections[6][ei]));
         }
 
         // Section 8: Per-Player Resources (5 chars per player, '/' between players)
@@ -293,7 +301,7 @@ internal static class CatanStateSerializer
 
     /// <summary>
     /// Produces the compact form: strips all '/' and '|' separators from the
-    /// human-readable form, yielding a fixed-length Crockford base-32 string.
+    /// human-readable form, yielding a fixed-length token string.
     /// </summary>
     public static string SerializeCompact(CatanState state)
     {
@@ -327,45 +335,45 @@ internal static class CatanStateSerializer
         var topology = config.Map.Topology;
         var pos = 0;
 
-        // Section 1: Tiles — 2*TileCount chars, concatenated directly (no separators)
-        var tileLen = topology.TileCount * 2;
+        // Section 1: Tiles — 3*TileCount chars
+        var tileLen = topology.TileCount * 3;
         var sb = new StringBuilder(compact.Length + 32);
         for (var i = 0; i < tileLen; i++)
         {
             sb.Append(compact[pos++]);
         }
 
-        // Section 2: Robber — 1 char
-        sb.Append('|');
-        sb.Append(compact[pos++]);
-
-        // Section 3: Current Turn — 2 chars
-        sb.Append('|');
-        sb.Append(compact[pos++]);
-        sb.Append(compact[pos++]);
-
-        // Section 4: Longest Road / Largest Army — 2 chars
-        sb.Append('|');
-        sb.Append(compact[pos++]);
-        sb.Append(compact[pos++]);
-
-        // Section 5: Vertices — VertexCount chars
-        sb.Append('|');
-        for (var i = 0; i < topology.VertexCount; i++)
-        {
-            sb.Append(compact[pos++]);
-        }
-
-        // Section 6: Edges — EdgeCount chars
-        sb.Append('|');
-        for (var i = 0; i < topology.EdgeCount; i++)
-        {
-            sb.Append(compact[pos++]);
-        }
-
-        // Section 7: Ports — PortCount chars
+        // Section 2: Ports — PortCount chars
         sb.Append('|');
         for (var i = 0; i < topology.PortCount; i++)
+        {
+            sb.Append(compact[pos++]);
+        }
+
+        // Section 3: Robber — 1 char
+        sb.Append('|');
+        sb.Append(compact[pos++]);
+
+        // Section 4: Current Turn — 2 chars
+        sb.Append('|');
+        sb.Append(compact[pos++]);
+        sb.Append(compact[pos++]);
+
+        // Section 5: Longest Road / Largest Army — 2 chars
+        sb.Append('|');
+        sb.Append(compact[pos++]);
+        sb.Append(compact[pos++]);
+
+        // Section 6: Vertices — 2*VertexCount chars
+        sb.Append('|');
+        for (var i = 0; i < topology.VertexCount * 2; i++)
+        {
+            sb.Append(compact[pos++]);
+        }
+
+        // Section 7: Edges — EdgeCount chars
+        sb.Append('|');
+        for (var i = 0; i < topology.EdgeCount; i++)
         {
             sb.Append(compact[pos++]);
         }
@@ -416,35 +424,36 @@ internal static class CatanStateSerializer
     }
 
     /// <summary>
-    /// Serializes the board-invariant portion: tiles (section 1) and ports (section 7),
+    /// Serializes the board-invariant portion: tiles (section 1) and ports (section 2),
     /// separated by '|'. This is stable across turns within a single game.
     /// Format: "{tile_chars}|{port_chars}"
     /// </summary>
     public static string SerializeBoard(CatanState state)
     {
         var topology = state.Board.Topology;
-        var sb = new StringBuilder((topology.TileCount * 2) + 1 + topology.PortCount);
+        var sb = new StringBuilder((topology.TileCount * 3) + 1 + topology.PortCount);
 
-        // Tiles — resource/pip pairs concatenated
+        // Tiles — resource + pips + side per tile
         for (var ti = 0; ti < topology.TileCount; ti++)
         {
-            sb.Append(CrockfordBase32.Encode((int)state.Board.TileResource(ti)));
-            sb.Append(TilePip.Encode(state.Board.TileNumber(ti)));
+            sb.Append(StateToken.EncodeResource(state.Board.TileResource(ti)));
+            sb.Append(StateToken.EncodeTilePips(state.Board.TileNumber(ti)));
+            sb.Append(StateToken.EncodeTileSide(state.Board.TileNumber(ti)));
         }
 
         // Ports
         sb.Append('|');
         for (var pi = 0; pi < topology.PortCount; pi++)
         {
-            sb.Append(CrockfordBase32.Encode((int)state.Board.PortType(pi)));
+            sb.Append(StateToken.EncodePort(state.Board.PortType(pi)));
         }
 
         return sb.ToString();
     }
 
     /// <summary>
-    /// Serializes the turn-specific state (sections 2–6, 8–10) in human-readable
-    /// form. This excludes tiles (section 1) and ports (section 7) which are
+    /// Serializes the turn-specific state (sections 3–7, 8–10) in human-readable
+    /// form. This excludes tiles (section 1) and ports (section 2) which are
     /// board-invariant. Sections are separated by '|' and per-player groups
     /// within sections 8–10 are separated by '/'.
     /// Layout: robber|playerStage|longestLargest|vertices|edges|resources|knights|devCards
@@ -453,37 +462,39 @@ internal static class CatanStateSerializer
     {
         var topology = state.Board.Topology;
         var playerCount = state.PlayerCount;
-        // Capacity: tokens + 8 section '|' separators + player '/' separators
-        var capacity = 1 + 2 + 2 + topology.VertexCount + topology.EdgeCount
+        // Capacity: tokens + 7 section '|' separators + player '/' separators
+        var capacity = 1 + 2 + 2 + (topology.VertexCount * 2) + topology.EdgeCount
                        + (5 * playerCount) + playerCount + (5 * playerCount)
-                       + 8 + (3 * (playerCount - 1));
+                       + 7 + (3 * (playerCount - 1));
         var sb = new StringBuilder(capacity);
 
-        // Section 2: Robber
+        // Section 3: Robber
         sb.Append(CrockfordBase32.Encode(state.Board.RobberTile));
 
-        // Section 3: Current Turn (player + stage)
+        // Section 4: Current Turn (player + stage)
         sb.Append('|');
-        sb.Append(CrockfordBase32.Encode(state.CurrentPlayer));
-        sb.Append(CrockfordBase32.Encode((int)state.Stage));
+        sb.Append(StateToken.EncodePlayer(state.CurrentPlayer));
+        sb.Append(StateToken.EncodeTurnStage(state.Stage));
 
-        // Section 4: Longest Road / Largest Army
+        // Section 5: Longest Road / Largest Army
         sb.Append('|');
-        sb.Append(CrockfordBase32.Encode(state.LongestRoadOwner));
-        sb.Append(CrockfordBase32.Encode(state.LargestArmyOwner));
+        sb.Append(StateToken.EncodePlayer(state.LongestRoadOwner));
+        sb.Append(StateToken.EncodePlayer(state.LargestArmyOwner));
 
-        // Section 5: Vertices
+        // Section 6: Vertices — 2 tokens each
         sb.Append('|');
         for (var vi = 0; vi < topology.VertexCount; vi++)
         {
-            sb.Append(CrockfordBase32.Encode(state.Board.VertexOccupancy[vi].ToToken()));
+            var occ = state.Board.VertexOccupancy[vi];
+            sb.Append(StateToken.EncodeBuilding(occ.Building));
+            sb.Append(StateToken.EncodePlayer(occ.Player));
         }
 
-        // Section 6: Edges
+        // Section 7: Edges — 1 player ID token each
         sb.Append('|');
         for (var ei = 0; ei < topology.EdgeCount; ei++)
         {
-            sb.Append(CrockfordBase32.Encode(state.Board.EdgeOccupancy[ei].ToToken()));
+            sb.Append(StateToken.EncodePlayer(state.Board.EdgeOccupancy[ei].Player));
         }
 
         // Section 8: Per-Player Resources (5 chars per player, '/' between players)
