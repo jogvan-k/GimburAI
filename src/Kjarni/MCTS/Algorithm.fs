@@ -19,13 +19,11 @@ let isLeaf l =
 let explorationConstant = sqrt 2.
 let maxTrackedPlayers = int Player.Player4
 
-let emptyOutcome() = Array.zeroCreate<float> (maxTrackedPlayers + 1)
+let emptyOutcome() = Array.zeroCreate<float> maxTrackedPlayers
 
 let oneHotOutcome (winner: Player) =
     let outcome = emptyOutcome ()
-    let i = int winner
-    if i > 0 && i <= maxTrackedPlayers then
-        outcome.[i] <- 1.
+    outcome.[(int winner - 1)] <- 1.
     outcome
 
 let addScaledOutcome (target: float array) (source: float array) (scale: float) =
@@ -158,11 +156,11 @@ let rec simulationDistribution (maxRolloutDepth: int) (state: ICoreState) (depth
                 simulationDistribution maxRolloutDepth sampled (depth + 1)
         | _ -> simulationDistribution maxRolloutDepth (nextMove.DoCoreAction()) (depth + 1)
 
-let simulation (maxRolloutDepth: int) (s: State) = simulationDistribution maxRolloutDepth s.state 0
+let simulate (maxRolloutDepth: int) (s: State) = simulationDistribution maxRolloutDepth s.state 0
 
 let registerResult (s: State) (outcome: float array) = s.registerOutcome outcome
 
-let backPropagating (root: State) (a: Action list) (outcome: float array) =
+let backPropagate (root: State) (a: Action list) (outcome: float array) =
     for a1 in a do
         a1.incrementVisitCount ()
         registerResult a1.state outcome
@@ -202,7 +200,7 @@ let search (root: State, maxSimulationCount, timer: Stopwatch, tTable, evaluateU
           && (not evaluateUntil.IsSome
               || timer.ElapsedTicks < evaluateUntil.Value) do
         match selection (root, leafEvaluator) with
-        | Exhausted (actionHistory, win) -> backPropagating root actionHistory (oneHotOutcome win)
+        | Exhausted (actionHistory, win) -> backPropagate root actionHistory (oneHotOutcome win)
         | Candidate (actionHistory, a) ->
             let s =
                 if List.isEmpty actionHistory then
@@ -212,9 +210,9 @@ let search (root: State, maxSimulationCount, timer: Stopwatch, tTable, evaluateU
 
             match expansion (s, a, tTable) with
             | Leaf a ->
-                let outcome = simulation maxRolloutDepth a.state
-                backPropagating root (a :: actionHistory) outcome
-            | Terminal win -> backPropagating root actionHistory (oneHotOutcome win)
+                let outcome = simulate maxRolloutDepth a.state
+                backPropagate root (a :: actionHistory) outcome
+            | Terminal win -> backPropagate root actionHistory (oneHotOutcome win)
             | _ -> raise (Exception "Expanded to unexpected leaf type")
 
     extractBestPath root |> List.toArray
@@ -239,11 +237,11 @@ let parallelSearch (root: State, maxSimulationCount, tTable, evaluateUntil: int,
 
             let win, actionHistory =
                 match leaf with
-                | Leaf a -> simulation maxRolloutDepth a.state, a :: ah
+                | Leaf a -> simulate maxRolloutDepth a.state, a :: ah
                 | Terminal win -> oneHotOutcome win, ah
                 | Unexplored _ -> failwith "Not Implemented"
 
-            lock root (fun () -> backPropagating root actionHistory win)
+            lock root (fun () -> backPropagate root actionHistory win)
         }
 
     try

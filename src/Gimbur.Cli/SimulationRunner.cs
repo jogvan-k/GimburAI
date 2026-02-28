@@ -216,6 +216,7 @@ internal class SimulationRunner
         var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(
             searchTime.NewMilliSeconds(_options.SearchTimeMs),
             _options.MaxSimulations,
+            // TODO: consider using transposition table
             _options.MctsConfig,
             _options.MaxRolloutDepth);
         var ai = (IGameAI)mcts;
@@ -235,6 +236,7 @@ internal class SimulationRunner
             var actions = state.Actions();
             if (actions.Length == 0) break;
 
+            // TODO: we still need to estimate win chance here
             if (actions.Length == 1)
             {
                 // Forced action (e.g., dice roll) — no decision to make.
@@ -260,16 +262,6 @@ internal class SimulationRunner
                 var bestPath = ai.DetermineAction(state);
                 var logInfo = mcts.LatestLogInfo();
 
-                // Convert 1-indexed winCounts to 0-indexed doubles.
-                var wins = new double[playerCount];
-                for (var i = 0; i < playerCount; i++)
-                {
-                    if (i + 1 < logInfo.winCounts.Length)
-                    {
-                        wins[i] = logInfo.winCounts[i + 1];
-                    }
-                }
-
                 var winRate = logInfo.simulations > 0
                     ? logInfo.estimatedAiWinChance
                     : 0.0;
@@ -281,7 +273,7 @@ internal class SimulationRunner
                     Simulations = logInfo.simulations,
                     ElapsedMs = (int)logInfo.elapsedTime.TotalMilliseconds,
                     WinRate = winRate,
-                    Wins = wins,
+                    Wins = logInfo.winCounts,
                 });
 
                 // Apply the best action from MCTS.

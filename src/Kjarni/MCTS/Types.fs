@@ -11,8 +11,8 @@ type Leaf =
 and State(state: ICoreState) =
     let mutable _leaves = state.Actions() |> Array.map Unexplored
     let mutable _visitCount = 0
-    let maxTrackedPlayers = int Player.Player4
-    let mutable _winRates = Array.zeroCreate<float> (maxTrackedPlayers + 1)
+    let _maxTrackedPlayers = int Player.Player4
+    let mutable _winCounts = Array.zeroCreate<float> _maxTrackedPlayers
     let incrementVisitCount () = _visitCount <- _visitCount + 1
     member _.state = state
 
@@ -22,28 +22,21 @@ and State(state: ICoreState) =
 
     member _.registerOutcome(outcome: float array) =
         incrementVisitCount ()
-
-        for i in 1 .. maxTrackedPlayers do
-            let target =
-                if i < outcome.Length then
-                    outcome.[i]
-                else
-                    0.
-
-            _winRates.[i] <- _winRates.[i] + (target - _winRates.[i]) / float _visitCount
+        Array.iteri (fun i x -> _winCounts[i] <- _winCounts[i] + x) outcome
 
     member _.winRateFor(player: Player) =
         let i = int player
-        if i < 0 || i >= _winRates.Length then
+        if i < 0 || i > _winCounts.Length then
+            0.
+        elif _visitCount = 0 then
             0.
         else
-            _winRates.[i]
+            _winCounts.[i-1] / float _visitCount
 
     member this.winRate = this.winRateFor state.PlayerTurn
 
-    member _.winCounts =
-        let vc = float (Math.Max(1, _visitCount))
-        _winRates |> Array.map (fun r -> r * vc)
+    member _.winCounts
+        with get () = _winCounts
 
     member _.visitCount = Math.Max(1, _visitCount)
     member _.playerTurn = state.PlayerTurn
