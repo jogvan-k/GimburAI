@@ -50,7 +50,7 @@ type StateTest() =
         let state = sampleState ()
 
         for _ in [ 1 .. 10 ] do
-            state.registerOutcome [| 0.; 1.; 0.; 0.; 0. |]
+            state.registerOutcome [| 1.; 0.; 0.; 0. |]
 
         state.visitCount |> should equal 10
         state.winRate |> should equal 1.
@@ -60,7 +60,7 @@ type StateTest() =
         let state = sampleState ()
 
         for _ in [ 1 .. 10 ] do
-            state.registerOutcome [| 0.; 0.; 1.; 0.; 0. |]
+            state.registerOutcome [| 0.; 1.; 0.; 0. |]
 
         state.visitCount |> should equal 10
         state.winRate |> should equal 0.
@@ -69,9 +69,9 @@ type StateTest() =
     member _.WinThenLosses() =
         let state = sampleState ()
 
-        state.registerOutcome [| 0.; 1.; 0.; 0.; 0. |]
+        state.registerOutcome [| 1.; 0.; 0.; 0. |]
 
-        Seq.iter (fun _ -> state.registerOutcome [| 0.; 0.; 1.; 0.; 0. |]) [1..99]
+        Seq.iter (fun _ -> state.registerOutcome [| 0.; 1.; 0.; 0. |]) [1..99]
 
         state.visitCount |> should equal 100
 
@@ -88,9 +88,9 @@ type StateTest() =
         let trials = 1000
 
         for _ in 1 .. trials do
-            let result = simulation defaultMaxRolloutDepth (State(rootState() :> ICoreState))
-            p1Wins <- p1Wins + result.[int Player.Player1]
-            p2Wins <- p2Wins + result.[int Player.Player2]
+            let result = simulate defaultMaxRolloutDepth (State(rootState() :> ICoreState))
+            p1Wins <- p1Wins + result.[int Player.Player1 - 1]
+            p2Wins <- p2Wins + result.[int Player.Player2 - 1]
 
         let p1Rate = p1Wins / float trials
         let p2Rate = p2Wins / float trials

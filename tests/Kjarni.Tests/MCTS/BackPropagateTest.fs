@@ -11,7 +11,7 @@ open NUnit.Framework
 open FsUnit
 
 [<TestFixture>]
-type BackPropagatingTest() =
+type BackPropagateTest() =
 
     let branchingNode =
         node_builder (
@@ -65,12 +65,12 @@ type BackPropagatingTest() =
 
         let outcome =
             if playerWin = Player.Player1 then
-                [| 0.; 1.; 0.; 0.; 0. |]
+                [| 1.; 0.; 0.; 0. |]
             else
-                [| 0.; 0.; 1.; 0.; 0. |]
+                [| 0.; 1.; 0.; 0. |]
 
-        backPropagating root visitedActions outcome
-        backPropagating root visitedActions outcome
+        backPropagate root visitedActions outcome
+        backPropagate root visitedActions outcome
 
         root.visitCount |> should equal 2
         assertWinRate root playerWin

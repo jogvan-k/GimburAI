@@ -19,7 +19,7 @@
         <Compile Include="TestTypes.fs" />
         <Compile Include="MCTS\SelectionTest.fs" />
         <Compile Include="MCTS\ExpansionTest.fs" />
-        <Compile Include="MCTS\BackPropagatingTest.fs" />
+        <Compile Include="MCTS\BackPropagateTest.fs" />
         <Compile Include="MCTS\BenchmarkTest.fs" />
         <Compile Include="MCTS\StateTest.fs" />
         <Compile Include="program.fs" />
