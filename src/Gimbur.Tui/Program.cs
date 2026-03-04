@@ -90,6 +90,12 @@ internal static class Program
                 continue;
             }
 
+            if (controllers[state.CurrentPlayer] == PlayerController.MCTS)
+            {
+                state = ExecuteMctsStep(state);
+                continue;
+            }
+
             if (state.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement)
             {
                 state = ExecuteSettlementPlacement(state);
@@ -152,6 +158,85 @@ internal static class Program
         }
 
         return ApplyActionAndLog(state, action, aiControlled: true);
+    }
+
+    /// <summary>
+    /// Runs a single MCTS simulation with a 5-second budget, then executes
+    /// the entire best action sequence without re-running the search.
+    /// </summary>
+    private static CatanState ExecuteMctsStep(CatanState state)
+    {
+        var current = state;
+        var startingPlayer = state.CurrentPlayer;
+
+        // Apply forced actions (single-action states like dice rolls or
+        // end-turn) immediately — no point running a 5-second search when
+        // there is no decision to make.
+        while (current.WinnerPlayer == 0 && current.CurrentPlayer == startingPlayer)
+        {
+            var forced = current.Actions();
+            if (forced.Length != 1) break;
+
+            var catanAction = UnwrapCoreAction(forced[0]);
+            current = ApplyActionAndLog(current, catanAction, aiControlled: true);
+        }
+
+        // If the turn ended (player changed, game over, or no actions),
+        // return without running MCTS.
+        if (current.WinnerPlayer != 0
+            || current.CurrentPlayer != startingPlayer
+            || current.Actions().Length == 0)
+        {
+            return current;
+        }
+
+        // We have a real decision — run MCTS.
+        var config = new Kjarni.MCTSConfig(
+            searchTime.NewSeconds(5),
+            System.Int32.MaxValue,
+            500,
+            System.Math.Sqrt(2.0));
+        var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(config);
+
+        var mctsRoot = new Kjarni.MCTS.Types.MCTSState((ICoreState)current);
+        mcts.RunSimulation(mctsRoot);
+
+        var bestPath = Kjarni.MCTS.Algorithm.extractBestPath(mctsRoot);
+
+        // Follow the best path, applying each action in sequence.
+        // Stop when the acting player changes so we don't consume
+        // another player's turn.
+        foreach (var actionIndex in bestPath)
+        {
+            if (current.CurrentPlayer != startingPlayer) break;
+
+            var actions = current.Actions();
+            if (actionIndex >= actions.Length) break;
+
+            var catanAction = UnwrapCoreAction(actions[actionIndex]);
+            current = ApplyActionAndLog(current, catanAction, aiControlled: true);
+        }
+
+        // Continue applying any remaining forced actions on this player's turn.
+        while (current.WinnerPlayer == 0 && current.CurrentPlayer == startingPlayer)
+        {
+            var actions = current.Actions();
+            if (actions.Length != 1) break;
+
+            var catanAction = UnwrapCoreAction(actions[0]);
+            current = ApplyActionAndLog(current, catanAction, aiControlled: true);
+        }
+
+        return current;
+    }
+
+    private static CatanAction UnwrapCoreAction(CoreAction coreAction)
+    {
+        if (coreAction.IsDeterministic)
+            return (CatanDeterministicAction)((CoreAction.Deterministic)coreAction).Item;
+        if (coreAction.IsStochastic)
+            return (CatanStochasticAction)((CoreAction.Stochastic)coreAction).Item;
+        throw new InvalidOperationException($"Unknown CoreAction tag: {coreAction.Tag}");
     }
 
     private static CatanState ExecuteSettlementPlacement(CatanState state)
@@ -935,7 +1020,7 @@ internal static class Program
         {
             while (true)
             {
-                Console.Write($"Player {player} controller ([h]uman/[g]reedy): ");
+                Console.Write($"Player {player} controller ([h]uman/[g]reedy/[m]cts): ");
                 var input = Console.ReadLine()?.Trim().ToLowerInvariant();
                 if (string.IsNullOrEmpty(input) || input is "h" or "human")
                 {
@@ -943,13 +1028,19 @@ internal static class Program
                     break;
                 }
 
-                if (input is "g" or "greedy" or "ai")
+                if (input is "g" or "greedy")
                 {
                     controllers[player] = PlayerController.Greedy;
                     break;
                 }
 
-                Console.WriteLine("Please enter 'h' for human or 'g' for greedy.");
+                if (input is "m" or "mcts" or "ai")
+                {
+                    controllers[player] = PlayerController.MCTS;
+                    break;
+                }
+
+                Console.WriteLine("Please enter 'h' for human, 'g' for greedy, or 'm' for MCTS.");
             }
         }
 
@@ -1526,6 +1617,7 @@ internal enum PlayerController
 {
     Human,
     Greedy,
+    MCTS,
 }
 
 internal enum ActionMenuContext

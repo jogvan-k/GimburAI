@@ -213,6 +213,37 @@ internal class SimulationRunner
         throw new InvalidOperationException($"Unknown CoreAction tag: {coreAction.Tag}");
     }
 
+    /// <summary>
+    /// Follows the MCTS tree to the child at the given action index, reusing
+    /// Follows the MCTS tree to the child at the given action index, reusing
+    /// prior search results. For deterministic actions, returns the child node
+    /// directly. For stochastic actions, matches the actual game result against
+    /// the outcome states. Returns null if the action was not expanded or no
+    /// matching outcome is found.
+    /// </summary>
+    private static Kjarni.MCTS.Types.MCTSState? AdvanceMctsRoot(
+        Kjarni.MCTS.Types.MCTSState? current, int actionIndex, ICoreState actualResult)
+    {
+        if (current is null) return null;
+        if (actionIndex < 0 || actionIndex >= current.Actions.Length) return null;
+
+        var action = current.Actions[actionIndex];
+        if (action.IsDeterministicAction)
+            return ((Kjarni.MCTS.Types.Action.DeterministicAction)action).Item;
+
+        if (action.IsStochasticAction)
+        {
+            var outcomes = ((Kjarni.MCTS.Types.Action.StochasticAction)action).Item;
+            foreach (var outcome in outcomes)
+            {
+                if (outcome.State.State.Equals(actualResult))
+                    return outcome.State;
+            }
+        }
+
+        return null;
+    }
+
     private GameResult RunSingleGame(
         GameConfig config,
         int playerCount,
@@ -238,6 +269,9 @@ internal class SimulationRunner
         var totalActions = 0;
         var lastReportedTurn = -1;
 
+        // Persistent MCTS root for tree reuse across actions.
+        Kjarni.MCTS.Types.MCTSState? mctsRoot = null;
+
         while (state.WinnerPlayer == 0)
         {
             var actions = state.Actions();
@@ -249,6 +283,9 @@ internal class SimulationRunner
                 // Forced action (e.g., dice roll) — no decision to make.
                 // Apply it without recording or running MCTS.
                 state = (CatanState)UnwrapCoreAction(actions[0]).DoCoreAction();
+
+                // Try to follow the tree so prior calculations are reused.
+                mctsRoot = AdvanceMctsRoot(mctsRoot, 0, (ICoreState)state);
             }
             else
             {
@@ -265,8 +302,8 @@ internal class SimulationRunner
 
                 var serialized = state.SerializeStateOnly();
 
-                // Run MCTS from the current state.
-                var mctsRoot = new Kjarni.MCTS.Types.MCTSState((ICoreState)state);
+                // Reuse the existing tree if available; otherwise create a fresh root.
+                mctsRoot ??= new Kjarni.MCTS.Types.MCTSState((ICoreState)state);
                 mcts.RunSimulation(mctsRoot);
                 var bestPath = extractBestPath(mctsRoot);
                 var logInfo = mcts.LatestLogInfo();
@@ -288,10 +325,11 @@ internal class SimulationRunner
                     Wins = winCounts,
                 });
 
-                // Apply the best action from MCTS.
+                // Apply the best action from MCTS and advance the tree.
                 if (!bestPath.IsEmpty && bestPath.Head < actions.Length)
                 {
                     state = (CatanState)UnwrapCoreAction(actions[bestPath.Head]).DoCoreAction();
+                    mctsRoot = AdvanceMctsRoot(mctsRoot, bestPath.Head, (ICoreState)state);
                 }
                 else
                 {
