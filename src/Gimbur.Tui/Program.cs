@@ -431,6 +431,14 @@ internal static class Program
                 continue;
             }
 
+            if (selected.Mode == ActionSelectionMode.OpenMonopolyMenu)
+            {
+                context = ActionMenuContext.Monopoly;
+                menuEntries = BuildMenuEntries(state, actions, context);
+                selectedIndex = 0;
+                continue;
+            }
+
             if (selected.Mode == ActionSelectionMode.Back)
             {
                 context = ActionMenuContext.Root;
@@ -504,6 +512,17 @@ internal static class Program
             return entries;
         }
 
+        if (context == ActionMenuContext.Monopoly)
+        {
+            foreach (var action in actions.Where(a => a is PlayMonopolyAction))
+            {
+                entries.Add(new MenuEntry(DescribeAction(state, action), ActionSelectionMode.Direct, action));
+            }
+
+            entries.Add(new MenuEntry("Back", ActionSelectionMode.Back, null));
+            return entries;
+        }
+
         if (actions.Any(a => a is RollDiceAction))
         {
             entries.Add(new MenuEntry("Roll dice", ActionSelectionMode.RollDice, null));
@@ -544,6 +563,11 @@ internal static class Program
             entries.Add(new MenuEntry("Year of Plenty", ActionSelectionMode.OpenYearOfPlentyMenu, null));
         }
 
+        if (actions.Any(a => a is PlayMonopolyAction))
+        {
+            entries.Add(new MenuEntry("Monopoly", ActionSelectionMode.OpenMonopolyMenu, null));
+        }
+
         foreach (var action in actions)
         {
             if (action is
@@ -551,6 +575,7 @@ internal static class Program
                 BuyDevCardAction or
                 BankTradeAction or
                 PlayYearOfPlentyAction or
+                PlayMonopolyAction or
                 PlaceSettlementAction or
                 PlaceRoadAction or
                 BuildCityAction or
@@ -571,6 +596,7 @@ internal static class Program
             ActionMenuContext.Root => "Root",
             ActionMenuContext.Trade => "Trade",
             ActionMenuContext.YearOfPlenty => "Year Of Plenty",
+            ActionMenuContext.Monopoly => "Monopoly",
             _ => "Root",
         };
 
@@ -863,8 +889,7 @@ internal static class Program
         var parts = new List<string>();
         for (var player = 1; player <= state.PlayerCount; player++)
         {
-            parts.Add(
-                $"{PlayerColor(player)}P{player}{Reset} VP:{state.VictoryPointsFor(player)} K:{state.KnightsPlayedFor(player)} W:{state.ResourceCountFor(player, ResourceType.Wood)} B:{state.ResourceCountFor(player, ResourceType.Brick)} S:{state.ResourceCountFor(player, ResourceType.Sheep)} Wh:{state.ResourceCountFor(player, ResourceType.Wheat)} O:{state.ResourceCountFor(player, ResourceType.Ore)}");
+            parts.Add(FormatPlayerInfo(state, player));
         }
 
         return string.Join(" | ", parts);
@@ -875,18 +900,48 @@ internal static class Program
         var lines = new List<string>();
         for (var player = 1; player <= state.PlayerCount; player++)
         {
-            lines.Add(
-                $"{PlayerColor(player)}P{player}{Reset} VP:{state.VictoryPointsFor(player)} K:{state.KnightsPlayedFor(player)} W:{state.ResourceCountFor(player, ResourceType.Wood)} B:{state.ResourceCountFor(player, ResourceType.Brick)} S:{state.ResourceCountFor(player, ResourceType.Sheep)} Wh:{state.ResourceCountFor(player, ResourceType.Wheat)} O:{state.ResourceCountFor(player, ResourceType.Ore)}");
+            lines.Add(FormatPlayerInfo(state, player));
         }
 
         return lines;
     }
 
+    private static string FormatPlayerInfo(CatanState state, int player)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append($"{PlayerColor(player)}P{player}{Reset} VP:{state.VictoryPointsFor(player)} K:{state.KnightsPlayedFor(player)}");
+        sb.Append($" W:{state.ResourceCountFor(player, ResourceType.Wood)} B:{state.ResourceCountFor(player, ResourceType.Brick)} S:{state.ResourceCountFor(player, ResourceType.Sheep)} Wh:{state.ResourceCountFor(player, ResourceType.Wheat)} O:{state.ResourceCountFor(player, ResourceType.Ore)}");
+
+        var devCards = new List<string>();
+        AddDevCard(devCards, "Kn", state.DevCardsInHand(player, DevCardType.Knight));
+        AddDevCard(devCards, "RB", state.DevCardsInHand(player, DevCardType.RoadBuilding));
+        AddDevCard(devCards, "Mo", state.DevCardsInHand(player, DevCardType.Monopoly));
+        AddDevCard(devCards, "YP", state.DevCardsInHand(player, DevCardType.YearOfPlenty));
+        AddDevCard(devCards, "VP", state.DevCardsInHand(player, DevCardType.VictoryPoint));
+
+        if (devCards.Count > 0)
+        {
+            sb.Append($" [{string.Join(",", devCards)}]");
+        }
+
+        return sb.ToString();
+    }
+
+    private static void AddDevCard(List<string> list, string label, int count)
+    {
+        if (count > 0)
+        {
+            list.Add($"{label}:{count}");
+        }
+    }
+
     private static CatanState ApplyActionAndLog(CatanState state, CatanAction action, bool aiControlled = false)
     {
         var actor = state.CurrentPlayer;
-        var description = DescribeAction(state, action);
         var next = (CatanState)action.DoCoreAction();
+        var description = action is RollDiceAction
+            ? $"Roll dice ({next.LastDiceRoll})"
+            : DescribeAction(state, action);
         var actorLabel = aiControlled ? $"P{actor}(AI)" : $"P{actor}";
         _statusMessage = $"{actorLabel}: {description}";
         _actionLog.Add(new LoggedAction(state.TurnNumber, actor, description));
@@ -1606,6 +1661,7 @@ internal enum ActionSelectionMode
     BuyDevCardRandom,
     OpenTradeMenu,
     OpenYearOfPlentyMenu,
+    OpenMonopolyMenu,
     Back,
     PlaceSettlement,
     PlaceRoad,
@@ -1625,6 +1681,7 @@ internal enum ActionMenuContext
     Root,
     Trade,
     YearOfPlenty,
+    Monopoly,
 }
 
 internal enum LocationSelectionMode

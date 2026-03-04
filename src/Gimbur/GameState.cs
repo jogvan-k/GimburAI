@@ -14,6 +14,7 @@ public sealed class CatanState : ICoreState
     private readonly int[] _devDeckRemaining;
     private readonly int[] _newDevCardsThisTurn;
     private readonly int[] _pendingRoadBuildingPlacements;
+    internal TurnStage? _postDevCardStage;
     private static readonly object RngLock = new();
     private static readonly Random SharedRng = new();
     private static readonly Dictionary<int, int> DiceRollCounts = new()
@@ -62,7 +63,7 @@ public sealed class CatanState : ICoreState
         _devDeckRemaining = new int[DevCardCount];
         _newDevCardsThisTurn = new int[DevCardCount];
         _pendingRoadBuildingPlacements = new int[playerCount + 1];
-
+        _postDevCardStage = null;
         foreach (var pair in config.DevCardCounts)
         {
             _devDeckRemaining[(int)pair.Key] = pair.Value;
@@ -85,7 +86,8 @@ public sealed class CatanState : ICoreState
         int[,] devCards,
         int[] devDeckRemaining,
         int[] newDevCardsThisTurn,
-        int[] pendingRoadBuildingPlacements)
+        int[] pendingRoadBuildingPlacements,
+        TurnStage? postDevCardStage)
     {
         Config = config;
         Board = board;
@@ -103,6 +105,7 @@ public sealed class CatanState : ICoreState
         _devDeckRemaining = devDeckRemaining;
         _newDevCardsThisTurn = newDevCardsThisTurn;
         _pendingRoadBuildingPlacements = pendingRoadBuildingPlacements;
+        _postDevCardStage = postDevCardStage;
     }
 
     public GameConfig Config { get; }
@@ -126,6 +129,8 @@ public sealed class CatanState : ICoreState
     public int LargestArmyOwner { get; private set; }
 
     public int WinnerPlayer { get; private set; }
+
+    public int LastDiceRoll { get; private set; }
 
     public Player PlayerTurn => CurrentPlayer switch
     {
@@ -339,6 +344,11 @@ public sealed class CatanState : ICoreState
 
             case TurnStage.PreRoll:
                 actions.Add(new RollDiceAction(this));
+                foreach (var action in LegalDevCardPlays())
+                {
+                    actions.Add(action);
+                }
+
                 break;
 
             case TurnStage.ChooseRobberLocation:
@@ -501,6 +511,11 @@ public sealed class CatanState : ICoreState
             }
         }
 
+        if (_postDevCardStage != other._postDevCardStage)
+        {
+            return false;
+        }
+
         return true;
     }
 
@@ -563,6 +578,8 @@ public sealed class CatanState : ICoreState
         {
             hash.Add(_pendingRoadBuildingPlacements[player]);
         }
+
+        hash.Add(_postDevCardStage.HasValue ? (int)_postDevCardStage.Value : -1);
 
         return hash.ToHashCode();
     }
@@ -628,6 +645,14 @@ public sealed class CatanState : ICoreState
         if (next._pendingRoadBuildingPlacements[CurrentPlayer] > 0 && next.LegalBuildRoadEdges(requireCost: false).Count == 0)
         {
             next._pendingRoadBuildingPlacements[CurrentPlayer] = 0;
+        }
+
+        // When all road building placements are done and a return stage is
+        // pending (e.g. road building played before dice roll), transition back.
+        if (next._pendingRoadBuildingPlacements[CurrentPlayer] == 0 && next._postDevCardStage.HasValue)
+        {
+            next.Stage = next._postDevCardStage.Value;
+            next._postDevCardStage = null;
         }
 
         next.RefreshVictory();
@@ -861,9 +886,9 @@ public sealed class CatanState : ICoreState
 
     private CatanState ApplyPlayKnight()
     {
-        if (Stage != TurnStage.BuildTrade)
+        if (Stage is not (TurnStage.BuildTrade or TurnStage.PreRoll))
         {
-            throw new InvalidOperationException("Playing a knight is only allowed during build/trade stage.");
+            throw new InvalidOperationException("Playing a knight is only allowed during pre-roll or build/trade stage.");
         }
 
         if (_devCards[CurrentPlayer, (int)DevCardType.Knight] <= 0)
@@ -879,6 +904,7 @@ public sealed class CatanState : ICoreState
         next._devCards[CurrentPlayer, (int)DevCardType.Knight]--;
         next._knightsPlayed[CurrentPlayer]++;
         next.UpdateLargestArmyOwner();
+        next._postDevCardStage = Stage;
         next.Stage = TurnStage.ChooseRobberLocation;
         next.RefreshVictory();
         return next;
@@ -886,9 +912,9 @@ public sealed class CatanState : ICoreState
 
     private CatanState ApplyPlayRoadBuilding()
     {
-        if (Stage != TurnStage.BuildTrade)
+        if (Stage is not (TurnStage.BuildTrade or TurnStage.PreRoll))
         {
-            throw new InvalidOperationException("Playing road building is only allowed during build/trade stage.");
+            throw new InvalidOperationException("Playing road building is only allowed during pre-roll or build/trade stage.");
         }
 
         if (_devCards[CurrentPlayer, (int)DevCardType.RoadBuilding] <= 0)
@@ -903,15 +929,21 @@ public sealed class CatanState : ICoreState
         var next = Clone();
         next._devCards[CurrentPlayer, (int)DevCardType.RoadBuilding]--;
         next._pendingRoadBuildingPlacements[CurrentPlayer] = Math.Min(2, next.LegalBuildRoadEdges(requireCost: false).Count);
+        if (Stage == TurnStage.PreRoll)
+        {
+            next._postDevCardStage = TurnStage.PreRoll;
+            next.Stage = TurnStage.BuildTrade;
+        }
+
         next.RefreshVictory();
         return next;
     }
 
     private CatanState ApplyPlayMonopoly(ResourceType resource)
     {
-        if (Stage != TurnStage.BuildTrade)
+        if (Stage is not (TurnStage.BuildTrade or TurnStage.PreRoll))
         {
-            throw new InvalidOperationException("Playing monopoly is only allowed during build/trade stage.");
+            throw new InvalidOperationException("Playing monopoly is only allowed during pre-roll or build/trade stage.");
         }
 
         EnsureCollectableResource(resource);
@@ -950,9 +982,9 @@ public sealed class CatanState : ICoreState
 
     private CatanState ApplyPlayYearOfPlenty(ResourceType first, ResourceType second)
     {
-        if (Stage != TurnStage.BuildTrade)
+        if (Stage is not (TurnStage.BuildTrade or TurnStage.PreRoll))
         {
-            throw new InvalidOperationException("Playing year of plenty is only allowed during build/trade stage.");
+            throw new InvalidOperationException("Playing year of plenty is only allowed during pre-roll or build/trade stage.");
         }
 
         EnsureCollectableResource(first);
@@ -1279,7 +1311,8 @@ public sealed class CatanState : ICoreState
     {
         var next = Clone();
         next.Board.RobberTile = tileIndex;
-        next.Stage = TurnStage.BuildTrade;
+        next.Stage = next._postDevCardStage ?? TurnStage.BuildTrade;
+        next._postDevCardStage = null;
         return next;
     }
 
@@ -1527,6 +1560,7 @@ public sealed class CatanState : ICoreState
     private CatanState ApplyRollDiceOutcome(int roll)
     {
         var next = Clone();
+        next.LastDiceRoll = roll;
         if (roll == 7)
         {
             next.ApplyDiscardOnSeven();
@@ -1581,7 +1615,8 @@ public sealed class CatanState : ICoreState
             (int[,])_devCards.Clone(),
             (int[])_devDeckRemaining.Clone(),
             (int[])_newDevCardsThisTurn.Clone(),
-            (int[])_pendingRoadBuildingPlacements.Clone());
+            (int[])_pendingRoadBuildingPlacements.Clone(),
+            _postDevCardStage);
     }
 
     private int GetPlayableDevCardCount(DevCardType cardType)
