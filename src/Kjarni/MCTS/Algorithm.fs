@@ -6,102 +6,107 @@ open System.Diagnostics
 open Kjarni
 open Kjarni.MCTS.Types
 
-let isUnexplored l =
-    match l with
-    | Unexplored _ -> true
-    | _ -> false
+let emptyOutcome maxTrackedPlayers = Array.zeroCreate<float> maxTrackedPlayers
 
-let isLeaf l =
-    match l with
-    | Leaf _ -> true
-    | _ -> false
-
-let explorationConstant = sqrt 2.
-let maxTrackedPlayers = int Player.Player4
-
-let emptyOutcome() = Array.zeroCreate<float> maxTrackedPlayers
-
-let oneHotOutcome (winner: Player) =
-    let outcome = emptyOutcome ()
-    outcome.[(int winner - 1)] <- 1.
+let oneHotOutcome (winner: Player, maxTrackedPlayers) =
+    let outcome = emptyOutcome maxTrackedPlayers
+    outcome.[int winner] <- 1.
     outcome
 
-let addScaledOutcome (target: float array) (source: float array) (scale: float) =
-    for i in 1 .. maxTrackedPlayers do
-        let v = if i < source.Length then source.[i] else 0.
-        target.[i] <- target.[i] + v * scale
-
-let explorationRate (stateVisitCount: int, actionVisitCount: int) =
+let explorationRate (explorationConstant: float) (stateVisitCount: int) (actionVisitCount: int) =
     explorationConstant
     * sqrt (
         log (float stateVisitCount)
         / float actionVisitCount
     )
 
-let leafEvaluator (state: State, l: Leaf) =
-    let actingPlayer = state.playerTurn
+let winRate (state: MCTSState) (player: Player) =
+    state.WinCounts[int player] / float state.Rollouts
+
+let sampledWinRate outcomes player =
+    let sampledOutcomes = outcomes |> Array.filter (fun o -> o.State.Rollouts > 0)
+    let denominator = Array.sumBy (fun o -> float o.ProbabilityWeight) sampledOutcomes
+    if denominator = 0
+    then
+        0.
+    else
+        Array.sumBy (fun o -> float o.ProbabilityWeight * winRate o.State player) sampledOutcomes / denominator
+
+let actionEvaluator (explorationConstant: float) (state: MCTSState) (l: Action) =
+    let actingPlayer = state.State.PlayerTurn
 
     match l with
-    | Terminal win -> if actingPlayer = win then 100. else 0.
     | Unexplored _ -> 10.
-    | Leaf a ->
-        a.winRate
-        + explorationRate (state.visitCount, a.visitCount)
-
-
-let rec recSelection (s: State, actionHistory: Action list, leafEvaluator) =
-    if Array.isEmpty s.leaves then
-        Exhausted(actionHistory, s.playerTurn)
-    else
-        match s.leaves
-              |> Array.indexed
-              |> Array.maxBy (fun i -> leafEvaluator (s, snd i)) with
-        | _, Terminal win -> Exhausted(actionHistory, win)
-        | i, Unexplored _ -> Candidate(actionHistory, i)
-        | _, Leaf ls -> recSelection (ls.state, ls :: actionHistory, leafEvaluator)
-
-let selection (s: State, leafEvaluator) = recSelection (s, [], leafEvaluator)
-
-let expandUnexplored (parent: State, i, state: State) =
-    let leaf =
-        if Array.isEmpty state.leaves then
-            Terminal state.playerTurn
+    | DeterministicAction resState ->
+        let winRate = winRate resState actingPlayer
+        let explorationRate = explorationRate explorationConstant state.Rollouts resState.Rollouts
+        100. * winRate + explorationRate
+    | StochasticAction outcomes ->
+        let totalRollouts = Array.sumBy (fun i -> i.State.Rollouts) outcomes
+        if totalRollouts = 0 then 10. // treat as unexplored
         else
-            let a = Action(parent.playerTurn, state)
-            Leaf a
+            let winRate = sampledWinRate outcomes actingPlayer
+            let explorationRate = explorationRate explorationConstant state.Rollouts totalRollouts
+            100. * winRate + explorationRate
+    | Terminal win -> 100. * win.[int actingPlayer]
 
-    parent.leaves.[i] <- leaf
-    leaf
+let rollStochasticAction(probWeights: int array) =
+    let totalWeight = Array.sum probWeights
+    let roll = Random.Shared.Next totalWeight // [0, totalWeight)
+    let mutable cumulative = 0
+    let mutable i = 0
+    while cumulative + probWeights.[i] <= roll do
+      cumulative <- cumulative + probWeights.[i]
+      i <- i + 1
+    i
 
 
-let expansion (s: State, i, tTable: TranspositionTable Option) =
-    match s.leaves.[i] with
-    | Unexplored a ->
-        let nextState = a.DoCoreAction()
+let rec recSelection (explorationConstant: float) (s: MCTSState, visitedStates: MCTSState list) =
+    if Array.isEmpty s.Actions then
+        Exhausted(visitedStates, oneHotOutcome(s.State.PlayerTurn, s.State.NumberOfPlayers))
+    else
+        let selectedAction =
+            s.Actions
+              |> Array.indexed
+              |> Array.maxBy (fun a -> actionEvaluator explorationConstant s (snd a))
+        match snd selectedAction with
+        | Unexplored _ -> Candidate(visitedStates, fst selectedAction)
+        | DeterministicAction ds -> recSelection explorationConstant (ds,  ds :: visitedStates)
+        | StochasticAction so ->
+            let i = rollStochasticAction (Array.map (fun o -> o.ProbabilityWeight) so)
+            let state = so.[i].State
+            if state.Rollouts = 0 // Unexplored outcome, return state
+            then StochasticCandidate(visitedStates, fst selectedAction, i)
+            else recSelection explorationConstant (state, state :: visitedStates)
+        | Terminal outcome -> Exhausted(visitedStates, outcome)
 
-        match tTable with
-        | Some t ->
-            let stateHash = nextState.GetHashCode()
+let selection (explorationConstant: float) (root: MCTSState) =
+    recSelection explorationConstant (root, [root])
 
-            match t.Lookup stateHash with
-            | Some r -> expandUnexplored (s, i, r)
-            | None ->
-                let ex = State nextState
-                t.Add(stateHash, ex)
-                expandUnexplored (s, i, ex)
-        | None -> expandUnexplored (s, i, State nextState)
+let expand (s: MCTSState, i) =
+      match s.Actions.[i] with
+      | Unexplored a ->
+          match a with
+          | Deterministic da ->
+              let expandedState = MCTSState(da.State())
+              s.Actions.[i] <- DeterministicAction(expandedState)
+              expandedState
+          | Stochastic sa ->
+              let stochasticActions = sa.Outcomes() |> Array.map (fun i -> { ProbabilityWeight = fst i; State = MCTSState(snd i)})
+              s.Actions.[i] <- StochasticAction(stochasticActions)
+              stochasticActions.[rollStochasticAction (Array.map (fun i -> i.ProbabilityWeight) stochasticActions)].State
+      | _ -> raise (Exception "Target action is already expanded")
 
-    | _ -> raise (Exception "Target leaf is already expanded")
 
 let defaultMaxRolloutDepth = 500
 
 let scoreBasedOutcome (state: ICoreState) =
     let scores = state.Scores()
-    let outcome = emptyOutcome ()
+    let outcome = emptyOutcome state.NumberOfPlayers
 
     // Find the maximum score among all players.
-    let mutable maxScore = System.Double.NegativeInfinity
-    for i in 1 .. maxTrackedPlayers do
+    let mutable maxScore = Double.NegativeInfinity
+    for i in 0 .. state.NumberOfPlayers - 1 do
         let s = if i < scores.Length then scores.[i] else 0.
         if s > maxScore then
             maxScore <- s
@@ -112,14 +117,14 @@ let scoreBasedOutcome (state: ICoreState) =
     else
         // Count how many players share the top score.
         let mutable tiedCount = 0
-        for i in 1 .. maxTrackedPlayers do
+        for i in 0 .. state.NumberOfPlayers - 1 do
             let s = if i < scores.Length then scores.[i] else 0.
             if s = maxScore then
                 tiedCount <- tiedCount + 1
 
         // Split the win equally among tied leaders.
         let share = 1. / float tiedCount
-        for i in 1 .. maxTrackedPlayers do
+        for i in 0 .. state.NumberOfPlayers - 1 do
             let s = if i < scores.Length then scores.[i] else 0.
             if s = maxScore then
                 outcome.[i] <- share
@@ -129,128 +134,81 @@ let scoreBasedOutcome (state: ICoreState) =
 let rec simulationDistribution (maxRolloutDepth: int) (state: ICoreState) (depth: int) =
     let actions = state.Actions()
     if Array.isEmpty actions then
-        oneHotOutcome state.PlayerTurn
+        oneHotOutcome(state.PlayerTurn, state.NumberOfPlayers)
     elif depth >= maxRolloutDepth then
         scoreBasedOutcome state
     else
-        let nextMove = actions |> Seq.sort |> Seq.head
+        // TODO: implement policy based rollout
+        // Random rollout
+        let roll = Random.Shared.Next actions.Length
+        let nextMove = actions.[roll]
         match nextMove with
-        | :? IStochasticCoreAction as stochastic ->
-            let outcomes = stochastic.Outcomes()
+        | Stochastic stochasticAction->
+            let outcomes = stochasticAction.Outcomes()
             if Array.isEmpty outcomes then
-                oneHotOutcome state.PlayerTurn
+                oneHotOutcome(state.PlayerTurn, state.NumberOfPlayers)
             else
-                // Sample a single outcome weighted by probability (standard MCTS rollout).
-                // Computing the full expected value is intractable when stochastic
-                // actions are frequent (e.g., Catan dice rolls create 11^n branches).
-                let roll = Random.Shared.NextDouble()
-                let mutable cumulative = 0.
-                let mutable sampled = fst outcomes.[outcomes.Length - 1]
-                let mutable found = false
-                for nextState, probability in outcomes do
-                    if not found && probability > 0. then
-                        cumulative <- cumulative + probability
-                        if roll < cumulative then
-                            sampled <- nextState
-                            found <- true
+                let i = rollStochasticAction (Array.map fst outcomes)
+                let sampled = snd outcomes.[i]
                 simulationDistribution maxRolloutDepth sampled (depth + 1)
-        | _ -> simulationDistribution maxRolloutDepth (nextMove.DoCoreAction()) (depth + 1)
+        | Deterministic deterministicAction ->
+            simulationDistribution maxRolloutDepth (deterministicAction.State()) (depth + 1)
 
-let simulate (maxRolloutDepth: int) (s: State) = simulationDistribution maxRolloutDepth s.state 0
+let simulate (maxRolloutDepth: int) (s: MCTSState) = simulationDistribution maxRolloutDepth s.State 0
 
-let registerResult (s: State) (outcome: float array) = s.registerOutcome outcome
+let backPropagate (visitedStates: MCTSState list) (outcome: float array) =
+    for state in visitedStates do
+        state.Rollouts <- state.Rollouts + 1
+        for j in 0 .. state.WinCounts.Length - 1 do
+            state.WinCounts.[j] <- state.WinCounts.[j] + outcome.[j]
 
-let backPropagate (root: State) (a: Action list) (outcome: float array) =
-    for a1 in a do
-        a1.incrementVisitCount ()
-        registerResult a1.state outcome
-
-    registerResult root outcome
-
-let extractionEvaluator (p: Player, l: Leaf) =
+let extractionEvaluator (p: Player, l: Action) =
     match l with
-    | Terminal win -> if p = win then 1. else 0.
-    | Leaf a -> a.winRate
+    | Terminal outcome -> outcome.[int p]
+    | DeterministicAction da -> winRate da p
+    | StochasticAction outcomes -> sampledWinRate outcomes p
     | Unexplored _ -> 0.
 
-let extractBestPath (s: State) =
+let extractBestPath (root: MCTSState) =
     let mutable path = List.empty
-    let mutable currentState = ref s
-    let mutable endReached = false
+    let mutable currentState = root
+    let mutable stopExtraction = false
 
-    while not endReached do
-        if Array.isEmpty s.leaves then
-            endReached <- true
+    while not stopExtraction do
+        if Array.isEmpty currentState.Actions then
+            stopExtraction <- true
         else
             let bestAction =
-                currentState.Value.leaves
+                currentState.Actions
                 |> Array.indexed
-                |> Array.maxBy (fun l -> extractionEvaluator (currentState.Value.state.PlayerTurn, snd l))
+                |> Array.maxBy (fun l -> extractionEvaluator (currentState.State.PlayerTurn, snd l))
 
             path <- fst bestAction :: path
 
             match snd bestAction with
-            | Leaf action -> currentState <- ref action.state
-            | _ -> endReached <- true
+            | DeterministicAction state -> currentState <- state
+            | _ -> stopExtraction <- true
 
     path |> List.rev
 
-let search (root: State, maxSimulationCount, timer: Stopwatch, tTable, evaluateUntil: Int64 option, maxRolloutDepth: int) =
-    while root.visitCount < maxSimulationCount
+let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float) =
+    while root.Rollouts < maxSimulationCount
           && (not evaluateUntil.IsSome
               || timer.ElapsedTicks < evaluateUntil.Value) do
-        match selection (root, leafEvaluator) with
-        | Exhausted (actionHistory, win) -> backPropagate root actionHistory (oneHotOutcome win)
-        | Candidate (actionHistory, a) ->
-            let s =
-                if List.isEmpty actionHistory then
-                    root
-                else
-                    actionHistory.[0].state
+        match selection explorationConstant root with
+        | Exhausted (stateHistory, outcome) -> backPropagate stateHistory outcome
+        | Candidate (stateHistory, i) ->
+            let mostRecentState = stateHistory.[0]
 
-            match expansion (s, a, tTable) with
-            | Leaf a ->
-                let outcome = simulate maxRolloutDepth a.state
-                backPropagate root (a :: actionHistory) outcome
-            | Terminal win -> backPropagate root actionHistory (oneHotOutcome win)
-            | _ -> raise (Exception "Expanded to unexpected leaf type")
-
-    extractBestPath root |> List.toArray
-
-let parallelSearch (root: State, maxSimulationCount, tTable, evaluateUntil: int, maxRolloutDepth: int) =
-    let expression =
-        async {
-            let leaf, ah =
-                lock
-                    root
-                    (fun () ->
-                        match selection (root, leafEvaluator) with
-                        | Exhausted a -> Terminal(snd a), fst a
-                        | Candidate (ah, i) ->
-                            let s =
-                                if List.isEmpty ah then
-                                    root
-                                else
-                                    ah.[0].state
-
-                            expansion (s, i, tTable), ah)
-
-            let win, actionHistory =
-                match leaf with
-                | Leaf a -> simulate maxRolloutDepth a.state, a :: ah
-                | Terminal win -> oneHotOutcome win, ah
-                | Unexplored _ -> failwith "Not Implemented"
-
-            lock root (fun () -> backPropagate root actionHistory win)
-        }
-
-    try
-        let tasks =
-            Async.Parallel [ for _ in 1 .. maxSimulationCount -> expression ]
-
-        Async.RunSynchronously(tasks, evaluateUntil)
-        |> ignore
-    with
-    | :? TimeoutException -> ()
+            let expandedState = expand (mostRecentState, i)
+            let outcome = simulate maxRolloutDepth expandedState
+            backPropagate (expandedState :: stateHistory) outcome
+        | StochasticCandidate (stateHistory, ia, is) ->
+            match stateHistory.[0].Actions.[ia] with
+            | StochasticAction stochasticOutcomes ->
+                let expandedState = stochasticOutcomes.[is].State
+                let outcome = simulate maxRolloutDepth expandedState
+                backPropagate (expandedState :: stateHistory) outcome
+            | _ -> failwith "unreachable"
 
     extractBestPath root |> List.toArray

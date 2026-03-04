@@ -11,71 +11,69 @@ open FsUnit
 type terminalState(winner: Player) =
     interface ICoreState with
         member _.PlayerTurn = winner
+        member _.NumberOfPlayers = 2
         member _.TurnNumber = 0
         member _.Actions() = Array.empty
         member _.Scores() =
-            let scores = Array.zeroCreate<float> 5
-            let i = int winner
-            if i > 0 && i < 5 then scores.[i] <- 1.
+            let scores = Array.zeroCreate<float> 2
+            scores.[int winner] <- 1.
             scores
 
-type stochasticRootAction(origin: ICoreState) =
-    interface ICoreAction with
-        member _.Origin = origin
-        member _.DoCoreAction() = terminalState(Player.Player2) :> ICoreState
-    interface IComparable with
-        member _.CompareTo _ = 0
+type stochasticRootAction() =
     interface IStochasticCoreAction with
         member _.Outcomes() =
-            [| (terminalState(Player.Player1) :> ICoreState, 0.25)
-               (terminalState(Player.Player2) :> ICoreState, 0.75) |]
-    override _.Equals _ = true
-    override _.GetHashCode() = 0
+            [| (1, terminalState(Player.Player1) :> ICoreState)
+               (3, terminalState(Player.Player2) :> ICoreState) |]
 
 type rootState() =
     interface ICoreState with
         member _.PlayerTurn = Player.Player1
+        member _.NumberOfPlayers = 2
         member _.TurnNumber = 0
         member this.Actions() =
-            [| stochasticRootAction(this :> ICoreState) :> ICoreAction |]
-        member _.Scores() = Array.zeroCreate<float> 5
+            [| Stochastic (stochasticRootAction() :> IStochasticCoreAction) |]
+        member _.Scores() = Array.zeroCreate<float> 2
+
+let registerOutcome (state: MCTSState) (outcome: float array) =
+    state.Rollouts <- state.Rollouts + 1
+    state.WinCounts <- Array.map2 (+) state.WinCounts outcome
 
 [<TestFixture>]
 type StateTest() =
 
-    let sampleState () = State(node (p1, 0, 0, 0))
+    let sampleState () = MCTSState(node (p1, 0, 0, 0))
 
     [<Test>]
     member _.OnlyWin() =
         let state = sampleState ()
 
         for _ in [ 1 .. 10 ] do
-            state.registerOutcome [| 1.; 0.; 0.; 0. |]
+            registerOutcome state [| 1.; 0. |]
 
-        state.visitCount |> should equal 10
-        state.winRate |> should equal 1.
+        state.Rollouts |> should equal 10
+        winRate state state.State.PlayerTurn |> should equal 1.
 
     [<Test>]
     member _.OnlyLoss() =
         let state = sampleState ()
 
         for _ in [ 1 .. 10 ] do
-            state.registerOutcome [| 0.; 1.; 0.; 0. |]
+            registerOutcome state [| 0.; 1. |]
 
-        state.visitCount |> should equal 10
-        state.winRate |> should equal 0.
+        state.Rollouts |> should equal 10
+        winRate state state.State.PlayerTurn |> should equal 0.
 
     [<Test>]
     member _.WinThenLosses() =
         let state = sampleState ()
 
-        state.registerOutcome [| 1.; 0.; 0.; 0. |]
+        registerOutcome state [| 1.; 0. |]
 
-        Seq.iter (fun _ -> state.registerOutcome [| 0.; 1.; 0.; 0. |]) [1..99]
+        Seq.iter (fun _ -> registerOutcome state [| 0.; 1. |]) [1..99]
 
-        state.visitCount |> should equal 100
+        state.Rollouts |> should equal 100
 
-        state.winRate
+        winRate state state.State.PlayerTurn
         |> should (equalWithin 0.0000001) 0.01
 
     [<Test>]
@@ -88,9 +86,9 @@ type StateTest() =
         let trials = 1000
 
         for _ in 1 .. trials do
-            let result = simulate defaultMaxRolloutDepth (State(rootState() :> ICoreState))
-            p1Wins <- p1Wins + result.[int Player.Player1 - 1]
-            p2Wins <- p2Wins + result.[int Player.Player2 - 1]
+            let result = simulate defaultMaxRolloutDepth (MCTSState(rootState() :> ICoreState))
+            p1Wins <- p1Wins + result.[int Player.Player1]
+            p2Wins <- p2Wins + result.[int Player.Player2]
 
         let p1Rate = p1Wins / float trials
         let p2Rate = p2Wins / float trials

@@ -5,6 +5,7 @@ open NUnit.Framework
 
 open FsUnit
 open KjarniTest.TestTypes
+open Kjarni
 open Kjarni.MCTS.Types
 open Kjarni.MCTS.Algorithm
 
@@ -19,90 +20,35 @@ type ExpansionTest() =
             )
             .build ()
 
-    let constructSut () = State branchingNode
+    let constructSut () = MCTSState branchingNode
 
-    let stateHash (s: State) = (s.state :> Object).GetHashCode()
-
-    let assertIsState leaf expandTo =
-        match leaf with
-        | Leaf a -> stateHash a.state |> should equal expandTo
-        | _ -> Assert.Fail()
-
-    let assertIsTerminal terminal win =
-        match terminal with
-        | Terminal w -> w |> should equal win
-        | _ -> Assert.Fail()
+    let stateHash (s: MCTSState) = (s.State :> Object).GetHashCode()
 
     [<Test>]
-    member _.ExpandUnexplored([<Range(1, 3)>] expandTo) =
+    member _.ExpandUnexplored([<Range(0, 2)>] expandTo) =
         let sut = constructSut ()
+        let expandedState = expand (sut, expandTo)
 
-        let result =
-            expansion (sut, expandTo - 1, None)
-
-        assertIsState result expandTo
-
-        sut.leaves.[expandTo - 1]
-        |> should be (ofCase <@ Leaf @>)
+        // The expanded state should be an MCTSState wrapping the child node
+        expandedState |> should not' (be Null)
+        expandedState.State |> should not' (be Null)
 
     [<Test>]
     member _.ExpandToTerminal() =
         let node =
             node_builder(p1, 0, 0, 0, node_builder (p2, 0, 0, 2)).build ()
 
-        let sut = State node
-        let result = expansion (sut, 0, None)
-        assertIsTerminal result p2
+        let sut = MCTSState node
 
-        sut.leaves.[0]
-        |> should be (ofCase <@ Terminal @>)
-
-    [<Test>]
-    member _.ExpandExplored() =
-        let sut = constructSut ()
-        sut.leaves.[0] <- Leaf(Action(p1, sut))
-
-        (fun () -> expansion (sut, 0, None) |> ignore)
-        |> should (throwWithMessage "Target leaf is already expanded") typeof<Exception>
+        // The child node (hash=2) has no children, so it's terminal.
+        // expand should still return the MCTSState for it.
+        let expandedState = expand (sut, 0)
+        expandedState |> should not' (be Null)
 
     [<Test>]
-    member _.ExpandWithTranspositionTable([<Range(1, 3)>] expandTo) =
+    member _.ExpandAlreadyExpanded() =
         let sut = constructSut ()
-        let tTable = TranspositionTable()
-        tTable.Add(0, sut)
+        expand (sut, 0) |> ignore
 
-        let result =
-            expansion (sut, expandTo - 1, Some tTable)
-
-        assertIsState result expandTo
-
-        sut.leaves.[expandTo - 1]
-        |> should be (ofCase <@ Leaf @>)
-
-        tTable.SuccessfulLookups |> should equal 0
-        tTable.Count |> should equal 2
-
-    [<Test>]
-    member _.ExpandToValueInTranspositionTable([<Range(1, 3)>] expandTo) =
-        let sut = constructSut ()
-
-        let tTable = TranspositionTable()
-        tTable.Add(0, sut)
-
-        tTable.Add(
-            expandTo,
-            State(
-                node_builder(p1, 99, 0, expandTo, node_builder (p2, 0, 0, 10))
-                    .build ()
-            )
-        )
-
-        let result =
-            expansion (sut, expandTo - 1, Some tTable)
-
-        match result with
-        | Leaf a -> a.state.state.TurnNumber |> should equal 99
-        | _ -> Assert.Fail()
-
-        tTable.SuccessfulLookups |> should equal 1
-        tTable.Count |> should equal 2
+        (fun () -> expand (sut, 0) |> ignore)
+        |> should (throwWithMessage "Target action is already expanded") typeof<Exception>

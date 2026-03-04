@@ -25,21 +25,20 @@ type node(playerTurn, turnNumber, value, hash, parent: ICoreState option) =
     interface ICoreState with
         member _.PlayerTurn = playerTurn
         member _.TurnNumber = turnNumber
+        member _.NumberOfPlayers = 2
 
         member this.Actions() =
-            Array.map (fun n -> action (this, n) :> ICoreAction) (Array.ofList _children)
+            Array.map (fun n -> Deterministic(action (this, n) :> IDeterministicCoreAction)) (Array.ofList _children)
 
         member _.Scores() =
-            let scores = Array.zeroCreate<float> 5
-            let i = int playerTurn
-            if i > 0 && i < 5 then
-                scores.[i] <- float value
+            let scores = Array.zeroCreate<float> 2
+            scores.[int playerTurn] <- float value
             scores
 
 and action(origin, node) =
-    interface ICoreAction with
-        member _.Origin = origin :> ICoreState
-        member _.DoCoreAction() = node :> ICoreState
+    interface IDeterministicCoreAction with
+        // member _.Origin = origin :> ICoreState
+        member _.State() = node :> ICoreState
 
     interface IComparable with
         member _.CompareTo _ = 0
@@ -48,7 +47,9 @@ and action(origin, node) =
     override _.GetHashCode() = node.GetHashCode()
 
 type node_builder(playerTurn, turnNumber, value, hash, children: node_builder list) =
-    new(playerTurn, turnNumber, value, hash, child: node_builder) = node_builder (playerTurn, turnNumber, value, hash, List.singleton child)
+    new(playerTurn, turnNumber, value, hash, child: node_builder) =
+        node_builder (playerTurn, turnNumber, value, hash, List.singleton child)
+
     new(playerTurn, turnNumber, value, hash) = node_builder (playerTurn, turnNumber, value, hash, list.Empty)
     member _.children = children
     member _.playerTurn = playerTurn
@@ -63,16 +64,42 @@ type node_builder(playerTurn, turnNumber, value, hash, children: node_builder li
         node_builder (playerTurn, turnNumber, value, hash, List.append children c)
 
     member this.build ?parent =
-        let node =
-            node (this.playerTurn, this.turnNumber, this.value, this.hash, parent)
+        let node = node (this.playerTurn, this.turnNumber, this.value, this.hash, parent)
 
-        node.children <-
-            children
-            |> List.map (fun (c: node_builder) -> c.build node)
+        node.children <- children |> List.map (fun (c: node_builder) -> c.build node)
 
         node
 
 
+
+/// A stochastic action that returns fixed outcomes with probability weights.
+type stochastic_action(outcomes: (int * ICoreState) array) =
+    interface IStochasticCoreAction with
+        member _.Outcomes() = outcomes
+
+/// Builds a node whose Actions() array contains a single stochastic action
+/// with the given (weight, childNode) outcomes.
+type stochastic_node(playerTurn, turnNumber, value, hash, outcomes: (int * node) list) =
+    interface ICoreState with
+        member _.PlayerTurn = playerTurn
+        member _.TurnNumber = turnNumber
+        member _.NumberOfPlayers = 2
+
+        member _.Actions() =
+            let outcomeArray =
+                outcomes
+                |> List.map (fun (w, n) -> (w, n :> ICoreState))
+                |> Array.ofList
+
+            [| Stochastic(stochastic_action (outcomeArray) :> IStochasticCoreAction) |]
+
+        member _.Scores() =
+            let scores = Array.zeroCreate<float> 2
+            scores.[int playerTurn] <- float value
+            scores
+
+    override _.GetHashCode() = hash
+    override _.Equals other = hash = other.GetHashCode()
 
 type evaluator() =
     interface IEvaluator with
@@ -91,7 +118,7 @@ let rec recComplexTree evalFun counter n b =
         node_builder (player, turnNo, value, hash)
     else
         let nodes =
-            [ 0 .. 1 .. b - 1 ]
+            [ 0..1 .. b - 1 ]
             |> List.map (fun i -> recComplexTree evalFun (d + 1, b * h + i) n b)
 
         node_builder (player, turnNo, value, hash, nodes)
