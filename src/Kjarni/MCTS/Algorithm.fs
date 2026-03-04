@@ -61,7 +61,7 @@ let rollStochasticAction(probWeights: int array) =
     i
 
 
-let rec recSelection (explorationConstant: float) (s: MCTSState, visitedStates: MCTSState list) =
+let rec recSelect (explorationConstant: float) (s: MCTSState, visitedStates: MCTSState list) =
     if Array.isEmpty s.Actions then
         Exhausted(visitedStates, oneHotOutcome(s.State.PlayerTurn, s.State.NumberOfPlayers))
     else
@@ -71,17 +71,17 @@ let rec recSelection (explorationConstant: float) (s: MCTSState, visitedStates: 
               |> Array.maxBy (fun a -> actionEvaluator explorationConstant s (snd a))
         match snd selectedAction with
         | Unexplored _ -> Candidate(visitedStates, fst selectedAction)
-        | DeterministicAction ds -> recSelection explorationConstant (ds,  ds :: visitedStates)
+        | DeterministicAction ds -> recSelect explorationConstant (ds,  ds :: visitedStates)
         | StochasticAction so ->
             let i = rollStochasticAction (Array.map (fun o -> o.ProbabilityWeight) so)
             let state = so.[i].State
             if state.Rollouts = 0 // Unexplored outcome, return state
             then StochasticCandidate(visitedStates, fst selectedAction, i)
-            else recSelection explorationConstant (state, state :: visitedStates)
+            else recSelect explorationConstant (state, state :: visitedStates)
         | Terminal outcome -> Exhausted(visitedStates, outcome)
 
-let selection (explorationConstant: float) (root: MCTSState) =
-    recSelection explorationConstant (root, [root])
+let select (explorationConstant: float) (root: MCTSState) =
+    recSelect explorationConstant (root, [root])
 
 let expand (s: MCTSState, i) =
       match s.Actions.[i] with
@@ -195,7 +195,7 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
     while root.Rollouts < maxSimulationCount
           && (not evaluateUntil.IsSome
               || timer.ElapsedTicks < evaluateUntil.Value) do
-        match selection explorationConstant root with
+        match select explorationConstant root with
         | Exhausted (stateHistory, outcome) -> backPropagate stateHistory outcome
         | Candidate (stateHistory, i) ->
             let mostRecentState = stateHistory.[0]
