@@ -39,6 +39,14 @@ internal record SimulationOptions
     public int MaxRolloutDepth { get; init; } = 500;
 
     /// <summary>
+    /// Minimum rollouts per action before MCTS search can stop.
+    /// Search continues until any single action reaches this threshold,
+    /// or until time/simulation limits are hit first.
+    /// Defaults to int.MaxValue (disabled, only time/simulation limits apply).
+    /// </summary>
+    public int MinActionRollouts { get; init; } = int.MaxValue;
+
+    /// <summary>
     /// Whether to include board symmetry permutations in the export.
     /// Defaults to true (all valid symmetries for the map).
     /// </summary>
@@ -58,9 +66,20 @@ internal record StateRecord
     public double WinRate { get; init; }
 
     /// <summary>
-    /// Raw MCTS win counts, 0-indexed (index 0 = player 1). Empty if no search.
+    /// Raw MCTS win counts at the root, 0-indexed (index 0 = player 1). Empty if no search.
     /// </summary>
     public required double[] Wins { get; init; }
+
+    /// <summary>
+    /// Win rate of the acting player at the child state reached by the best action.
+    /// </summary>
+    public double BestActionWinRate { get; init; }
+
+    /// <summary>
+    /// Raw MCTS win counts at the child state reached by the best action,
+    /// 0-indexed (index 0 = player 1). Empty if no search.
+    /// </summary>
+    public required double[] BestActionWins { get; init; }
 }
 
 /// <summary>
@@ -76,6 +95,7 @@ internal record GameResult
     public required int SearchTimeMs { get; init; }
     public required int MaxSimulations { get; init; }
     public required int MaxRolloutDepth { get; init; }
+    public required int MinActionRollouts { get; init; }
     public required string BoardSerialized { get; init; }
     public required List<StateRecord> States { get; init; }
 }
@@ -126,6 +146,7 @@ internal class SimulationRunner
             Console.WriteLine($"  Seed: {_options.Seed}");
             Console.WriteLine($"  MCTS search time: {_options.SearchTimeMs}ms");
             Console.WriteLine($"  MCTS max simulations: {(_options.MaxSimulations == int.MaxValue ? "unlimited" : _options.MaxSimulations.ToString())}");
+            Console.WriteLine($"  MCTS min action rollouts: {(_options.MinActionRollouts == int.MaxValue ? "unlimited" : _options.MinActionRollouts.ToString())}");
             Console.WriteLine($"  Parallelism: {Environment.ProcessorCount} cores");
             if (_options.ExportPath is not null)
             {
@@ -244,6 +265,64 @@ internal class SimulationRunner
         return null;
     }
 
+    /// <summary>
+    /// Extracts win counts and win rate for a given player from a child action
+    /// in the MCTS tree. For deterministic actions, reads the child state directly.
+    /// For stochastic actions, computes probability-weighted averages across outcomes.
+    /// Returns empty data for unexplored or terminal actions.
+    /// </summary>
+    private static (double[] Wins, double WinRate) GetChildWinData(
+        Kjarni.MCTS.Types.Action childAction, int playerIndex)
+    {
+        if (childAction.IsDeterministicAction)
+        {
+            var child = ((Kjarni.MCTS.Types.Action.DeterministicAction)childAction).Item;
+            var wins = child.WinCounts ?? Array.Empty<double>();
+            var wr = child.Rollouts > 0 && playerIndex < wins.Length
+                ? wins[playerIndex] / child.Rollouts
+                : 0.0;
+            return (wins, wr);
+        }
+
+        if (childAction.IsStochasticAction)
+        {
+            var outcomes = ((Kjarni.MCTS.Types.Action.StochasticAction)childAction).Item;
+            var totalRollouts = 0;
+            var playerCount = 0;
+            foreach (var o in outcomes)
+            {
+                totalRollouts += o.State.Rollouts;
+                if (playerCount == 0 && o.State.WinCounts is { Length: > 0 })
+                    playerCount = o.State.WinCounts.Length;
+            }
+
+            if (totalRollouts == 0 || playerCount == 0)
+                return (Array.Empty<double>(), 0.0);
+
+            // Probability-weighted average of win counts across outcomes.
+            var aggregated = new double[playerCount];
+            var totalWeight = 0;
+            foreach (var o in outcomes)
+            {
+                if (o.State.Rollouts == 0) continue;
+                totalWeight += o.ProbabilityWeight;
+                for (var i = 0; i < Math.Min(playerCount, o.State.WinCounts.Length); i++)
+                    aggregated[i] += (double)o.ProbabilityWeight * o.State.WinCounts[i] / o.State.Rollouts;
+            }
+
+            if (totalWeight > 0)
+            {
+                for (var i = 0; i < aggregated.Length; i++)
+                    aggregated[i] /= totalWeight;
+            }
+
+            var rate = playerIndex < aggregated.Length ? aggregated[playerIndex] : 0.0;
+            return (aggregated, rate);
+        }
+
+        return (Array.Empty<double>(), 0.0);
+    }
+
     private GameResult RunSingleGame(
         GameConfig config,
         int playerCount,
@@ -256,7 +335,8 @@ internal class SimulationRunner
             searchTime.NewMilliSeconds(_options.SearchTimeMs),
             _options.MaxSimulations,
             _options.MaxRolloutDepth,
-            System.Math.Sqrt(2.0));
+            System.Math.Sqrt(2.0),
+            _options.MinActionRollouts);
         var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(mctsConfig);
         var states = new List<StateRecord>();
 
@@ -311,9 +391,19 @@ internal class SimulationRunner
                 // Read win data from the MCTS root node directly (LogInfo fields
                 // estimatedAiWinChance and winCounts are not currently populated).
                 var winCounts = mctsRoot.WinCounts ?? Array.Empty<double>();
-                var winRate = mctsRoot.Rollouts > 0 && state.CurrentPlayer < winCounts.Length
-                    ? winCounts[state.CurrentPlayer] / mctsRoot.Rollouts
+                var playerIndex = (int)state.PlayerTurn;
+                var winRate = mctsRoot.Rollouts > 0 && playerIndex < winCounts.Length
+                    ? winCounts[playerIndex] / mctsRoot.Rollouts
                     : 0.0;
+
+                // Read win data from the child state reached by the best action.
+                var bestActionWins = Array.Empty<double>();
+                var bestActionWinRate = 0.0;
+                if (!bestPath.IsEmpty && bestPath.Head < mctsRoot.Actions.Length)
+                {
+                    var bestChild = mctsRoot.Actions[bestPath.Head];
+                    (bestActionWins, bestActionWinRate) = GetChildWinData(bestChild, playerIndex);
+                }
 
                 states.Add(new StateRecord
                 {
@@ -323,6 +413,8 @@ internal class SimulationRunner
                     ElapsedMs = (int)logInfo.elapsedTime.TotalMilliseconds,
                     WinRate = winRate,
                     Wins = winCounts,
+                    BestActionWinRate = bestActionWinRate,
+                    BestActionWins = bestActionWins,
                 });
 
                 // Apply the best action from MCTS and advance the tree.
@@ -356,6 +448,7 @@ internal class SimulationRunner
             SearchTimeMs = _options.SearchTimeMs,
             MaxSimulations = _options.MaxSimulations,
             MaxRolloutDepth = _options.MaxRolloutDepth,
+            MinActionRollouts = _options.MinActionRollouts,
             BoardSerialized = boardSerialized,
             States = states,
         };
@@ -473,6 +566,7 @@ internal class SimulationRunner
                     game.SearchTimeMs,
                     game.MaxSimulations,
                     game.MaxRolloutDepth,
+                    game.MinActionRollouts,
                 },
                 board = new
                 {
@@ -487,6 +581,8 @@ internal class SimulationRunner
                     s.ElapsedMs,
                     s.WinRate,
                     s.Wins,
+                    s.BestActionWinRate,
+                    s.BestActionWins,
                     permutations = symmetryPerms.Length > 0
                         ? symmetryPerms.Select(p => BoardSymmetry.PermuteState(s.SerializedState, p)).ToArray()
                         : Array.Empty<string>(),

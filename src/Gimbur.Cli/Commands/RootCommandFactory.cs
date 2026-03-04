@@ -133,6 +133,12 @@ internal static class RootCommandFactory
             DefaultValueFactory = _ => 500
         };
 
+        var minActionRolloutsOption = new Option<int>("--min-action-rollouts")
+        {
+            Description = "Minimum rollouts per action before MCTS search can stop (default: unlimited)",
+            DefaultValueFactory = _ => int.MaxValue
+        };
+
         var noSymmetriesOption = new Option<bool>("--no-symmetries")
         {
             Description = "Disable board symmetry permutations in exported training data",
@@ -145,6 +151,7 @@ internal static class RootCommandFactory
           searchTimeOption,
           maxSimulationsOption,
           maxRolloutDepthOption,
+          minActionRolloutsOption,
           noSymmetriesOption,
         };
 
@@ -159,6 +166,7 @@ internal static class RootCommandFactory
             int searchTimeMs = parseResult.GetValue(searchTimeOption);
             int maxSimulations = parseResult.GetValue(maxSimulationsOption);
             int maxRolloutDepth = parseResult.GetValue(maxRolloutDepthOption);
+            int minActionRollouts = parseResult.GetValue(minActionRolloutsOption);
             bool noSymmetries = parseResult.GetValue(noSymmetriesOption);
 
             var options = new SimulationOptions
@@ -172,6 +180,7 @@ internal static class RootCommandFactory
                 SearchTimeMs = searchTimeMs,
                 MaxSimulations = maxSimulations,
                 MaxRolloutDepth = maxRolloutDepth,
+                MinActionRollouts = minActionRollouts,
                 Symmetries = !noSymmetries,
             };
 
