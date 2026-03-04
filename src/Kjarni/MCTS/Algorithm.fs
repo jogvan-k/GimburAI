@@ -191,10 +191,22 @@ let extractBestPath (root: MCTSState) =
 
     path |> List.rev
 
-let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float) =
+let actionRollouts (a: Action) =
+    match a with
+    | Unexplored _ -> 0
+    | DeterministicAction s -> s.Rollouts
+    | StochasticAction outcomes -> Array.sumBy (fun o -> o.State.Rollouts) outcomes
+    | Terminal _ -> 0
+
+let maxActionRollouts (root: MCTSState) =
+    if Array.isEmpty root.Actions then 0
+    else root.Actions |> Array.map actionRollouts |> Array.max
+
+let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float, minActionRollouts: int) =
     while root.Rollouts < maxSimulationCount
           && (not evaluateUntil.IsSome
-              || timer.ElapsedTicks < evaluateUntil.Value) do
+              || timer.ElapsedTicks < evaluateUntil.Value)
+          && maxActionRollouts root < minActionRollouts do
         match select explorationConstant root with
         | Exhausted (stateHistory, outcome) -> backPropagate stateHistory outcome
         | Candidate (stateHistory, i) ->

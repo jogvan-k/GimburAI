@@ -56,10 +56,12 @@ type MCTSConfig =
     { SearchTime: searchTime
       MaxSimulations: int
       MaxRolloutDepth: int
-      ExplorationConstant: float }
+      ExplorationConstant: float
+      MinActionRollouts: int }
 
     static member Default =
         { SearchTime = Unlimited
           MaxSimulations = System.Int32.MaxValue
           MaxRolloutDepth = 500
-          ExplorationConstant = sqrt 2. }
+          ExplorationConstant = sqrt 2.
+          MinActionRollouts = System.Int32.MaxValue }
