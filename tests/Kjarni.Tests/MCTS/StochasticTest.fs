@@ -149,11 +149,11 @@ type StochasticExpansionTests() =
         |> should (throwWithMessage "Target action is already expanded") typeof<System.Exception>
 
 // ────────────────────────────────────────────────────────────────
-// selection — Stochastic branches
+// select — Stochastic branches
 // ────────────────────────────────────────────────────────────────
 
 [<TestFixture>]
-type StochasticSelectionTests() =
+type StochasticselectTests() =
 
     let makeStochasticRoot () =
         let outcomeA = terminalNode p1 10
@@ -164,9 +164,9 @@ type StochasticSelectionTests() =
     [<Test>]
     member _.UnexpandedStochastic_ReturnsCandidate() =
         let root = makeStochasticRoot ()
-        // The only action is Unexplored (Stochastic _), so selection should
+        // The only action is Unexplored (Stochastic _), so select should
         // return Candidate for expansion.
-        match selection (sqrt 2.) root with
+        match select (sqrt 2.) root with
         | Candidate (ancestors, idx) ->
             ancestors |> should haveLength 1
             idx |> should equal 0
@@ -179,14 +179,14 @@ type StochasticSelectionTests() =
         let _ = expand (root, 0)
         // Give the root a rollout so it's no longer zero (otherwise actionEvaluator
         // treats StochasticAction with 0 total rollouts as "unexplored" score=10,
-        // but since it's already expanded, selection will follow the StochasticAction
+        // but since it's already expanded, select will follow the StochasticAction
         // branch, not the Unexplored branch).
         root.Rollouts <- 1
         root.WinCounts <- [| 1.; 0. |]
 
-        let result = selection (sqrt 2.) root
+        let result = select (sqrt 2.) root
 
-        // Outcomes have 0 rollouts, so selection should return StochasticCandidate
+        // Outcomes have 0 rollouts, so select should return StochasticCandidate
         match result with
         | StochasticCandidate (ancestors, actionIdx, outcomeIdx) ->
             ancestors |> should haveLength 1
@@ -207,7 +207,7 @@ type StochasticSelectionTests() =
         // Expand the stochastic action
         let _ = expand (mctsRoot, 0)
 
-        // Give all states rollouts so selection recurses through the stochastic outcomes
+        // Give all states rollouts so select recurses through the stochastic outcomes
         mctsRoot.Rollouts <- 10
         mctsRoot.WinCounts <- [| 5.; 5. |]
 
@@ -218,11 +218,11 @@ type StochasticSelectionTests() =
                 o.State.WinCounts <- [| 2.; 3. |]
         | _ -> Assert.Fail "Expected StochasticAction"
 
-        // Selection should recurse into one of the outcomes.
+        // select should recurse into one of the outcomes.
         // childA has children so it could yield Candidate.
         // childB is terminal so it could yield Exhausted.
         // Either way it should not be a StochasticCandidate since outcomes are visited.
-        let result = selection (sqrt 2.) mctsRoot
+        let result = select (sqrt 2.) mctsRoot
 
         match result with
         | StochasticCandidate _ -> Assert.Fail "Expected recursion into visited outcome, not StochasticCandidate"
@@ -320,9 +320,9 @@ type StochasticActionEvaluatorTests() =
         // sampledWinRate = (1*1.0 + 1*0.0) / 2 = 0.5
         // totalRollouts = 10, stateRollouts = 10
         // explorationRate = sqrt(2) * sqrt(ln(10)/10) ≈ 0.678
-        // score = 100 * 0.5 + explorationRate ≈ 50.678
-        score |> should be (greaterThan 50.)
-        score |> should be (lessThan 52.)
+        // score = 0.5 + 0.678 ≈ 1.178
+        score |> should be (greaterThan 1.1)
+        score |> should be (lessThan 1.3)
 
 // ────────────────────────────────────────────────────────────────
 // backPropagate through stochastic outcome states

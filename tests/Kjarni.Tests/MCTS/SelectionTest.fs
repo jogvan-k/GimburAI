@@ -10,7 +10,7 @@ open KjarniTest.TestTypes
 open FsUnit
 
 [<TestFixture>]
-type selectionTests() =
+type selectTests() =
     let branchingNode =
         node_builder(p1, 0, 0, 0)
             .addChildren(
@@ -25,18 +25,18 @@ type selectionTests() =
     [<Test>]
     member _.TerminalNode([<Values(Player.Player1, Player.Player2)>] playerTurn) =
         let terminalNode = MCTSState(node (playerTurn, 0, 0, 0))
-        let result = selection (sqrt 2.) terminalNode
+        let result = select (sqrt 2.) terminalNode
 
         result |> should be (ofCase <@ Exhausted @>)
 
     [<Test>]
     member _.AllUnexploredLeaves_SelectsFirst() =
         let root = MCTSState branchingNode
-        let result = selection (sqrt 2.) root
+        let result = select (sqrt 2.) root
 
         match result with
         | Candidate (ancestors, i) ->
-            // selection starts with [root] so the visited states list contains just the root
+            // select starts with [root] so the visited states list contains just the root
             ancestors |> should haveLength 1
             ancestors.[0] |> should equal root
             i |> should equal 0
@@ -53,7 +53,7 @@ type selectionTests() =
         root.Rollouts <- 1
         root.WinCounts <- [| 0.; 1. |]
 
-        let result = selection (sqrt 2.) root
+        let result = select (sqrt 2.) root
 
         match result with
         | Candidate (_, i) ->
@@ -74,7 +74,7 @@ type selectionTests() =
         root.Rollouts <- 3
         root.WinCounts <- [| 0.; 0. |]
 
-        let result = selection (sqrt 2.) root
+        let result = select (sqrt 2.) root
 
-        // When all are expanded with equal stats, selection should still return a candidate
+        // When all are expanded with equal stats, select should still return a candidate
         result |> should be (ofCase <@ Candidate @>)
