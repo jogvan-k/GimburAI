@@ -34,10 +34,13 @@ internal static class CatanStateSerializer
         sb.Append('|');
         sb.Append(CrockfordBase32.Encode(state.Board.RobberTile));
 
-        // Section 4: Current Turn (player + stage, concatenated)
+        // Section 4: Current Turn (player + stage + optional postDevCardStage)
         sb.Append('|');
         sb.Append(StateToken.EncodePlayer(state.CurrentPlayer));
         sb.Append(StateToken.EncodeTurnStage(state.Stage));
+        sb.Append(state._postDevCardStage.HasValue
+            ? StateToken.EncodeTurnStage(state._postDevCardStage.Value)
+            : '-');
 
         // Section 5: Longest Road / Largest Army (concatenated)
         sb.Append('|');
@@ -159,9 +162,12 @@ internal static class CatanStateSerializer
         // Section 3: Robber (single char)
         var robberTile = CrockfordBase32.Decode(sections[2][0]);
 
-        // Section 4: Current Turn (2 chars: player + stage)
+        // Section 4: Current Turn (player + stage + postDevCardStage)
         var currentPlayer = StateToken.DecodePlayer(sections[3][0]);
         var stage = StateToken.DecodeTurnStage(sections[3][1]);
+        TurnStage? postDevCardStage = sections[3].Length > 2 && sections[3][2] != '-'
+            ? StateToken.DecodeTurnStage(sections[3][2])
+            : null;
 
         // Section 5: Longest Road / Largest Army (2 chars)
         var longestRoadOwner = StateToken.DecodePlayer(sections[4][0]);
@@ -293,7 +299,8 @@ internal static class CatanStateSerializer
             devCards,
             deck,
             new int[CatanState.DevCardCount],
-            new int[playerCount + 1]);
+            new int[playerCount + 1],
+            postDevCardStage);
 
         state.RefreshVictory();
         return state;
@@ -354,8 +361,9 @@ internal static class CatanStateSerializer
         sb.Append('|');
         sb.Append(compact[pos++]);
 
-        // Section 4: Current Turn — 2 chars
+        // Section 4: Current Turn — 3 chars (player + stage + postDevCardStage)
         sb.Append('|');
+        sb.Append(compact[pos++]);
         sb.Append(compact[pos++]);
         sb.Append(compact[pos++]);
 
@@ -471,10 +479,13 @@ internal static class CatanStateSerializer
         // Section 3: Robber
         sb.Append(CrockfordBase32.Encode(state.Board.RobberTile));
 
-        // Section 4: Current Turn (player + stage)
+        // Section 4: Current Turn (player + stage + postDevCardStage)
         sb.Append('|');
         sb.Append(StateToken.EncodePlayer(state.CurrentPlayer));
         sb.Append(StateToken.EncodeTurnStage(state.Stage));
+        sb.Append(state._postDevCardStage.HasValue
+            ? StateToken.EncodeTurnStage(state._postDevCardStage.Value)
+            : '-');
 
         // Section 5: Longest Road / Largest Army
         sb.Append('|');
