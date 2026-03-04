@@ -6,6 +6,7 @@ using System.Text.Json;
 using Gimbur;
 using Gimbur.Rules;
 using Kjarni;
+using static Kjarni.MCTS.Algorithm;
 
 namespace Gimbur.Cli;
 
@@ -30,11 +31,6 @@ internal record SimulationOptions
     /// Maximum number of MCTS simulations per decision. Defaults to int.MaxValue (time-limited).
     /// </summary>
     public int MaxSimulations { get; init; } = int.MaxValue;
-
-    /// <summary>
-    /// Kjarni MCTS configuration flags (TranspositionTable, AsyncExecution, etc.).
-    /// </summary>
-    public Kjarni.MCTS.AI.configuration MctsConfig { get; init; } = Kjarni.MCTS.AI.configuration.None;
 
     /// <summary>
     /// Maximum rollout depth for MCTS simulations. Defaults to 500.
@@ -205,6 +201,18 @@ internal class SimulationRunner
         }
     }
 
+    /// <summary>
+    /// Extracts the underlying CatanAction from an F# CoreAction discriminated union.
+    /// </summary>
+    private static CatanAction UnwrapCoreAction(CoreAction coreAction)
+    {
+        if (coreAction.IsDeterministic)
+            return (CatanDeterministicAction)((CoreAction.Deterministic)coreAction).Item;
+        if (coreAction.IsStochastic)
+            return (CatanStochasticAction)((CoreAction.Stochastic)coreAction).Item;
+        throw new InvalidOperationException($"Unknown CoreAction tag: {coreAction.Tag}");
+    }
+
     private GameResult RunSingleGame(
         GameConfig config,
         int playerCount,
@@ -213,13 +221,12 @@ internal class SimulationRunner
         int gameNumber)
     {
         var state = new CatanState(config, playerCount, rng);
-        var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(
+        var mctsConfig = new Kjarni.MCTSConfig(
             searchTime.NewMilliSeconds(_options.SearchTimeMs),
             _options.MaxSimulations,
-            // TODO: consider using transposition table
-            _options.MctsConfig,
-            _options.MaxRolloutDepth);
-        var ai = (IGameAI)mcts;
+            _options.MaxRolloutDepth,
+            System.Math.Sqrt(2.0));
+        var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(mctsConfig);
         var states = new List<StateRecord>();
 
         // Capture the board serialization once (invariant across turns).
@@ -241,7 +248,7 @@ internal class SimulationRunner
             {
                 // Forced action (e.g., dice roll) — no decision to make.
                 // Apply it without recording or running MCTS.
-                state = (CatanState)actions[0].DoCoreAction();
+                state = (CatanState)UnwrapCoreAction(actions[0]).DoCoreAction();
             }
             else
             {
@@ -259,11 +266,16 @@ internal class SimulationRunner
                 var serialized = state.SerializeStateOnly();
 
                 // Run MCTS from the current state.
-                var bestPath = ai.DetermineAction(state);
+                var mctsRoot = new Kjarni.MCTS.Types.MCTSState((ICoreState)state);
+                mcts.RunSimulation(mctsRoot);
+                var bestPath = extractBestPath(mctsRoot);
                 var logInfo = mcts.LatestLogInfo();
 
-                var winRate = logInfo.simulations > 0
-                    ? logInfo.estimatedAiWinChance
+                // Read win data from the MCTS root node directly (LogInfo fields
+                // estimatedAiWinChance and winCounts are not currently populated).
+                var winCounts = mctsRoot.WinCounts ?? Array.Empty<double>();
+                var winRate = mctsRoot.Rollouts > 0 && state.CurrentPlayer < winCounts.Length
+                    ? winCounts[state.CurrentPlayer] / mctsRoot.Rollouts
                     : 0.0;
 
                 states.Add(new StateRecord
@@ -273,13 +285,13 @@ internal class SimulationRunner
                     Simulations = logInfo.simulations,
                     ElapsedMs = (int)logInfo.elapsedTime.TotalMilliseconds,
                     WinRate = winRate,
-                    Wins = logInfo.winCounts,
+                    Wins = winCounts,
                 });
 
                 // Apply the best action from MCTS.
-                if (bestPath.Length > 0 && bestPath[0] < actions.Length)
+                if (!bestPath.IsEmpty && bestPath.Head < actions.Length)
                 {
-                    state = (CatanState)actions[bestPath[0]].DoCoreAction();
+                    state = (CatanState)UnwrapCoreAction(actions[bestPath.Head]).DoCoreAction();
                 }
                 else
                 {

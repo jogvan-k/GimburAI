@@ -111,6 +111,8 @@ public sealed class CatanState : ICoreState
 
     public int PlayerCount { get; }
 
+    public int NumberOfPlayers => PlayerCount;
+
     public int CurrentPlayer { get; private set; }
 
     public TurnStage Stage { get; private set; }
@@ -131,7 +133,7 @@ public sealed class CatanState : ICoreState
         2 => Player.Player2,
         3 => Player.Player3,
         4 => Player.Player4,
-        _ => Player.None,
+        _ => Player.Player1,
     };
 
     public int ResourceCountFor(int player, ResourceType resource)
@@ -176,18 +178,18 @@ public sealed class CatanState : ICoreState
         return _pendingRoadBuildingPlacements[player];
     }
 
-    internal IReadOnlyList<(CatanState State, double Probability)> RollDiceOutcomes()
+    internal IReadOnlyList<(CatanState State, int Weight)> RollDiceOutcomes()
     {
-        var outcomes = new List<(CatanState State, double Probability)>(11);
+        var outcomes = new List<(CatanState State, int Weight)>(11);
         foreach (var pair in DiceRollCounts)
         {
-            outcomes.Add((ApplyRollDiceOutcome(pair.Key), pair.Value / 36.0));
+            outcomes.Add((ApplyRollDiceOutcome(pair.Key), pair.Value));
         }
 
         return outcomes;
     }
 
-    internal IReadOnlyList<(CatanState State, double Probability)> BuyDevCardOutcomes()
+    internal IReadOnlyList<(CatanState State, int Weight)> BuyDevCardOutcomes()
     {
         var total = 0;
         for (var i = 0; i < DevCardCount; i++)
@@ -200,7 +202,7 @@ public sealed class CatanState : ICoreState
             return [];
         }
 
-        var outcomes = new List<(CatanState State, double Probability)>(DevCardCount);
+        var outcomes = new List<(CatanState State, int Weight)>(DevCardCount);
         for (var i = 0; i < DevCardCount; i++)
         {
             var count = _devDeckRemaining[i];
@@ -209,13 +211,13 @@ public sealed class CatanState : ICoreState
                 continue;
             }
 
-            outcomes.Add((ApplyBuyDevCardType((DevCardType)i), (double)count / total));
+            outcomes.Add((ApplyBuyDevCardType((DevCardType)i), count));
         }
 
         return outcomes;
     }
 
-    internal IReadOnlyList<(CatanState State, double Probability)> ChooseRobberTileOutcomes(int tileIndex)
+    internal IReadOnlyList<(CatanState State, int Weight)> ChooseRobberTileOutcomes(int tileIndex)
     {
         if (Stage != TurnStage.ChooseRobberLocation)
         {
@@ -230,19 +232,19 @@ public sealed class CatanState : ICoreState
         var victims = RobberVictims(tileIndex);
         if (victims.Count == 0)
         {
-            return [ (ApplyChooseRobberTileNoSteal(tileIndex), 1.0) ];
+            return [ (ApplyChooseRobberTileNoSteal(tileIndex), 1) ];
         }
 
         if (victims.Count > 1)
         {
-            return [ (ApplyChooseRobberTileAwaitVictim(tileIndex), 1.0) ];
+            return [ (ApplyChooseRobberTileAwaitVictim(tileIndex), 1) ];
         }
 
         var victim = victims[0];
         return ChooseRobberTileVictimStealOutcomes(tileIndex, victim);
     }
 
-    internal IReadOnlyList<(CatanState State, double Probability)> ChooseRobberVictimOutcomes(int victimPlayer)
+    internal IReadOnlyList<(CatanState State, int Weight)> ChooseRobberVictimOutcomes(int victimPlayer)
     {
         if (Stage != TurnStage.ChooseRobberVictim)
         {
@@ -257,13 +259,13 @@ public sealed class CatanState : ICoreState
         return ChooseRobberTileVictimStealOutcomes(Board.RobberTile, victimPlayer);
     }
 
-    private IReadOnlyList<(CatanState State, double Probability)> ChooseRobberTileVictimStealOutcomes(int tileIndex, int victim)
+    private IReadOnlyList<(CatanState State, int Weight)> ChooseRobberTileVictimStealOutcomes(int tileIndex, int victim)
     {
-        var outcomes = new List<(CatanState State, double Probability)>();
+        var outcomes = new List<(CatanState State, int Weight)>();
         var victimTotal = TotalResourceCards(victim);
         if (victimTotal <= 0)
         {
-            outcomes.Add((ApplyChooseRobberTileNoSteal(tileIndex), 1.0));
+            outcomes.Add((ApplyChooseRobberTileNoSteal(tileIndex), 1));
             return outcomes;
         }
 
@@ -275,15 +277,15 @@ public sealed class CatanState : ICoreState
                 continue;
             }
 
-            outcomes.Add((ApplyChooseRobberTileSteal(tileIndex, victim, i), count / (double)victimTotal));
+            outcomes.Add((ApplyChooseRobberTileSteal(tileIndex, victim, i), count));
         }
 
         return outcomes;
     }
 
-    internal IReadOnlyList<(CatanState State, double Probability)> PlayKnightOutcomes()
+    internal IReadOnlyList<(CatanState State, int Weight)> PlayKnightOutcomes()
     {
-        return [ (ApplyPlayKnight(), 1.0) ];
+        return [ (ApplyPlayKnight(), 1) ];
     }
 
     public int VictoryPointsFor(int player)
@@ -299,15 +301,15 @@ public sealed class CatanState : ICoreState
 
     public double[] Scores()
     {
-        var scores = new double[5]; // Indexed by Player enum (0 = None, 1-4 = Players)
+        var scores = new double[PlayerCount]; // Indexed by Player enum value (0-based)
         for (var p = 1; p <= PlayerCount; p++)
         {
-            scores[p] = VictoryPointsFor(p);
+            scores[p - 1] = VictoryPointsFor(p);
         }
         return scores;
     }
 
-    public ICoreAction[] Actions()
+    public CoreAction[] Actions()
     {
         if (WinnerPlayer != 0)
         {
@@ -400,7 +402,12 @@ public sealed class CatanState : ICoreState
         }
 
         actions.Sort();
-        return [.. actions];
+        return [.. actions.Select(a => a switch
+        {
+            CatanDeterministicAction d => CoreAction.NewDeterministic(d),
+            CatanStochasticAction s => CoreAction.NewStochastic(s),
+            _ => throw new InvalidOperationException($"Unsupported action type: {a.GetType().Name}")
+        })];
     }
 
     internal CatanState Apply(CatanAction action)

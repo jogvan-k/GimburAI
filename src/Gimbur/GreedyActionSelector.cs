@@ -1,3 +1,5 @@
+using Kjarni;
+
 namespace Gimbur;
 
 public sealed class GreedyActionSelector
@@ -18,8 +20,17 @@ public sealed class GreedyActionSelector
 
     public CatanAction? ChooseAction(CatanState state, Random rng)
     {
-        var actions = state.Actions().OfType<CatanAction>().ToArray();
-        if (actions.Length == 0)
+        var coreActions = state.Actions();
+        var actions = new List<CatanAction>(coreActions.Length);
+        foreach (var ca in coreActions)
+        {
+            if (ca.IsDeterministic)
+                actions.Add((CatanDeterministicAction)((CoreAction.Deterministic)ca).Item);
+            else if (ca.IsStochastic)
+                actions.Add((CatanStochasticAction)((CoreAction.Stochastic)ca).Item);
+        }
+
+        if (actions.Count == 0)
         {
             return null;
         }

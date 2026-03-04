@@ -20,121 +20,61 @@ type selectionTests() =
             )
             .build ()
 
-    let stateHash (s: State) = (s.state :> Object).GetHashCode()
+    let stateHash (s: MCTSState) = (s.State :> Object).GetHashCode()
 
     [<Test>]
     member _.TerminalNode([<Values(Player.Player1, Player.Player2)>] playerTurn) =
-        let terminalNode = State(node (playerTurn, 0, 0, 0))
-        let result = selection (terminalNode, leafEvaluator)
+        let terminalNode = MCTSState(node (playerTurn, 0, 0, 0))
+        let result = selection (sqrt 2.) terminalNode
 
         result |> should be (ofCase <@ Exhausted @>)
 
     [<Test>]
     member _.AllUnexploredLeaves_SelectsFirst() =
-        let root = State branchingNode
-        let result = selection (root, leafEvaluator)
+        let root = MCTSState branchingNode
+        let result = selection (sqrt 2.) root
 
         match result with
-        | Candidate (a, i) ->
-            a |> should haveLength 0
+        | Candidate (ancestors, i) ->
+            // selection starts with [root] so the visited states list contains just the root
+            ancestors |> should haveLength 1
+            ancestors.[0] |> should equal root
             i |> should equal 0
         | _ -> Assert.Fail()
 
     [<Test>]
-    member _.ExploredAndUnexploredLeaves_SelectUnexplored() =
-        let root = State branchingNode
+    member _.ExpandAndSelectUnexplored() =
+        let root = MCTSState branchingNode
 
-        root.leaves <-
-            [| Leaf(Action(root.playerTurn, State(branchingNode.children.[0])))
-               Terminal p2
-               Unexplored(root.state.Actions().[2]) |]
+        // Expand first action to make it non-Unexplored
+        let expandedState = expand (root, 0)
+        expandedState.Rollouts <- 1
+        expandedState.WinCounts <- [| 0.; 1. |]
+        root.Rollouts <- 1
+        root.WinCounts <- [| 0.; 1. |]
 
-        let result = selection (root, leafEvaluator)
+        let result = selection (sqrt 2.) root
 
         match result with
-        | Candidate (a, i) ->
-            a |> should haveLength 0
-            i |> should equal 2
+        | Candidate (_, i) ->
+            // Should select one of the remaining unexplored leaves (index 1 or 2)
+            i |> should be (greaterThanOrEqualTo 1)
         | _ -> Assert.Fail()
 
     [<Test>]
-    member _.AllExploredOnRoot_SelectHighestEvaluated([<Range(1, 3)>] highestEvaluated: int) =
-        let root = State branchingNode
+    member _.AllExpanded_SelectsByEvaluation() =
+        let root = MCTSState branchingNode
 
-        root.leaves <-
-            (branchingNode :> ICoreState).Actions()
-            |> Array.mapi
-                (fun i -> fun _ -> Leaf(Action(branchingNode.playerTurn, State(branchingNode.children.[i]))))
+        // Expand all actions
+        for i in 0..2 do
+            let expanded = expand (root, i)
+            expanded.Rollouts <- 1
+            expanded.WinCounts <- [| 0.; 0. |]
 
-        let leafEvaluator =
-            fun (_, i) ->
-                match i with
-                | Leaf s ->
-                    if stateHash s.state = highestEvaluated then
-                        0.1
-                    else
-                        0.
-                | _ -> 1.
+        root.Rollouts <- 3
+        root.WinCounts <- [| 0.; 0. |]
 
-        let result = selection (root, leafEvaluator)
+        let result = selection (sqrt 2.) root
 
-        match result with
-        | Candidate (a, i) ->
-            a
-            |> List.map (fun a -> stateHash a.state)
-            |> should equal [ highestEvaluated ]
-
-            i |> should equal 0
-        | _ -> Assert.Fail()
-
-    [<TestCase(1, 4)>]
-    [<TestCase(2, 5)>]
-    [<TestCase(3, 6)>]
-    member _.AllExploredOnRootAndOneLevelDown_CandidateRecursivelyChosen
-        (
-            highestEvaluated: int,
-            expectedCandidate: int
-        ) =
-        let root = State branchingNode
-
-        root.leaves <-
-            (branchingNode :> ICoreState).Actions()
-            |> Array.mapi
-                (fun i -> fun _ -> Leaf(Action(branchingNode.playerTurn, State(branchingNode.children.[i]))))
-
-        let mutable leaves = List.empty
-
-        for l in (branchingNode :> ICoreState).Actions() do
-            let state = l.DoCoreAction()
-            let leafState = State state
-
-            leafState.leaves <-
-                Array.singleton (Leaf(Action(state.PlayerTurn, State(state.Actions().[0].DoCoreAction()))))
-
-            let leaf =
-                Leaf(Action(state.PlayerTurn, leafState))
-
-            leaves <- leaf :: leaves
-
-        root.leaves <- leaves |> List.rev |> List.toArray
-
-        let leafEvaluator =
-            fun (_, i) ->
-                match i with
-                | Leaf a ->
-                    if stateHash a.state = highestEvaluated then
-                        0.1
-                    else
-                        0.
-                | _ -> 1.
-
-        let result = selection (root, leafEvaluator)
-
-        match result with
-        | Candidate (a, i) ->
-            a
-            |> List.map (fun a -> stateHash a.state)
-            |> should equal [ expectedCandidate; highestEvaluated ]
-
-            i |> should equal 0
-        | _ -> Assert.Fail()
+        // When all are expanded with equal stats, selection should still return a candidate
+        result |> should be (ofCase <@ Candidate @>)

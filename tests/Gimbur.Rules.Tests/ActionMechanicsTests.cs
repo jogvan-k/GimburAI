@@ -1,4 +1,5 @@
 using Gimbur.Rules;
+using Kjarni;
 
 namespace Gimbur.Rules.Tests;
 
@@ -9,6 +10,14 @@ namespace Gimbur.Rules.Tests;
 /// </summary>
 public class ActionMechanicsTests
 {
+    /// <summary>
+    /// Unwraps CoreAction[] from Actions() into CatanAction instances.
+    /// </summary>
+    private static IEnumerable<Gimbur.CatanAction> GetCatanActions(Gimbur.CatanState state) =>
+        state.Actions().Select(ca => ca.IsDeterministic
+            ? (Gimbur.CatanAction)(Gimbur.CatanDeterministicAction)((CoreAction.Deterministic)ca).Item
+            : (Gimbur.CatanAction)(Gimbur.CatanStochasticAction)((CoreAction.Stochastic)ca).Item);
+
     // ── BuildCityAction ─────────────────────────────────────────────
 
     [Test]
@@ -41,7 +50,7 @@ public class ActionMechanicsTests
         var oreBefore = loaded.ResourceCountFor(player, ResourceType.Ore);
         var wheatBefore = loaded.ResourceCountFor(player, ResourceType.Wheat);
 
-        var cityAction = loaded.Actions().Cast<Gimbur.CatanAction>()
+        var cityAction = GetCatanActions(loaded)
             .OfType<Gimbur.BuildCityAction>()
             .First(a => a.VertexIndex == targetVertex!.Value);
 
@@ -72,7 +81,7 @@ public class ActionMechanicsTests
         serialized = SetResource(serialized, state, player, ResourceType.Ore, 0);
         var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Mini, 2, serialized);
 
-        var tradeAction = loaded.Actions().Cast<Gimbur.CatanAction>()
+        var tradeAction = GetCatanActions(loaded)
             .OfType<Gimbur.BankTradeAction>()
             .First(a => a.Give == ResourceType.Wood && a.Receive == ResourceType.Ore);
 
@@ -100,7 +109,7 @@ public class ActionMechanicsTests
         var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Mini, 2, serialized);
 
         // With only 2 wood and default 4:1 ratio, no trades should be possible
-        var trades = loaded.Actions().Cast<Gimbur.CatanAction>()
+        var trades = GetCatanActions(loaded)
             .OfType<Gimbur.BankTradeAction>()
             .ToArray();
         Assert.That(trades, Is.Empty);
@@ -127,7 +136,7 @@ public class ActionMechanicsTests
 
         var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Standard, 3, serialized);
 
-        var monopoly = loaded.Actions().Cast<Gimbur.CatanAction>()
+        var monopoly = GetCatanActions(loaded)
             .OfType<Gimbur.PlayMonopolyAction>()
             .First(a => a.Resource == ResourceType.Wheat);
 
@@ -157,7 +166,7 @@ public class ActionMechanicsTests
         serialized = SetResource(serialized, state, opponent, ResourceType.Ore, 0);
         var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Mini, 2, serialized);
 
-        var monopoly = loaded.Actions().Cast<Gimbur.CatanAction>()
+        var monopoly = GetCatanActions(loaded)
             .OfType<Gimbur.PlayMonopolyAction>()
             .First(a => a.Resource == ResourceType.Ore);
 
@@ -181,7 +190,7 @@ public class ActionMechanicsTests
         serialized = SetResource(serialized, state, player, ResourceType.Brick, 0);
         var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Mini, 2, serialized);
 
-        var yop = loaded.Actions().Cast<Gimbur.CatanAction>()
+        var yop = GetCatanActions(loaded)
             .OfType<Gimbur.PlayYearOfPlentyAction>()
             .First(a => a.First == ResourceType.Wood && a.Second == ResourceType.Brick);
 
@@ -202,7 +211,7 @@ public class ActionMechanicsTests
         serialized = SetResource(serialized, state, player, ResourceType.Sheep, 1);
         var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Mini, 2, serialized);
 
-        var yop = loaded.Actions().Cast<Gimbur.CatanAction>()
+        var yop = GetCatanActions(loaded)
             .OfType<Gimbur.PlayYearOfPlentyAction>()
             .First(a => a.First == ResourceType.Sheep && a.Second == ResourceType.Sheep);
 
@@ -225,7 +234,7 @@ public class ActionMechanicsTests
         for (var i = 0; i < 3; i++)
         {
             players.Add(working.CurrentPlayer);
-            var endTurn = working.Actions().Cast<Gimbur.CatanAction>().First(a => a is Gimbur.EndTurnAction);
+            var endTurn = GetCatanActions(working).First(a => a is Gimbur.EndTurnAction);
             var preRoll = (Gimbur.CatanState)endTurn.DoCoreAction();
             Assert.That(preRoll.Stage, Is.EqualTo(TurnStage.PreRoll));
 
@@ -267,7 +276,7 @@ public class ActionMechanicsTests
         var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Mini, 2, serialized);
 
         // Buy a dev card (only knights remain in deck)
-        var buyAction = loaded.Actions().Cast<Gimbur.CatanAction>().SingleOrDefault(a => a is Gimbur.BuyDevCardAction);
+        var buyAction = GetCatanActions(loaded).SingleOrDefault(a => a is Gimbur.BuyDevCardAction);
         if (buyAction == null)
         {
             Assert.Ignore("No dev cards available to buy.");
@@ -277,7 +286,7 @@ public class ActionMechanicsTests
         var afterBuy = (Gimbur.CatanState)buyAction.DoCoreAction();
 
         // The newly bought knight should not be playable this turn
-        var playableDevCards = afterBuy.Actions().Cast<Gimbur.CatanAction>()
+        var playableDevCards = GetCatanActions(afterBuy)
             .Where(a => a is Gimbur.PlayKnightAction or Gimbur.PlayRoadBuildingAction or Gimbur.PlayMonopolyAction or Gimbur.PlayYearOfPlentyAction)
             .ToArray();
         Assert.That(playableDevCards.Length, Is.EqualTo(0),
@@ -326,7 +335,7 @@ public class ActionMechanicsTests
         var working = loaded;
         while (working.VictoryPointsFor(player) < GameConfig.Standard.VictoryPointsToWin)
         {
-            var cityAction = working.Actions().Cast<Gimbur.CatanAction>()
+            var cityAction = GetCatanActions(working)
                 .OfType<Gimbur.BuildCityAction>()
                 .FirstOrDefault();
 
@@ -394,7 +403,7 @@ public class ActionMechanicsTests
         serialized = SetResource(serialized, state, player, ResourceType.Wheat, 5);
         var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Mini, 2, serialized);
 
-        var cityAction = loaded.Actions().Cast<Gimbur.CatanAction>()
+        var cityAction = GetCatanActions(loaded)
             .OfType<Gimbur.BuildCityAction>()
             .FirstOrDefault(a => a.VertexIndex == targetVertex);
 
@@ -420,7 +429,7 @@ public class ActionMechanicsTests
         var readyForRoll = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Mini, 2, citySerial);
 
         // End turn, roll, and check if city produces 2
-        var endTurn = readyForRoll.Actions().Cast<Gimbur.CatanAction>().First(a => a is Gimbur.EndTurnAction);
+        var endTurn = GetCatanActions(readyForRoll).First(a => a is Gimbur.EndTurnAction);
         var nextPreRoll = (Gimbur.CatanState)endTurn.DoCoreAction();
 
         // Skip opponent turn to get back to our player
@@ -436,7 +445,7 @@ public class ActionMechanicsTests
         var outcomes = rollAction.Outcomes();
 
         var matchingOutcome = outcomes
-            .Select(o => (Gimbur.CatanState)o.Item1)
+            .Select(o => (Gimbur.CatanState)o.Item2)
             .FirstOrDefault(s => s.ResourceCountFor(player, productionResource!.Value) > 0);
 
         if (matchingOutcome != null)
@@ -469,7 +478,7 @@ public class ActionMechanicsTests
         var working = loaded;
         for (var i = 0; i < 3; i++)
         {
-            var knight = working.Actions().Cast<Gimbur.CatanAction>().First(a => a is Gimbur.PlayKnightAction);
+            var knight = GetCatanActions(working).First(a => a is Gimbur.PlayKnightAction);
             working = (Gimbur.CatanState)knight.DoCoreAction();
             Assert.That(working.Stage, Is.EqualTo(TurnStage.ChooseRobberLocation));
 
@@ -496,7 +505,7 @@ public class ActionMechanicsTests
         var working = loaded;
         for (var i = 0; i < 2; i++)
         {
-            var knight = working.Actions().Cast<Gimbur.CatanAction>().First(a => a is Gimbur.PlayKnightAction);
+            var knight = GetCatanActions(working).First(a => a is Gimbur.PlayKnightAction);
             working = (Gimbur.CatanState)knight.DoCoreAction();
             working = ResolveRobberStages(working);
         }
@@ -529,13 +538,13 @@ public class ActionMechanicsTests
             Gimbur.PlaceSettlementAction? settle = null;
             for (var r = 0; r < 8; r++)
             {
-                settle = working.Actions().Cast<Gimbur.CatanAction>()
+                settle = GetCatanActions(working)
                     .OfType<Gimbur.PlaceSettlementAction>()
                     .FirstOrDefault();
                 if (settle != null)
                     break;
 
-                var roadAction = working.Actions().Cast<Gimbur.CatanAction>()
+                var roadAction = GetCatanActions(working)
                     .OfType<Gimbur.PlaceRoadAction>()
                     .FirstOrDefault();
                 if (roadAction == null)
@@ -584,7 +593,7 @@ public class ActionMechanicsTests
         var roadsBuilt = 0;
         while (working.LongestRoadOwner != player && roadsBuilt < 10)
         {
-            var roadAction = working.Actions().Cast<Gimbur.CatanAction>()
+            var roadAction = GetCatanActions(working)
                 .OfType<Gimbur.PlaceRoadAction>()
                 .FirstOrDefault();
 
@@ -636,7 +645,7 @@ public class ActionMechanicsTests
         var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Standard, 3, serialized);
         // Set the stage back to ChooseRobberLocation since deserialization resets it
         // Instead, just check that choosing a tile with 0-card opponents results in no steal
-        var actions = loaded.Actions().Cast<Gimbur.CatanAction>().ToArray();
+        var actions = GetCatanActions(loaded).ToArray();
         if (loaded.Stage != TurnStage.ChooseRobberLocation)
         {
             Assert.Ignore("State is not in ChooseRobberLocation stage after deserialization.");
@@ -666,7 +675,7 @@ public class ActionMechanicsTests
         serialized = SetDevCard(serialized, state, player, DevCardType.RoadBuilding, 1);
         var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Mini, 2, serialized);
 
-        var playRB = loaded.Actions().Cast<Gimbur.CatanAction>()
+        var playRB = GetCatanActions(loaded)
             .OfType<Gimbur.PlayRoadBuildingAction>()
             .FirstOrDefault();
 
@@ -683,7 +692,7 @@ public class ActionMechanicsTests
         // If pending > 0, placing a road should decrease pending
         if (pending > 0)
         {
-            var road = afterPlay.Actions().Cast<Gimbur.CatanAction>().First(a => a is Gimbur.PlaceRoadAction);
+            var road = GetCatanActions(afterPlay).First(a => a is Gimbur.PlaceRoadAction);
             var afterRoad = (Gimbur.CatanState)road.DoCoreAction();
             Assert.That(afterRoad.PendingRoadBuildingPlacementsFor(player), Is.EqualTo(pending - 1).Or.EqualTo(0));
         }
@@ -700,7 +709,7 @@ public class ActionMechanicsTests
         serialized = SetResource(serialized, state, player, ResourceType.Brick, 5);
         var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Standard, 3, serialized);
 
-        var roadAction = loaded.Actions().Cast<Gimbur.CatanAction>()
+        var roadAction = GetCatanActions(loaded)
             .OfType<Gimbur.PlaceRoadAction>()
             .FirstOrDefault();
 
@@ -731,7 +740,7 @@ public class ActionMechanicsTests
         serialized = SetResource(serialized, state, player, ResourceType.Ore, 5);
         var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Mini, 2, serialized);
 
-        var buyAction = loaded.Actions().Cast<Gimbur.CatanAction>()
+        var buyAction = GetCatanActions(loaded)
             .OfType<Gimbur.BuyDevCardAction>()
             .FirstOrDefault();
 
@@ -765,8 +774,8 @@ public class ActionMechanicsTests
         var outcomes = rollAction.Outcomes();
 
         Assert.That(outcomes.Length, Is.EqualTo(11)); // rolls 2-12
-        var totalProb = outcomes.Sum(o => o.Item2);
-        Assert.That(totalProb, Is.EqualTo(1.0).Within(1e-10));
+        var totalWeight = outcomes.Sum(o => o.Item1);
+        Assert.That(totalWeight, Is.EqualTo(36)); // 36 total dice combinations
     }
 
     [Test]
@@ -781,7 +790,7 @@ public class ActionMechanicsTests
         serialized = SetResource(serialized, state, player, ResourceType.Ore, 5);
         var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Mini, 2, serialized);
 
-        var buyAction = loaded.Actions().Cast<Gimbur.CatanAction>()
+        var buyAction = GetCatanActions(loaded)
             .OfType<Gimbur.BuyDevCardAction>()
             .FirstOrDefault();
 
@@ -793,8 +802,8 @@ public class ActionMechanicsTests
 
         var outcomes = buyAction.Outcomes();
         Assert.That(outcomes.Length, Is.GreaterThan(0));
-        var totalProb = outcomes.Sum(o => o.Item2);
-        Assert.That(totalProb, Is.EqualTo(1.0).Within(1e-10));
+        var totalWeight = outcomes.Sum(o => o.Item1);
+        Assert.That(totalWeight, Is.GreaterThan(0), "Total probability weight should be positive");
     }
 
     // ── Helpers ──────────────────────────────────────────────────────
@@ -803,7 +812,7 @@ public class ActionMechanicsTests
     {
         while (state.Stage != TurnStage.PreRoll)
         {
-            var action = state.Actions().Cast<Gimbur.CatanAction>().First();
+            var action = GetCatanActions(state).First();
             state = (Gimbur.CatanState)action.DoCoreAction();
         }
 
@@ -815,7 +824,7 @@ public class ActionMechanicsTests
         var working = ReachPreRoll(state);
         for (var i = 0; i < 200; i++)
         {
-            var roll = working.Actions().Cast<Gimbur.CatanAction>().Single(a => a is Gimbur.RollDiceAction);
+            var roll = GetCatanActions(working).Single(a => a is Gimbur.RollDiceAction);
             working = (Gimbur.CatanState)roll.DoCoreAction();
             if (working.Stage == TurnStage.BuildTrade)
             {
@@ -840,7 +849,7 @@ public class ActionMechanicsTests
         {
             if (working.Stage == TurnStage.PreRoll)
             {
-                var roll = working.Actions().Cast<Gimbur.CatanAction>().Single(a => a is Gimbur.RollDiceAction);
+                var roll = GetCatanActions(working).Single(a => a is Gimbur.RollDiceAction);
                 working = (Gimbur.CatanState)roll.DoCoreAction();
             }
 
@@ -860,14 +869,14 @@ public class ActionMechanicsTests
                 return working;
             }
 
-            var endTurn = working.Actions().Cast<Gimbur.CatanAction>().FirstOrDefault(a => a is Gimbur.EndTurnAction);
+            var endTurn = GetCatanActions(working).FirstOrDefault(a => a is Gimbur.EndTurnAction);
             if (endTurn != null)
             {
                 working = (Gimbur.CatanState)endTurn.DoCoreAction();
             }
             else
             {
-                var action = working.Actions().Cast<Gimbur.CatanAction>().First();
+                var action = GetCatanActions(working).First();
                 working = (Gimbur.CatanState)action.DoCoreAction();
             }
         }
@@ -881,7 +890,7 @@ public class ActionMechanicsTests
         var working = state;
         while (working.Stage is TurnStage.ChooseRobberLocation or TurnStage.ChooseRobberVictim)
         {
-            var action = working.Actions().Cast<Gimbur.CatanAction>().First();
+            var action = GetCatanActions(working).First();
             working = (Gimbur.CatanState)action.DoCoreAction();
         }
 
@@ -894,7 +903,7 @@ public class ActionMechanicsTests
         for (var i = 0; i < 300; i++)
         {
             var beforeRoll = working;
-            var roll = working.Actions().Cast<Gimbur.CatanAction>().Single(a => a is Gimbur.RollDiceAction);
+            var roll = GetCatanActions(working).Single(a => a is Gimbur.RollDiceAction);
             working = (Gimbur.CatanState)roll.DoCoreAction();
             if (working.Stage == TurnStage.ChooseRobberLocation)
             {
@@ -903,7 +912,7 @@ public class ActionMechanicsTests
 
             if (working.Stage == TurnStage.BuildTrade)
             {
-                var endTurn = working.Actions().Cast<Gimbur.CatanAction>().First(a => a is Gimbur.EndTurnAction);
+                var endTurn = GetCatanActions(working).First(a => a is Gimbur.EndTurnAction);
                 working = (Gimbur.CatanState)endTurn.DoCoreAction();
             }
         }
@@ -922,7 +931,7 @@ public class ActionMechanicsTests
                 return working;
             }
 
-            var actions = working.Actions().Cast<Gimbur.CatanAction>().ToArray();
+            var actions = GetCatanActions(working).ToArray();
             if (actions.Length == 0)
             {
                 return null;

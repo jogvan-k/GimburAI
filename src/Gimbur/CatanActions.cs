@@ -3,7 +3,7 @@ using Kjarni;
 
 namespace Gimbur;
 
-public abstract class CatanAction : ICoreAction
+public abstract class CatanAction : IComparable
 {
     protected CatanAction(CatanState origin)
     {
@@ -23,8 +23,6 @@ public abstract class CatanAction : ICoreAction
     public virtual int Arg2 => 0;
 
     public int TargetIndex => Arg1;
-
-    public ICoreState Origin => OriginState;
 
     public abstract ICoreState DoCoreAction();
 
@@ -70,6 +68,8 @@ public abstract class CatanDeterministicAction : CatanAction, IDeterministicCore
         : base(origin)
     {
     }
+
+    public ICoreState State() => DoCoreAction();
 }
 
 public abstract class CatanStochasticAction : CatanAction, IStochasticCoreAction
@@ -79,7 +79,7 @@ public abstract class CatanStochasticAction : CatanAction, IStochasticCoreAction
     {
     }
 
-    public abstract Tuple<ICoreState, double>[] Outcomes();
+    public abstract Tuple<int, ICoreState>[] Outcomes();
 }
 
 public sealed class PlaceSettlementAction(CatanState origin, int vertexIndex) : CatanDeterministicAction(origin)
@@ -105,8 +105,8 @@ public sealed class RollDiceAction(CatanState origin) : CatanStochasticAction(or
     public const byte Tag = 2;
     public override byte TypeTag => Tag;
     public override ICoreState DoCoreAction() => OriginState.Apply(this);
-    public override Tuple<ICoreState, double>[] Outcomes() =>
-        [.. OriginState.RollDiceOutcomes().Select(x => Tuple.Create((ICoreState)x.State, x.Probability))];
+    public override Tuple<int, ICoreState>[] Outcomes() =>
+        [.. OriginState.RollDiceOutcomes().Select(x => Tuple.Create(x.Weight, (ICoreState)x.State))];
 }
 
 public sealed class ChooseRobberTileAction(CatanState origin, int tileIndex) : CatanStochasticAction(origin)
@@ -116,8 +116,8 @@ public sealed class ChooseRobberTileAction(CatanState origin, int tileIndex) : C
     public override int Arg1 => TileIndex;
     public override byte TypeTag => Tag;
     public override ICoreState DoCoreAction() => OriginState.Apply(this);
-    public override Tuple<ICoreState, double>[] Outcomes() =>
-        [.. OriginState.ChooseRobberTileOutcomes(TileIndex).Select(x => Tuple.Create((ICoreState)x.State, x.Probability))];
+    public override Tuple<int, ICoreState>[] Outcomes() =>
+        [.. OriginState.ChooseRobberTileOutcomes(TileIndex).Select(x => Tuple.Create(x.Weight, (ICoreState)x.State))];
 }
 
 public sealed class ChooseRobberVictimAction(CatanState origin, int victimPlayer) : CatanStochasticAction(origin)
@@ -127,8 +127,8 @@ public sealed class ChooseRobberVictimAction(CatanState origin, int victimPlayer
     public override int Arg1 => VictimPlayer;
     public override byte TypeTag => Tag;
     public override ICoreState DoCoreAction() => OriginState.Apply(this);
-    public override Tuple<ICoreState, double>[] Outcomes() =>
-        [.. OriginState.ChooseRobberVictimOutcomes(VictimPlayer).Select(x => Tuple.Create((ICoreState)x.State, x.Probability))];
+    public override Tuple<int, ICoreState>[] Outcomes() =>
+        [.. OriginState.ChooseRobberVictimOutcomes(VictimPlayer).Select(x => Tuple.Create(x.Weight, (ICoreState)x.State))];
 }
 
 public sealed class BuildCityAction(CatanState origin, int vertexIndex) : CatanDeterministicAction(origin)
@@ -156,8 +156,8 @@ public sealed class BuyDevCardAction(CatanState origin) : CatanStochasticAction(
     public const byte Tag = 6;
     public override byte TypeTag => Tag;
     public override ICoreState DoCoreAction() => OriginState.Apply(this);
-    public override Tuple<ICoreState, double>[] Outcomes() =>
-        [.. OriginState.BuyDevCardOutcomes().Select(x => Tuple.Create((ICoreState)x.State, x.Probability))];
+    public override Tuple<int, ICoreState>[] Outcomes() =>
+        [.. OriginState.BuyDevCardOutcomes().Select(x => Tuple.Create(x.Weight, (ICoreState)x.State))];
 }
 
 public sealed class PlayKnightAction(CatanState origin) : CatanStochasticAction(origin)
@@ -165,8 +165,8 @@ public sealed class PlayKnightAction(CatanState origin) : CatanStochasticAction(
     public const byte Tag = 7;
     public override byte TypeTag => Tag;
     public override ICoreState DoCoreAction() => OriginState.Apply(this);
-    public override Tuple<ICoreState, double>[] Outcomes() =>
-        [.. OriginState.PlayKnightOutcomes().Select(x => Tuple.Create((ICoreState)x.State, x.Probability))];
+    public override Tuple<int, ICoreState>[] Outcomes() =>
+        [.. OriginState.PlayKnightOutcomes().Select(x => Tuple.Create(x.Weight, (ICoreState)x.State))];
 }
 
 public sealed class PlayRoadBuildingAction(CatanState origin) : CatanDeterministicAction(origin)

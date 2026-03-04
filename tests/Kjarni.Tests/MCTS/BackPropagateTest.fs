@@ -13,77 +13,50 @@ open FsUnit
 [<TestFixture>]
 type BackPropagateTest() =
 
-    let branchingNode =
-        node_builder (
-            p1,
-            0,
-            0,
-            0,
-            [ node_builder(p1, 1, 0, 1).addChild(node_builder (p2, 2, 0, 11)).addChild (node_builder (p1, 3, 0, 111))
-              node_builder(p2, 1, 0, 2).addChild(node_builder (p1, 2, 0, 22)).addChild (node_builder (p2, 3, 0, 222))
-              node_builder(p1, 1, 0, 3).addChild(node_builder (p2, 2, 0, 33)).addChild (node_builder (p1, 3, 0, 333)) ]
-        )
-
-    let constructSut (nodes: ICoreState) =
-        let root = State nodes
-
-        root.leaves <-
-            [| 0; 1; 2 |]
-            |> Array.map (fun i ->
-                let childNode = nodes.Actions().[i].DoCoreAction()
-                let s1 = State childNode
-                let grandchild = childNode.Actions().[0].DoCoreAction()
-                let s2 = State grandchild
-                s1.leaves.[0] <- Leaf(Action(grandchild.PlayerTurn, s2))
-                Leaf(Action(root.playerTurn, s1)))
-
-        root
-
-    let getLeaf l =
-        match l with
-        | Leaf a -> a.state
-        | _ -> failwith "not a leaf"
-
-    let assertWinRate (state: State) expectWinningPlayer =
-        state.winRate
-        |> should
-            equal
-            (if state.state.PlayerTurn = expectWinningPlayer then
-                 1.
-             else
-                 0.)
-
     [<Test>]
-    member _.BranchingTree([<Values(0, 1, 2)>] branch, [<Values(Player.Player1, Player.Player2)>] playerWin) =
-        let root = constructSut (branchingNode.build ())
-        let state2 = getLeaf root.leaves.[branch]
-        let action1 = Action(root.playerTurn, state2)
+    member _.PropagatesOutcomeToAllStates([<Values(Player.Player1, Player.Player2)>] playerWin) =
+        let rootNode =
+            node_builder(p1, 0, 0, 0, node_builder (p2, 1, 0, 1, node_builder (p1, 2, 0, 2)))
+                .build ()
 
-        let action2 = Action(state2.playerTurn, getLeaf state2.leaves.[0])
+        let root = MCTSState rootNode
+        let child = MCTSState(rootNode.children.[0])
+        let grandchild = MCTSState(rootNode.children.[0].children.[0])
 
-        let visitedActions = [ action1; action2 ]
+        let visitedStates = [ grandchild; child; root ]
 
         let outcome =
             if playerWin = Player.Player1 then
-                [| 1.; 0.; 0.; 0. |]
+                [| 1.; 0. |]
             else
-                [| 0.; 1.; 0.; 0. |]
+                [| 0.; 1. |]
 
-        backPropagate root visitedActions outcome
-        backPropagate root visitedActions outcome
+        backPropagate visitedStates outcome
 
-        root.visitCount |> should equal 2
-        assertWinRate root playerWin
+        root.Rollouts |> should equal 1
+        child.Rollouts |> should equal 1
+        grandchild.Rollouts |> should equal 1
 
-        action1.visitCount |> should equal 2
-        action1.state.visitCount |> should equal 2
-        assertWinRate action1.state playerWin
+        winRate root playerWin |> should equal 1.
+        winRate child playerWin |> should equal 1.
+        winRate grandchild playerWin |> should equal 1.
 
-        action2.visitCount |> should equal 2
-        action2.state.visitCount |> should equal 2
-        assertWinRate action2.state playerWin
+    [<Test>]
+    member _.PropagatesMultipleTimes() =
+        let rootNode =
+            node_builder(p1, 0, 0, 0, node_builder (p2, 1, 0, 1))
+                .build ()
 
-        for i in [| 0; 1; 2 |] |> Array.where (fun i -> i <> branch) do
-            let leaf = getLeaf root.leaves.[i]
-            leaf.winRate |> should equal 0.
-            leaf.visitCount |> should equal 1.
+        let root = MCTSState rootNode
+        let child = MCTSState(rootNode.children.[0])
+
+        let visitedStates = [ child; root ]
+
+        backPropagate visitedStates [| 1.; 0. |]
+        backPropagate visitedStates [| 1.; 0. |]
+
+        root.Rollouts |> should equal 2
+        child.Rollouts |> should equal 2
+
+        winRate root Player.Player1 |> should equal 1.
+        winRate child Player.Player1 |> should equal 1.

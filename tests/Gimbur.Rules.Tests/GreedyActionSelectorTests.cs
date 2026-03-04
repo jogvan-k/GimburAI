@@ -1,9 +1,18 @@
 using Gimbur.Rules;
+using Kjarni;
 
 namespace Gimbur.Rules.Tests;
 
 public class GreedyActionSelectorTests
 {
+    /// <summary>
+    /// Unwraps CoreAction[] from Actions() into CatanAction instances.
+    /// </summary>
+    private static IEnumerable<Gimbur.CatanAction> GetCatanActions(Gimbur.CatanState state) =>
+        state.Actions().Select(ca => ca.IsDeterministic
+            ? (Gimbur.CatanAction)(Gimbur.CatanDeterministicAction)((CoreAction.Deterministic)ca).Item
+            : (Gimbur.CatanAction)(Gimbur.CatanStochasticAction)((CoreAction.Stochastic)ca).Item);
+
     [Test]
     public void ChooseAction_ReturnsLegalAction()
     {
@@ -13,7 +22,7 @@ public class GreedyActionSelectorTests
 
         var action = greedy.ChooseAction(state, rng);
         Assert.That(action, Is.Not.Null);
-        Assert.That(state.Actions().Cast<Gimbur.CatanAction>(), Has.Member(action));
+        Assert.That(GetCatanActions(state), Has.Member(action));
     }
 
     [Test]
@@ -25,7 +34,7 @@ public class GreedyActionSelectorTests
 
         for (var i = 0; i < 80; i++)
         {
-            var actions = state.Actions().Cast<Gimbur.CatanAction>().ToArray();
+            var actions = GetCatanActions(state).ToArray();
             if (actions.Length == 0)
             {
                 break;
@@ -52,7 +61,7 @@ public class GreedyActionSelectorTests
                 continue;
             }
 
-            var options = state.Actions().Cast<Gimbur.CatanAction>().ToArray();
+            var options = GetCatanActions(state).ToArray();
             var hasThreeTileOption = options.Any(a => state.Board.Topology.VertexTiles[a.Arg1].Length >= 3);
             var hasSingleTileOption = options.Any(a => state.Board.Topology.VertexTiles[a.Arg1].Length == 1);
             if (!hasThreeTileOption || !hasSingleTileOption)

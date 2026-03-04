@@ -2,11 +2,20 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Gimbur.Rules;
 using Gimbur;
+using Kjarni;
 
 namespace Gimbur.Tui;
 
 internal static class Program
 {
+    /// <summary>
+    /// Unwraps CoreAction[] from Actions() into CatanAction instances.
+    /// </summary>
+    private static IEnumerable<CatanAction> GetCatanActions(CatanState state) =>
+        state.Actions().Select(ca => ca.IsDeterministic
+            ? (CatanAction)(CatanDeterministicAction)((CoreAction.Deterministic)ca).Item
+            : (CatanAction)(CatanStochasticAction)((CoreAction.Stochastic)ca).Item);
+
     private const double Sqrt3 = 1.7320508075688772;
 
     private const string Reset = "\u001b[0m";
@@ -69,7 +78,7 @@ internal static class Program
 
         while (true)
         {
-            var actions = state.Actions().OfType<CatanAction>().ToArray();
+            var actions = GetCatanActions(state).ToArray();
             if (actions.Length == 0)
             {
                 break;
@@ -147,8 +156,7 @@ internal static class Program
 
     private static CatanState ExecuteSettlementPlacement(CatanState state)
     {
-        var legal = state.Actions()
-            .OfType<CatanAction>()
+        var legal = GetCatanActions(state)
             .Where(a => a is PlaceSettlementAction)
             .Select(a => a.TargetIndex)
             .ToArray();
@@ -181,8 +189,7 @@ internal static class Program
 
     private static CatanState ExecuteRobberPlacement(CatanState state)
     {
-        var legal = state.Actions()
-            .OfType<CatanAction>()
+        var legal = GetCatanActions(state)
             .Where(a => a is ChooseRobberTileAction)
             .Select(a => a.Arg1)
             .ToArray();
@@ -215,8 +222,7 @@ internal static class Program
 
     private static CatanState ExecuteRobberVictimSelection(CatanState state)
     {
-        var victimActions = state.Actions()
-            .OfType<CatanAction>()
+        var victimActions = GetCatanActions(state)
             .Where(a => a is ChooseRobberVictimAction)
             .ToArray();
         if (victimActions.Length == 0)
@@ -485,8 +491,7 @@ internal static class Program
 
     private static CatanState ExecuteRollDice(CatanState state)
     {
-        var action = state.Actions()
-            .OfType<CatanAction>()
+        var action = GetCatanActions(state)
             .FirstOrDefault(a => a is RollDiceAction);
 
         if (action is null)
@@ -500,8 +505,7 @@ internal static class Program
 
     private static CatanState ExecuteBuyDevCard(CatanState state)
     {
-        var action = state.Actions()
-            .OfType<CatanAction>()
+        var action = GetCatanActions(state)
             .FirstOrDefault(a => a is BuyDevCardAction);
 
         if (action is null)
@@ -532,8 +536,7 @@ internal static class Program
 
     private static CatanState ExecuteRoadPlacement(CatanState state)
     {
-        var legal = state.Actions()
-            .OfType<CatanAction>()
+        var legal = GetCatanActions(state)
             .Where(a => a is PlaceRoadAction)
             .Select(a => a.TargetIndex)
             .ToArray();
@@ -566,8 +569,7 @@ internal static class Program
 
     private static CatanState ExecuteCityPlacement(CatanState state)
     {
-        var legal = state.Actions()
-            .OfType<CatanAction>()
+        var legal = GetCatanActions(state)
             .Where(a => a is BuildCityAction)
             .Select(a => a.Arg1)
             .ToArray();

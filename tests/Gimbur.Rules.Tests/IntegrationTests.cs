@@ -1,4 +1,5 @@
 using Gimbur.Rules;
+using Kjarni;
 
 namespace Gimbur.Rules.Tests;
 
@@ -9,6 +10,14 @@ namespace Gimbur.Rules.Tests;
 /// </summary>
 public class IntegrationTests
 {
+    /// <summary>
+    /// Unwraps CoreAction[] from Actions() into CatanAction instances.
+    /// </summary>
+    private static IEnumerable<Gimbur.CatanAction> GetCatanActions(Gimbur.CatanState state) =>
+        state.Actions().Select(ca => ca.IsDeterministic
+            ? (Gimbur.CatanAction)(Gimbur.CatanDeterministicAction)((CoreAction.Deterministic)ca).Item
+            : (Gimbur.CatanAction)(Gimbur.CatanStochasticAction)((CoreAction.Stochastic)ca).Item);
+
     [TestCase(42)]
     [TestCase(123)]
     [TestCase(999)]
@@ -23,7 +32,7 @@ public class IntegrationTests
         var maxTurns = 500;
         while (state.WinnerPlayer == 0)
         {
-            var actions = state.Actions().Cast<Gimbur.CatanAction>().ToArray();
+            var actions = GetCatanActions(state).ToArray();
             if (actions.Length == 0)
             {
                 break;
@@ -61,7 +70,7 @@ public class IntegrationTests
         var maxTurns = 500;
         while (state.WinnerPlayer == 0)
         {
-            var actions = state.Actions().Cast<Gimbur.CatanAction>().ToArray();
+            var actions = GetCatanActions(state).ToArray();
             if (actions.Length == 0)
             {
                 break;
@@ -93,7 +102,7 @@ public class IntegrationTests
 
         while (state.WinnerPlayer == 0 && state.TurnNumber <= 200)
         {
-            var actions = state.Actions().Cast<Gimbur.CatanAction>().ToArray();
+            var actions = GetCatanActions(state).ToArray();
             if (actions.Length == 0)
             {
                 break;
@@ -133,7 +142,7 @@ public class IntegrationTests
                 }
             }
 
-            var actions = state.Actions().Cast<Gimbur.CatanAction>().ToArray();
+            var actions = GetCatanActions(state).ToArray();
             if (actions.Length == 0)
             {
                 break;
@@ -161,7 +170,7 @@ public class IntegrationTests
                     $"Player {player} has negative VP at turn {state.TurnNumber}");
             }
 
-            var actions = state.Actions().Cast<Gimbur.CatanAction>().ToArray();
+            var actions = GetCatanActions(state).ToArray();
             if (actions.Length == 0)
             {
                 break;
@@ -181,7 +190,7 @@ public class IntegrationTests
 
         while (state.WinnerPlayer == 0 && state.TurnNumber <= 500)
         {
-            var actions = state.Actions().Cast<Gimbur.CatanAction>().ToArray();
+            var actions = GetCatanActions(state).ToArray();
             if (actions.Length == 0)
             {
                 break;

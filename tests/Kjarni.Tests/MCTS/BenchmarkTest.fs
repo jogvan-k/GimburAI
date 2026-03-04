@@ -4,6 +4,7 @@ open NUnit.Framework
 
 open Kjarni
 open Kjarni.MCTS.AI
+open Kjarni.MCTS.Types
 open KjarniTest.TestTypes
 
 [<TestFixture>]
@@ -13,10 +14,11 @@ type BenchmarkCases() =
         let tree = complexTree evalFun n b
 
         let cal =
-            MonteCarloTreeSearch(Seconds 5, System.Int32.MaxValue, configuration.AsyncExecution)
+            MonteCarloTreeSearch({ MCTSConfig.Default with SearchTime = Seconds 5 })
 
+        let root = MCTSState(tree.build () :> ICoreState)
         let bestPath =
-            (cal :> IGameAI).DetermineAction(tree.build ())
+            cal.RunSimulation(root)
 
         let logInfo = cal.LatestLogInfo()
 
@@ -35,8 +37,8 @@ type BenchmarkCases() =
 
         printfn
             "Best path: %s"
-            (bestPath
-             |> Array.map string
+            (bestPath.ActionValues
+             |> Array.mapi (fun i _ -> string i)
              |> Array.fold (fun s i -> if s = "" then i else s + ", " + i) "")
 
     [<Explicit>]

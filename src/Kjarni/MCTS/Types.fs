@@ -3,73 +3,33 @@ module Kjarni.MCTS.Types
 open System
 open Kjarni
 
-type Leaf =
-    | Unexplored of ICoreAction
-    | Leaf of Action
-    | Terminal of Player
+type MCTSState(state: ICoreState) =
+    let mutable _rollouts = 0
+    let mutable _winCounts = Array.zeroCreate<float> state.NumberOfPlayers
+    let mutable _actions = state.Actions() |> Array.map Unexplored
+    member _.Rollouts
+      with get () = _rollouts
+      and set value = _rollouts <- value
+    member _.WinCounts
+      with get () = _winCounts
+      and set value = _winCounts <- value
+    member _.State = state
+    member _.Actions
+      with get () = _actions
+      and set value = _actions <- value
 
-and State(state: ICoreState) =
-    let mutable _leaves = state.Actions() |> Array.map Unexplored
-    let mutable _visitCount = 0
-    let _maxTrackedPlayers = int Player.Player4
-    let mutable _winCounts = Array.zeroCreate<float> _maxTrackedPlayers
-    let incrementVisitCount () = _visitCount <- _visitCount + 1
-    member _.state = state
+and Action =
+    | Unexplored of CoreAction
+    | DeterministicAction of MCTSState
+    | StochasticAction of StochasticOutcome []
+    | Terminal of float[]
 
-    member _.leaves
-        with get () = _leaves
-        and set value = _leaves <- value
-
-    member _.registerOutcome(outcome: float array) =
-        incrementVisitCount ()
-        Array.iteri (fun i x -> _winCounts[i] <- _winCounts[i] + x) outcome
-
-    member _.winRateFor(player: Player) =
-        let i = int player
-        if i < 0 || i > _winCounts.Length then
-            0.
-        elif _visitCount = 0 then
-            0.
-        else
-            _winCounts.[i-1] / float _visitCount
-
-    member this.winRate = this.winRateFor state.PlayerTurn
-
-    member _.winCounts
-        with get () = _winCounts
-
-    member _.visitCount = Math.Max(1, _visitCount)
-    member _.playerTurn = state.PlayerTurn
-
-and Action(activePlayer: Player, state: State) =
-    let mutable _visitCount = 0
-    member _.incrementVisitCount() = _visitCount <- _visitCount + 1
-    member _.state = state
-    member _.visitCount = Math.Max(_visitCount, 1)
-
-    member _.winRate =
-        state.winRateFor activePlayer
+and StochasticOutcome = { ProbabilityWeight: int; State: MCTSState }
 
 type SelectionResult =
-    | Exhausted of (Action list * Player)
-    | Candidate of (Action list * int)
-
-type TranspositionTable() =
-    let mutable _map = Map.empty
-    let mutable _successfulLookups = 0
-
-    member _.Add(h: int, s: State) = _map <- _map.Add(h, s)
-
-    member _.Lookup h =
-        let result = _map.TryFind h
-
-        if result.IsSome then
-            _successfulLookups <- _successfulLookups + 1
-
-        result
-
-    member _.SuccessfulLookups = _successfulLookups
-    member _.Count = _map.Count
+    | Candidate of (MCTSState list * int)
+    | StochasticCandidate of (MCTSState list * int * int)
+    | Exhausted of (MCTSState list * float array)
 
 type LogInfo =
     struct
