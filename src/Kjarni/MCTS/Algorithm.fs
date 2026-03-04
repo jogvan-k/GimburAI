@@ -40,15 +40,15 @@ let actionEvaluator (explorationConstant: float) (state: MCTSState) (l: Action) 
     | DeterministicAction resState ->
         let winRate = winRate resState actingPlayer
         let explorationRate = explorationRate explorationConstant state.Rollouts resState.Rollouts
-        100. * winRate + explorationRate
+        winRate + explorationRate
     | StochasticAction outcomes ->
         let totalRollouts = Array.sumBy (fun i -> i.State.Rollouts) outcomes
         if totalRollouts = 0 then 10. // treat as unexplored
         else
             let winRate = sampledWinRate outcomes actingPlayer
             let explorationRate = explorationRate explorationConstant state.Rollouts totalRollouts
-            100. * winRate + explorationRate
-    | Terminal win -> 100. * win.[int actingPlayer]
+            winRate + explorationRate
+    | Terminal win -> win.[int actingPlayer]
 
 let rollStochasticAction(probWeights: int array) =
     let totalWeight = Array.sum probWeights
