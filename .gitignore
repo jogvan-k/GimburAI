@@ -38,6 +38,11 @@ ScaffoldingReadMe.txt
 
 # Python
 *__pycache__
+*.egg-info/
+.venv/
+dist/
+*.pt
+*.pth
 
 # Others
 ~$*
