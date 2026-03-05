@@ -214,7 +214,7 @@ public class BoardTopologyTests
             Assert.That(t.TileCount, Is.EqualTo(10));
             Assert.That(t.VertexCount, Is.EqualTo(32));
             Assert.That(t.EdgeCount, Is.EqualTo(41));
-            Assert.That(t.PortCount, Is.EqualTo(7));
+            Assert.That(t.PortCount, Is.EqualTo(6));
             Assert.That(t.CoastalEdges.Length, Is.EqualTo(22));
         });
     }
@@ -245,10 +245,10 @@ public class BoardTopologyTests
         var t = BoardTopology.Small;
         var expected = new (int, int)[]
         {
-            (4, 1), (2, 6), (15, 20), (28, 31), (30, 26), (25, 21), (11, 7),
+            (4, 1), (2, 6), (20, 24), (27, 30), (29, 25), (11, 7),
         };
 
-        Assert.That(t.Ports.Length, Is.EqualTo(7));
+        Assert.That(t.Ports.Length, Is.EqualTo(6));
         for (var i = 0; i < expected.Length; i++)
         {
             Assert.That(t.Ports[i], Is.EqualTo(expected[i]),

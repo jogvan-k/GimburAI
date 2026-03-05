@@ -54,7 +54,7 @@ MAP_LAYOUTS = {
             (1, -1),
             (2, -1),
         ],
-        "port_count": 7,
+        "port_count": 6,
         "expected_tiles": 10,
     },
 }

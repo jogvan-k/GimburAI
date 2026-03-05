@@ -228,7 +228,7 @@ public class BoardSetupTests
         {
             Assert.That(setup.TileResources.Length, Is.EqualTo(10));
             Assert.That(setup.TileNumbers.Length, Is.EqualTo(10));
-            Assert.That(setup.PortTypes.Length, Is.EqualTo(7));
+            Assert.That(setup.PortTypes.Length, Is.EqualTo(6));
         });
     }
 
@@ -335,7 +335,7 @@ public class BoardSetupTests
 
         Assert.Multiple(() =>
         {
-            Assert.That(portCounts[(int)PortType.Generic], Is.EqualTo(3));
+            Assert.That(portCounts[(int)PortType.Generic], Is.EqualTo(2));
             Assert.That(portCounts[(int)PortType.Wood], Is.EqualTo(1));
             Assert.That(portCounts[(int)PortType.Brick], Is.EqualTo(1));
             Assert.That(portCounts[(int)PortType.Sheep], Is.EqualTo(1));

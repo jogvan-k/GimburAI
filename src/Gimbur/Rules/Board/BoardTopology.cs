@@ -110,7 +110,7 @@ public sealed class BoardTopology
     /// Small 10-tile board: two central hexes (0,0) and (1,0) with one layer
     /// of hexes around them. Non-circular oval shape.
     /// </summary>
-    public static BoardTopology Small { get; } = FromTiles(GenerateSmallTileCoords(), portCount: 7);
+    public static BoardTopology Small { get; } = FromTiles(GenerateSmallTileCoords(), portCount: 6);
 
     // ── Factory methods ─────────────────────────────────────────────
 
