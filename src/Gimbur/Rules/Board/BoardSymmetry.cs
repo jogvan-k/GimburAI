@@ -54,7 +54,11 @@ public sealed class SymmetryPermutation
 /// under 120° rotation.
 /// </para>
 /// <para>
-/// <b>Small map</b>: No symmetries (oval shape, non-circular). Returns empty list.
+/// <b>Small map (10-tile oval)</b>: C2 rotational symmetry (order 2) — 1 non-trivial
+/// permutation (180° rotation). The oval has two central hexes (0,0) and (1,0); the 180°
+/// rotation about their midpoint maps (q,r) → (1−q,−r). The 6 ports on 22 coastal edges
+/// have gap pattern 3,4,4,3,4,4 which is invariant under the half-ring shift (+11 mod 22),
+/// making the port set 180°-symmetric.
 /// </para>
 /// </summary>
 public static class BoardSymmetry
@@ -76,7 +80,7 @@ public static class BoardSymmetry
 
     /// <summary>
     /// Returns the list of non-trivial symmetry permutations for the given topology.
-    /// Returns empty for unsupported topologies (e.g. small map).
+    /// Returns empty for unsupported topologies.
     /// </summary>
     public static ImmutableArray<SymmetryPermutation> GetPermutations(BoardTopology topology)
     {
@@ -86,7 +90,9 @@ public static class BoardSymmetry
         if (topology == BoardTopology.Standard)
             return GetC3Permutations(topology);
 
-        // Small map and any other topology: no symmetries.
+        if (topology == BoardTopology.Small)
+            return GetC2Permutations(topology);
+
         return [];
     }
 
@@ -102,6 +108,17 @@ public static class BoardSymmetry
         result.Add(ComputePermutation(topology, Rotations[4], "rot240"));
 
         return result.MoveToImmutable();
+    }
+
+    /// <summary>
+    /// Returns 1 non-trivial C2 rotational permutation (180° rotation about the midpoint
+    /// of the two central hexes). The small map's oval shape has no higher-order rotational
+    /// symmetry, but the port layout (gap pattern 3,4,4,3,4,4) is invariant under 180°.
+    /// </summary>
+    private static ImmutableArray<SymmetryPermutation> GetC2Permutations(BoardTopology topology)
+    {
+        // 180° rotation about the midpoint of (0,0) and (1,0): (q,r) → (1−q, −r)
+        return [ComputePermutation(topology, c => new HexCoord(1 - c.Q, -c.R), "rot180")];
     }
 
     /// <summary>

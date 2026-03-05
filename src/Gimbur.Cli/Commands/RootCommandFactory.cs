@@ -133,9 +133,9 @@ internal static class RootCommandFactory
             DefaultValueFactory = _ => 500
         };
 
-        var minActionRolloutsOption = new Option<int>("--min-action-rollouts")
+        var actionRolloutLimitOption = new Option<int>("--action-rollout-limit")
         {
-            Description = "Minimum rollouts per action before MCTS search can stop (default: unlimited)",
+            Description = "Stop MCTS search when any action reaches this many rollouts (default: unlimited)",
             DefaultValueFactory = _ => int.MaxValue
         };
 
@@ -151,7 +151,7 @@ internal static class RootCommandFactory
           searchTimeOption,
           maxSimulationsOption,
           maxRolloutDepthOption,
-          minActionRolloutsOption,
+          actionRolloutLimitOption,
           noSymmetriesOption,
         };
 
@@ -166,7 +166,7 @@ internal static class RootCommandFactory
             int searchTimeMs = parseResult.GetValue(searchTimeOption);
             int maxSimulations = parseResult.GetValue(maxSimulationsOption);
             int maxRolloutDepth = parseResult.GetValue(maxRolloutDepthOption);
-            int minActionRollouts = parseResult.GetValue(minActionRolloutsOption);
+            int actionRolloutLimit = parseResult.GetValue(actionRolloutLimitOption);
             bool noSymmetries = parseResult.GetValue(noSymmetriesOption);
 
             var options = new SimulationOptions
@@ -180,7 +180,7 @@ internal static class RootCommandFactory
                 SearchTimeMs = searchTimeMs,
                 MaxSimulations = maxSimulations,
                 MaxRolloutDepth = maxRolloutDepth,
-                MinActionRollouts = minActionRollouts,
+                ActionRolloutLimit = actionRolloutLimit,
                 Symmetries = !noSymmetries,
             };
 

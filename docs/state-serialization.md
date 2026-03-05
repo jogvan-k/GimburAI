@@ -89,9 +89,9 @@ For each **port index** `p` (0..P-1), in the fixed order defined by the topology
   - `W` = wheat
   - `o` = ore
 
-Standard map: 4 generic (3:1) + 5 resource-specific (2:1) = 9 ports. Small map: 3 generic (3:1) + 4 resource-specific (2:1) = 7 ports. Mini map: 3 generic (3:1) + 3 resource-specific (2:1) = 6 ports.
+Standard map: 4 generic (3:1) + 5 resource-specific (2:1) = 9 ports. Small map: 2 generic (3:1) + 4 resource-specific (2:1) = 6 ports. Mini map: 3 generic (3:1) + 3 resource-specific (2:1) = 6 ports.
 
-**Tokens**: `P` — mini: 6, small: 7, standard: 9.
+**Tokens**: `P` — mini: 6, small: 6, standard: 9.
 
 ### 3) Robber
 

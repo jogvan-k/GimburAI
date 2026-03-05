@@ -202,11 +202,11 @@ let maxActionRollouts (root: MCTSState) =
     if Array.isEmpty root.Actions then 0
     else root.Actions |> Array.map actionRollouts |> Array.max
 
-let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float, minActionRollouts: int) =
+let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float, actionRolloutLimit: int) =
     while root.Rollouts < maxSimulationCount
           && (not evaluateUntil.IsSome
               || timer.ElapsedTicks < evaluateUntil.Value)
-          && maxActionRollouts root < minActionRollouts do
+          && maxActionRollouts root < actionRolloutLimit do
         match select explorationConstant root with
         | Exhausted (stateHistory, outcome) -> backPropagate stateHistory outcome
         | Candidate (stateHistory, i) ->

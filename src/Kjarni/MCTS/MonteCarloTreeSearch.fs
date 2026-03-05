@@ -20,7 +20,7 @@ type MonteCarloTreeSearch(config: MCTSConfig) =
                 Utility.toStopwatchTics config.SearchTime,
                 config.MaxRolloutDepth,
                 config.ExplorationConstant,
-                config.MinActionRollouts
+                config.ActionRolloutLimit
             )
 
         let mutable logInfo = LogInfo()

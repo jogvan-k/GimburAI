@@ -22,10 +22,10 @@ public class BoardSymmetryTests
     }
 
     [Test]
-    public void Small_ReturnsNoPermutations()
+    public void Small_Returns1Permutation()
     {
         var perms = BoardSymmetry.GetPermutations(BoardTopology.Small);
-        Assert.That(perms.Length, Is.EqualTo(0));
+        Assert.That(perms.Length, Is.EqualTo(1));
     }
 
     // ── Permutation validity ────────────────────────────────────────
@@ -49,6 +49,21 @@ public class BoardSymmetryTests
     public void Standard_AllPermutationsAreValidBijections()
     {
         var topo = BoardTopology.Standard;
+        var perms = BoardSymmetry.GetPermutations(topo);
+
+        foreach (var perm in perms)
+        {
+            AssertValidPermutation(perm.Tiles, topo.TileCount, $"Tiles ({perm.Label})");
+            AssertValidPermutation(perm.Vertices, topo.VertexCount, $"Vertices ({perm.Label})");
+            AssertValidPermutation(perm.Edges, topo.EdgeCount, $"Edges ({perm.Label})");
+            AssertValidPermutation(perm.Ports, topo.PortCount, $"Ports ({perm.Label})");
+        }
+    }
+
+    [Test]
+    public void Small_AllPermutationsAreValidBijections()
+    {
+        var topo = BoardTopology.Small;
         var perms = BoardSymmetry.GetPermutations(topo);
 
         foreach (var perm in perms)
@@ -88,6 +103,29 @@ public class BoardSymmetryTests
     public void Standard_AllPermutationsAreNonTrivial()
     {
         var topo = BoardTopology.Standard;
+        var perms = BoardSymmetry.GetPermutations(topo);
+
+        foreach (var perm in perms)
+        {
+            var isIdentity = true;
+            for (var i = 0; i < topo.TileCount; i++)
+            {
+                if (perm.Tiles[i] != i)
+                {
+                    isIdentity = false;
+                    break;
+                }
+            }
+
+            Assert.That(isIdentity, Is.False,
+                $"Permutation {perm.Label} is the identity — should not be included.");
+        }
+    }
+
+    [Test]
+    public void Small_AllPermutationsAreNonTrivial()
+    {
+        var topo = BoardTopology.Small;
         var perms = BoardSymmetry.GetPermutations(topo);
 
         foreach (var perm in perms)
@@ -214,6 +252,18 @@ public class BoardSymmetryTests
         }
     }
 
+    [Test]
+    public void Small_EdgePermutationConsistentWithVertexPermutation()
+    {
+        var topo = BoardTopology.Small;
+        var perms = BoardSymmetry.GetPermutations(topo);
+
+        foreach (var perm in perms)
+        {
+            AssertEdgeVertexConsistency(topo, perm);
+        }
+    }
+
     // ── C3: applying rot120 three times yields identity ─────────────
 
     [Test]
@@ -276,6 +326,74 @@ public class BoardSymmetryTests
         }
     }
 
+    // ── C2: applying rot180 twice yields identity ───────────────────
+
+    [Test]
+    public void Small_Rot180AppliedTwiceIsIdentity()
+    {
+        var topo = BoardTopology.Small;
+        var perms = BoardSymmetry.GetPermutations(topo);
+        var rot180 = perms[0];
+
+        Assert.That(rot180.Label, Is.EqualTo("rot180"));
+
+        // Apply tile permutation twice — should return to identity.
+        for (var i = 0; i < topo.TileCount; i++)
+        {
+            Assert.That(rot180.Tiles[rot180.Tiles[i]], Is.EqualTo(i),
+                $"Tile {i} does not return to itself after 2×rot180");
+        }
+
+        // Same for vertices.
+        for (var i = 0; i < topo.VertexCount; i++)
+        {
+            Assert.That(rot180.Vertices[rot180.Vertices[i]], Is.EqualTo(i),
+                $"Vertex {i} does not return to itself after 2×rot180");
+        }
+
+        // Same for edges.
+        for (var i = 0; i < topo.EdgeCount; i++)
+        {
+            Assert.That(rot180.Edges[rot180.Edges[i]], Is.EqualTo(i),
+                $"Edge {i} does not return to itself after 2×rot180");
+        }
+
+        // Same for ports.
+        for (var i = 0; i < topo.PortCount; i++)
+        {
+            Assert.That(rot180.Ports[rot180.Ports[i]], Is.EqualTo(i),
+                $"Port {i} does not return to itself after 2×rot180");
+        }
+    }
+
+    // ── Small map: central hexes swap ───────────────────────────────
+
+    [Test]
+    public void Small_CentralHexesSwapUnderRot180()
+    {
+        var topo = BoardTopology.Small;
+        var perms = BoardSymmetry.GetPermutations(topo);
+        var rot180 = perms[0];
+
+        // Find tile indices for (0,0) and (1,0).
+        var idx00 = -1;
+        var idx10 = -1;
+        for (var i = 0; i < topo.TileCount; i++)
+        {
+            if (topo.Tiles[i] == new HexCoord(0, 0)) idx00 = i;
+            if (topo.Tiles[i] == new HexCoord(1, 0)) idx10 = i;
+        }
+
+        Assert.That(idx00, Is.GreaterThanOrEqualTo(0), "Tile (0,0) not found");
+        Assert.That(idx10, Is.GreaterThanOrEqualTo(0), "Tile (1,0) not found");
+
+        // 180° rotation about their midpoint swaps them.
+        Assert.That(rot180.Tiles[idx00], Is.EqualTo(idx10),
+            "Tile (0,0) should map to tile (1,0) under rot180");
+        Assert.That(rot180.Tiles[idx10], Is.EqualTo(idx00),
+            "Tile (1,0) should map to tile (0,0) under rot180");
+    }
+
     // ── Serialization permutation: board ─────────────────────────────
 
     [Test]
@@ -318,6 +436,24 @@ public class BoardSymmetryTests
     }
 
     [Test]
+    public void Small_PermuteBoardProducesCorrectLengthString()
+    {
+        var perms = BoardSymmetry.GetPermutations(BoardTopology.Small);
+        var board = CreateTestBoard(GameConfig.Small);
+        var boardStr = board.SerializeBoard();
+
+        foreach (var perm in perms)
+        {
+            var permuted = BoardSymmetry.PermuteBoard(boardStr, perm);
+            Assert.That(permuted.Length, Is.EqualTo(boardStr.Length),
+                $"Permuted board string length mismatch for {perm.Label}");
+
+            Assert.That(permuted.Count(c => c == '|'), Is.EqualTo(1),
+                $"Permuted board should have 1 separator for {perm.Label}");
+        }
+    }
+
+    [Test]
     public void Mini_PermuteBoardIsDifferentFromOriginal()
     {
         var perms = BoardSymmetry.GetPermutations(BoardTopology.Mini);
@@ -326,6 +462,28 @@ public class BoardSymmetryTests
 
         // At least some permutations should produce different strings
         // (unless the board happens to be perfectly symmetric, which is extremely unlikely).
+        var allSame = true;
+        foreach (var perm in perms)
+        {
+            var permuted = BoardSymmetry.PermuteBoard(boardStr, perm);
+            if (permuted != boardStr)
+            {
+                allSame = false;
+                break;
+            }
+        }
+
+        Assert.That(allSame, Is.False,
+            "All permuted board strings are identical to the original — highly unlikely.");
+    }
+
+    [Test]
+    public void Small_PermuteBoardIsDifferentFromOriginal()
+    {
+        var perms = BoardSymmetry.GetPermutations(BoardTopology.Small);
+        var board = CreateTestBoard(GameConfig.Small);
+        var boardStr = board.SerializeBoard();
+
         var allSame = true;
         foreach (var perm in perms)
         {
@@ -405,6 +563,51 @@ public class BoardSymmetryTests
         }
     }
 
+    [Test]
+    public void Small_PermuteStateProducesCorrectSectionCount()
+    {
+        var perms = BoardSymmetry.GetPermutations(BoardTopology.Small);
+        var state = CreateTestState(GameConfig.Small, playerCount: 2);
+        var stateStr = state.SerializeStateOnly();
+
+        foreach (var perm in perms)
+        {
+            var permuted = BoardSymmetry.PermuteState(stateStr, perm);
+            var sections = permuted.Split('|');
+            Assert.That(sections.Length, Is.EqualTo(8),
+                $"Permuted state should have 8 sections for {perm.Label}");
+        }
+    }
+
+    [Test]
+    public void Small_PermuteStatePreservesPlayerSections()
+    {
+        var perms = BoardSymmetry.GetPermutations(BoardTopology.Small);
+        var state = CreateTestState(GameConfig.Small, playerCount: 2);
+        var stateStr = state.SerializeStateOnly();
+        var originalSections = stateStr.Split('|');
+
+        foreach (var perm in perms)
+        {
+            var permuted = BoardSymmetry.PermuteState(stateStr, perm);
+            var permSections = permuted.Split('|');
+
+            Assert.Multiple(() =>
+            {
+                Assert.That(permSections[1], Is.EqualTo(originalSections[1]),
+                    $"Player/stage changed under {perm.Label}");
+                Assert.That(permSections[2], Is.EqualTo(originalSections[2]),
+                    $"Longest/largest changed under {perm.Label}");
+                Assert.That(permSections[5], Is.EqualTo(originalSections[5]),
+                    $"Resources changed under {perm.Label}");
+                Assert.That(permSections[6], Is.EqualTo(originalSections[6]),
+                    $"Knights changed under {perm.Label}");
+                Assert.That(permSections[7], Is.EqualTo(originalSections[7]),
+                    $"DevCards changed under {perm.Label}");
+            });
+        }
+    }
+
     // ── Round-trip: permuted state can be deserialized ───────────────
 
     [Test]
@@ -450,6 +653,48 @@ public class BoardSymmetryTests
                 permStateSections[7]);  // devCards
 
             // This should deserialize without error.
+            Assert.DoesNotThrow(() =>
+            {
+                Gimbur.CatanState.DeserializeHumanReadable(config, 2, permFull);
+            }, $"Permuted state ({perm.Label}) failed to deserialize");
+        }
+    }
+
+    [Test]
+    public void Small_PermutedFullStateIsDeserializable()
+    {
+        var perms = BoardSymmetry.GetPermutations(BoardTopology.Small);
+        var config = GameConfig.Small;
+        var state = CreateTestState(config, playerCount: 2);
+
+        var fullStr = state.SerializeHumanReadable();
+        var fullSections = fullStr.Split('|');
+
+        foreach (var perm in perms)
+        {
+            var boardStr = fullSections[0] + "|" + fullSections[1];
+            var permBoard = BoardSymmetry.PermuteBoard(boardStr, perm);
+            var permBoardSections = permBoard.Split('|');
+
+            var stateOnlyStr = string.Join('|',
+                fullSections[2], fullSections[3], fullSections[4],
+                fullSections[5], fullSections[6],
+                fullSections[7], fullSections[8], fullSections[9]);
+            var permState = BoardSymmetry.PermuteState(stateOnlyStr, perm);
+            var permStateSections = permState.Split('|');
+
+            var permFull = string.Join('|',
+                permBoardSections[0],
+                permBoardSections[1],
+                permStateSections[0],
+                permStateSections[1],
+                permStateSections[2],
+                permStateSections[3],
+                permStateSections[4],
+                permStateSections[5],
+                permStateSections[6],
+                permStateSections[7]);
+
             Assert.DoesNotThrow(() =>
             {
                 Gimbur.CatanState.DeserializeHumanReadable(config, 2, permFull);
@@ -512,6 +757,32 @@ public class BoardSymmetryTests
         }
     }
 
+    [Test]
+    public void Small_PermutationPreservesAdjacency()
+    {
+        var topo = BoardTopology.Small;
+        var perms = BoardSymmetry.GetPermutations(topo);
+
+        foreach (var perm in perms)
+        {
+            for (var ti = 0; ti < topo.TileCount; ti++)
+            {
+                var permTi = perm.Tiles[ti];
+                var originalNeighbors = topo.TileNeighbors[ti];
+                var permutedNeighbors = topo.TileNeighbors[permTi];
+
+                foreach (var neighbor in originalNeighbors)
+                {
+                    var permNeighbor = perm.Tiles[neighbor];
+                    Assert.That(permutedNeighbors.Contains(permNeighbor), Is.True,
+                        $"Tile adjacency not preserved under {perm.Label}: " +
+                        $"tiles {ti} and {neighbor} are adjacent, but their images " +
+                        $"{permTi} and {permNeighbor} are not.");
+                }
+            }
+        }
+    }
+
     // ── Labels ──────────────────────────────────────────────────────
 
     [Test]
@@ -533,6 +804,13 @@ public class BoardSymmetryTests
         Assert.That(labels, Does.Contain("rot180"));
         Assert.That(labels, Does.Contain("rot240"));
         Assert.That(labels, Does.Contain("rot300"));
+    }
+
+    [Test]
+    public void Small_PermutationLabel()
+    {
+        var perms = BoardSymmetry.GetPermutations(BoardTopology.Small);
+        Assert.That(perms[0].Label, Is.EqualTo("rot180"));
     }
 
     // ── Helpers ──────────────────────────────────────────────────────

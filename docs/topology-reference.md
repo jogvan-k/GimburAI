@@ -540,7 +540,7 @@ tiles arranged in rows of 3, 4, 3 (top to bottom).
 | Tiles | 10 |
 | Vertices | 32 |
 | Edges | 41 |
-| Ports | 7 |
+| Ports | 6 |
 | Coastal edges | 22 |
 | Interior edges | 19 |
 | Boundary vertices (degree 2) | 14 |
@@ -550,8 +550,12 @@ Vertex tile-count distribution: 10 touch 1 tile, 8 touch 2 tiles, 14 touch 3 til
 
 Tile rows (top-to-bottom): 3, 4, 3.
 
-Port types for the small map (assigned during setup): 3 generic (3:1) and
+Port types for the small map (assigned during setup): 2 generic (3:1) and
 4 resource-specific (2:1 wood, brick, sheep, wheat).
+
+Port positions are 180° rotationally symmetric: the 6 ports form 3
+pairs where each port's partner occupies the diametrically opposite
+position on the board perimeter.
 
 ### 5.2 Tile Table
 
@@ -655,20 +659,21 @@ Port types for the small map (assigned during setup): 3 generic (3:1) and
 
 `0, 1, 2, 3, 4, 5, 6, 9, 10, 17, 18, 22, 23, 30, 31, 34, 35, 36, 37, 38, 39, 40`
 
-### 5.6 Port Table (7 ports)
+### 5.6 Port Table (6 ports)
 
 Ports are ordered clockwise from the top of the board. Each port is a
-coastal edge connecting two vertices on the board perimeter.
+coastal edge connecting two vertices on the board perimeter. The 6 ports
+are 180° rotationally symmetric: P0 pairs with P3, P1 with P4, and P2
+with P5.
 
 | Port | Vertex A | Vertex B |
 | --- | --- | --- |
 | 0 | 4 | 1 |
 | 1 | 2 | 6 |
-| 2 | 15 | 20 |
-| 3 | 28 | 31 |
-| 4 | 30 | 26 |
-| 5 | 25 | 21 |
-| 6 | 11 | 7 |
+| 2 | 20 | 24 |
+| 3 | 27 | 30 |
+| 4 | 29 | 25 |
+| 5 | 11 | 7 |
 
 ### 5.7 Tile -> Vertices
 

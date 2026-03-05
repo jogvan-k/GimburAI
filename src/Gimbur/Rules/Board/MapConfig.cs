@@ -94,7 +94,7 @@ public sealed class MapConfig
     /// Small Catan map: 10 tiles (oval, non-circular).
     /// 1 desert, 2 wood, 2 brick, 2 sheep, 2 wheat, 1 ore.
     /// Number tokens: 3, 4, 5, 6, 8, 9, 10, 11, 12.
-    /// Ports: 3 generic (3:1) + 4 resource-specific (2:1).
+    /// Ports: 2 generic (3:1) + 4 resource-specific (2:1).
     /// </summary>
     public static MapConfig Small { get; } = new(
         BoardTopology.Small,
@@ -108,7 +108,7 @@ public sealed class MapConfig
         ],
         [3, 4, 5, 6, 8, 9, 10, 11, 12],
         [
-            PortType.Generic, PortType.Generic, PortType.Generic,
+            PortType.Generic, PortType.Generic,
             PortType.Wood, PortType.Brick, PortType.Sheep, PortType.Wheat,
         ]);
 }
