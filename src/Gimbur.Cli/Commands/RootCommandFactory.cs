@@ -221,8 +221,8 @@ internal static class RootCommandFactory
 
         var playersOption = new Option<string[]>("--ai")
         {
-            Description = "AI for each player seat (e.g. --ai random greedy greedy). " +
-                          "Available: random, greedy",
+            Description = "AI for each player seat (e.g. --ai random greedy mcts). " +
+                          "Available: random, greedy, mcts",
             AllowMultipleArgumentsPerToken = true,
         };
         playersOption.DefaultValueFactory = _ => new[] { "random", "greedy" };
@@ -232,11 +232,32 @@ internal static class RootCommandFactory
             Description = "Path to write JSON results file",
         };
 
+        var searchTimeOption = new Option<int>("--search-time")
+        {
+            Description = "MCTS search time limit in milliseconds per decision",
+            DefaultValueFactory = _ => 1000,
+        };
+
+        var maxSimulationsOption = new Option<int>("--max-simulations")
+        {
+            Description = "Maximum MCTS simulations per decision (default: unlimited, time-limited)",
+            DefaultValueFactory = _ => int.MaxValue,
+        };
+
+        var maxRolloutDepthOption = new Option<int>("--max-rollout-depth")
+        {
+            Description = "Maximum rollout depth for MCTS simulations",
+            DefaultValueFactory = _ => 500,
+        };
+
         var command = new Command("benchmark", "Run AI-vs-AI games and compute win rates.")
         {
             noOfGamesOption,
             playersOption,
             outputOption,
+            searchTimeOption,
+            maxSimulationsOption,
+            maxRolloutDepthOption,
         };
 
         command.SetAction(parseResult =>
@@ -247,6 +268,9 @@ internal static class RootCommandFactory
             string? verbosity = ParseVerbosity(parseResult, globals);
             FileInfo? output = parseResult.GetValue(outputOption);
             string[] aiNames = parseResult.GetValue(playersOption)!;
+            int searchTimeMs = parseResult.GetValue(searchTimeOption);
+            int maxSimulations = parseResult.GetValue(maxSimulationsOption);
+            int maxRolloutDepth = parseResult.GetValue(maxRolloutDepthOption);
 
             var aiKinds = new AiKind[aiNames.Length];
             for (var i = 0; i < aiNames.Length; i++)
@@ -274,6 +298,9 @@ internal static class RootCommandFactory
                 Verbosity = verbosity ?? "normal",
                 Players = aiKinds,
                 OutputPath = output,
+                SearchTimeMs = searchTimeMs,
+                MaxSimulations = maxSimulations,
+                MaxRolloutDepth = maxRolloutDepth,
             };
 
             var runner = new BenchmarkRunner(options);
