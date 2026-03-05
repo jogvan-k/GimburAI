@@ -47,6 +47,10 @@ CodeCoverage/
 *.csv
 *.jsonl
 
+# CLI simulation/benchmark output
+src/Gimbur.Cli/*.json
+src/Gimbur.Cli/*.jsonl
+
 # MSBuild Binary and Structured Log
 *.binlog
 
