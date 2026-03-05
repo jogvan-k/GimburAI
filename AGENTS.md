@@ -39,6 +39,17 @@
 ## Future Projects
 - A future `Gimbur` project will provide Settlers of Catan rules and a CLI for simulating games powered by the `Kjarni` engine. Expect corresponding tests under `tests/Gimbur.Tests/` when more test areas are introduced.
 
+## Python Project (gimbur-nn)
+- Lives under `python/` with package `gimbur_nn`.
+- Project config: `python/pyproject.toml` (uses ruff for linting).
+- Key modules:
+  - `tokenizer.py` — parses serialized board/state strings (from `CatanStateSerializer`) into PyTorch tensors.
+  - `model.py` — `CatanNet` (`nn.Module`) that predicts per-player win probabilities from tokenized states.
+  - `train.py` — training loop; reads JSONL data exported by `gimbur simulate --export`.
+  - `serve.py` — HTTP inference server; loads a trained checkpoint and serves predictions for the MCTS engine.
+- Run with `python -m gimbur_nn.train` / `python -m gimbur_nn.serve` from the `python/` directory.
+- Style: Python 3.11+, `from __future__ import annotations`, ruff for formatting/linting.
+
 ## Build/Test Commands
 
 ### Build Commands
