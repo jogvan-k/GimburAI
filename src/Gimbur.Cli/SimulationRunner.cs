@@ -176,31 +176,58 @@ internal class SimulationRunner
 
         var gameResults = new ConcurrentBag<(int GameNumber, GameResult Result, TimeSpan Elapsed)>();
 
+        // Prepare JSONL export: open the file before the parallel loop so each
+        // game result can be written immediately after completion. This avoids
+        // losing all data if the process is interrupted mid-run.
+        var exportWriter = _options.ExportPath is not null
+            ? CreateExportWriter(_options.ExportPath)
+            : null;
+        var exportLock = new object();
+        var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
         var totalStopwatch = Stopwatch.StartNew();
 
-        Parallel.For(0, (int)_options.NumberOfGames, new ParallelOptions
+        try
         {
-            MaxDegreeOfParallelism = Environment.ProcessorCount,
-        }, gameIndex =>
-        {
-            // Each game gets a deterministic seed derived from the base seed + game index.
-            var gameSeed = unchecked(_options.Seed + gameIndex);
-            var rng = new Random(gameSeed);
-
-            var gameStopwatch = Stopwatch.StartNew();
-            var result = RunSingleGame(config, playerCount, rng, gameSeed, gameIndex + 1);
-            gameStopwatch.Stop();
-
-            gameResults.Add((gameIndex + 1, result, gameStopwatch.Elapsed));
-
-            if (!_quiet)
+            Parallel.For(0, (int)_options.NumberOfGames, new ParallelOptions
             {
-                Console.WriteLine(
-                    $"Game {gameIndex + 1}: {result.States.Count} states, " +
-                    $"winner=P{result.Winner}, turns={result.Turns}, " +
-                    $"{gameStopwatch.Elapsed.TotalSeconds:F1}s");
-            }
-        });
+                MaxDegreeOfParallelism = Environment.ProcessorCount,
+            }, gameIndex =>
+            {
+                // Each game gets a deterministic seed derived from the base seed + game index.
+                var gameSeed = unchecked(_options.Seed + gameIndex);
+                var rng = new Random(gameSeed);
+
+                var gameStopwatch = Stopwatch.StartNew();
+                var result = RunSingleGame(config, playerCount, rng, gameSeed, gameIndex + 1);
+                gameStopwatch.Stop();
+
+                gameResults.Add((gameIndex + 1, result, gameStopwatch.Elapsed));
+
+                // Write this game's JSONL line immediately (thread-safe via lock).
+                if (exportWriter is not null)
+                {
+                    var line = SerializeGameJsonl(result, symmetryPerms, jsonOptions);
+                    lock (exportLock)
+                    {
+                        exportWriter.WriteLine(line);
+                        exportWriter.Flush();
+                    }
+                }
+
+                if (!_quiet)
+                {
+                    Console.WriteLine(
+                        $"Game {gameIndex + 1}: {result.States.Count} states, " +
+                        $"winner=P{result.Winner}, turns={result.Turns}, " +
+                        $"{gameStopwatch.Elapsed.TotalSeconds:F1}s");
+                }
+            });
+        }
+        finally
+        {
+            exportWriter?.Dispose();
+        }
 
         totalStopwatch.Stop();
 
@@ -224,7 +251,8 @@ internal class SimulationRunner
 
         if (_options.ExportPath is not null)
         {
-            ExportJsonl(stats, _options.ExportPath, symmetryPerms);
+            var totalStates = allGames.Sum(g => g.States.Count);
+            Console.WriteLine($"Exported {allGames.Count} game(s) ({totalStates} states) to {_options.ExportPath.FullName}");
         }
     }
 
@@ -540,73 +568,69 @@ internal class SimulationRunner
         }
     }
 
-    private static void ExportJsonl(
-        SimulationStats stats,
-        FileInfo exportPath,
-        ImmutableArray<SymmetryPermutation> symmetryPerms)
+    /// <summary>
+    /// Serializes a single game result to a JSON string for JSONL output.
+    /// Thread-safe (no shared mutable state).
+    /// </summary>
+    /// <summary>
+    /// Creates a StreamWriter for JSONL export, ensuring the directory exists.
+    /// </summary>
+    private static StreamWriter CreateExportWriter(FileInfo exportPath)
     {
-        if (stats.Games.Count == 0)
-        {
-            Console.WriteLine("No simulation results to export.");
-            return;
-        }
+        Directory.CreateDirectory(exportPath.DirectoryName ?? ".");
+        return new StreamWriter(exportPath.FullName, append: false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+    }
 
-        var jsonOptions = new JsonSerializerOptions
+    /// <summary>
+    /// Serializes a single game result to a JSON string for JSONL output.
+    /// Thread-safe (no shared mutable state).
+    /// </summary>
+    private static string SerializeGameJsonl(
+        GameResult game,
+        ImmutableArray<SymmetryPermutation> symmetryPerms,
+        JsonSerializerOptions jsonOptions)
+    {
+        var boardPermutations = symmetryPerms.Length > 0
+            ? symmetryPerms.Select(p => BoardSymmetry.PermuteBoard(game.BoardSerialized, p)).ToArray()
+            : Array.Empty<string>();
+
+        var jsonObj = new
         {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            version = 1,
+            game.Seed,
+            game.Map,
+            game.Players,
+            game.Winner,
+            game.Turns,
+            constraints = new
+            {
+                game.SearchTimeMs,
+                game.MaxSimulations,
+                game.MaxRolloutDepth,
+                game.ActionRolloutLimit,
+            },
+            board = new
+            {
+                serialized = game.BoardSerialized,
+                permutations = boardPermutations,
+            },
+            states = game.States.Select(s => new
+            {
+                s.PlayerTurn,
+                s.SerializedState,
+                s.Simulations,
+                s.ElapsedMs,
+                s.WinRate,
+                s.Wins,
+                s.BestActionWinRate,
+                s.BestActionWins,
+                s.BestActionRollouts,
+                permutations = symmetryPerms.Length > 0
+                    ? symmetryPerms.Select(p => BoardSymmetry.PermuteState(s.SerializedState, p)).ToArray()
+                    : Array.Empty<string>(),
+            }).ToArray(),
         };
 
-        Directory.CreateDirectory(exportPath.DirectoryName ?? ".");
-        using var writer = new StreamWriter(exportPath.FullName, append: false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-
-        foreach (var game in stats.Games)
-        {
-            // Compute board permutations once per game.
-            var boardPermutations = symmetryPerms.Length > 0
-                ? symmetryPerms.Select(p => BoardSymmetry.PermuteBoard(game.BoardSerialized, p)).ToArray()
-                : Array.Empty<string>();
-
-            var jsonObj = new
-            {
-                version = 1,
-                game.Seed,
-                game.Map,
-                game.Players,
-                game.Winner,
-                game.Turns,
-                constraints = new
-                {
-                    game.SearchTimeMs,
-                    game.MaxSimulations,
-                    game.MaxRolloutDepth,
-                    game.ActionRolloutLimit,
-                },
-                board = new
-                {
-                    serialized = game.BoardSerialized,
-                    permutations = boardPermutations,
-                },
-                states = game.States.Select(s => new
-                {
-                    s.PlayerTurn,
-                    s.SerializedState,
-                    s.Simulations,
-                    s.ElapsedMs,
-                    s.WinRate,
-                    s.Wins,
-                    s.BestActionWinRate,
-                    s.BestActionWins,
-                    s.BestActionRollouts,
-                    permutations = symmetryPerms.Length > 0
-                        ? symmetryPerms.Select(p => BoardSymmetry.PermuteState(s.SerializedState, p)).ToArray()
-                        : Array.Empty<string>(),
-                }).ToArray(),
-            };
-
-            writer.WriteLine(JsonSerializer.Serialize(jsonObj, jsonOptions));
-        }
-
-        var totalStates = stats.Games.Sum(g => g.States.Count);
-        Console.WriteLine($"Exported {stats.Games.Count} game(s) ({totalStates} states) to {exportPath.FullName}");
+        return JsonSerializer.Serialize(jsonObj, jsonOptions);
     }
 }
