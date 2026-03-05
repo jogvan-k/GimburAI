@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.CommandLine.Parsing;
 using Gimbur.Cli;
 
 namespace Gimbur.Commands;
@@ -21,11 +22,6 @@ internal static class RootCommandFactory
             Description = "Random seed to ensure reproducibility",
             Recursive = true,
         };
-        var noOfPlayersOption = new Option<int>("--players", "-p")
-        {
-            Description = "Player count for the simulation",
-            Recursive = true,
-        };
         var mapConfigOption = new Option<string?>("--map-config")
         {
             Description = "Map layout identifier (mini, small, or standard)",
@@ -37,19 +33,6 @@ internal static class RootCommandFactory
             Recursive = true,
         };
 
-        noOfPlayersOption.Validators.Add(result =>
-        {
-            if (result.Tokens.Count == 0)
-            {
-                return; // Allow empty value
-            }
-
-            var value = result.GetValue(noOfPlayersOption);
-            if (!(1 <= value && value <= 4))
-            {
-                result.AddError($"Argument '{value}' must be between 1 and 4");
-            }
-        });
         // Add -q and --verbose as a separate options for verbosity.
         Option<bool> quietOption = new("-q")
         {
@@ -82,7 +65,6 @@ internal static class RootCommandFactory
         {
             Config = configOption,
             Seed = seedOption,
-            NoOfPlayers = noOfPlayersOption,
             MapConfiguration = mapConfigOption,
             Verbosity = verbosityOption,
             Quiet = quietOption,
@@ -91,11 +73,11 @@ internal static class RootCommandFactory
 
         rootCommand.Options.Add(globals.Config);
         rootCommand.Options.Add(globals.Seed);
-        rootCommand.Options.Add(globals.NoOfPlayers);
         rootCommand.Options.Add(globals.MapConfiguration);
         rootCommand.Options.Add(globals.Verbosity);
 
         rootCommand.Subcommands.Add(CreateSimulateCommand(globals));
+        rootCommand.Subcommands.Add(CreateBenchmarkCommand(globals));
 
         rootCommand.SetAction(parserResults => Console.WriteLine("Gimbur CLI – use --help to explore commands."));
 
@@ -109,6 +91,24 @@ internal static class RootCommandFactory
             Description = "Number of games to simulate",
             DefaultValueFactory = _ => 1
         };
+
+        var noOfPlayersOption = new Option<int>("--players", "-p")
+        {
+            Description = "Player count for the simulation",
+        };
+        noOfPlayersOption.Validators.Add(result =>
+        {
+            if (result.Tokens.Count == 0)
+            {
+                return; // Allow empty value
+            }
+
+            var value = result.GetValue(noOfPlayersOption);
+            if (!(1 <= value && value <= 4))
+            {
+                result.AddError($"Argument '{value}' must be between 1 and 4");
+            }
+        });
 
         var exportOption = new Option<FileInfo?>("--export")
         {
@@ -147,6 +147,7 @@ internal static class RootCommandFactory
         var command = new Command("simulate", "Run Settlers of Catan AI self-play simulations.")
         {
           noOfGamesOption,
+          noOfPlayersOption,
           exportOption,
           searchTimeOption,
           maxSimulationsOption,
@@ -159,7 +160,7 @@ internal static class RootCommandFactory
         {
             uint noOfGames = parseResult.GetValue(noOfGamesOption);
             int seed = parseResult.GetValue(globals.Seed) ?? new Random().Next();
-            int noOfPlayers = parseResult.GetValue(globals.NoOfPlayers);
+            int noOfPlayers = parseResult.GetValue(noOfPlayersOption);
             string? mapConfig = parseResult.GetValue(globals.MapConfiguration);
             string? verbosity = ParseVerbosity(parseResult, globals);
             FileInfo? export = parseResult.GetValue(exportOption);
@@ -210,4 +211,80 @@ internal static class RootCommandFactory
         return verbosity;
     }
 
+    private static Command CreateBenchmarkCommand(dynamic globals)
+    {
+        var noOfGamesOption = new Option<uint>("--games", "-g")
+        {
+            Description = "Number of games to run",
+            DefaultValueFactory = _ => (uint)100,
+        };
+
+        var playersOption = new Option<string[]>("--ai")
+        {
+            Description = "AI for each player seat (e.g. --ai random greedy greedy). " +
+                          "Available: random, greedy",
+            AllowMultipleArgumentsPerToken = true,
+        };
+        playersOption.DefaultValueFactory = _ => new[] { "random", "greedy" };
+
+        var outputOption = new Option<FileInfo?>("--output", "-o")
+        {
+            Description = "Path to write JSON results file",
+        };
+
+        var command = new Command("benchmark", "Run AI-vs-AI games and compute win rates.")
+        {
+            noOfGamesOption,
+            playersOption,
+            outputOption,
+        };
+
+        command.SetAction(parseResult =>
+        {
+            uint noOfGames = parseResult.GetValue(noOfGamesOption);
+            int seed = parseResult.GetValue(globals.Seed) ?? new Random().Next();
+            string? mapConfig = parseResult.GetValue(globals.MapConfiguration);
+            string? verbosity = ParseVerbosity(parseResult, globals);
+            FileInfo? output = parseResult.GetValue(outputOption);
+            string[] aiNames = parseResult.GetValue(playersOption)!;
+
+            var aiKinds = new AiKind[aiNames.Length];
+            for (var i = 0; i < aiNames.Length; i++)
+            {
+                if (!TryParseAiKind(aiNames[i], out var kind))
+                {
+                    Console.Error.WriteLine(
+                        $"Unknown AI '{aiNames[i]}'. Available: {string.Join(", ", Enum.GetNames<AiKind>().Select(n => n.ToLowerInvariant()))}");
+                    return;
+                }
+                aiKinds[i] = kind;
+            }
+
+            if (aiKinds.Length < 2)
+            {
+                Console.Error.WriteLine("At least 2 AIs are required for a benchmark.");
+                return;
+            }
+
+            var options = new BenchmarkOptions
+            {
+                NumberOfGames = noOfGames,
+                Seed = seed,
+                MapConfig = mapConfig,
+                Verbosity = verbosity ?? "normal",
+                Players = aiKinds,
+                OutputPath = output,
+            };
+
+            var runner = new BenchmarkRunner(options);
+            runner.Run();
+        });
+
+        return command;
+    }
+
+    private static bool TryParseAiKind(string name, out AiKind kind)
+    {
+        return Enum.TryParse(name, ignoreCase: true, out kind);
+    }
 }
