@@ -44,6 +44,9 @@ dist/
 *.pt
 *.pth
 
+# Pyright
+pyrightconfig.json
+
 # Others
 ~$*
 *~
