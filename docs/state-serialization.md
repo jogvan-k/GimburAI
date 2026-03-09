@@ -43,7 +43,7 @@ Let `T` = number of tiles, `V` = number of vertices, `E` = number of edges, `P` 
 | T (tiles) | 7 | 10 | 19 |
 | V (vertices) | 24 | 32 | 54 |
 | E (edges) | 30 | 41 | 72 |
-| P (ports) | 6 | 7 | 9 |
+| P (ports) | 6 | 6 | 9 |
 | N (players) | 2 | 2–3 | 3–4 |
 
 ### 1) Tiles
@@ -89,7 +89,7 @@ For each **port index** `p` (0..P-1), in the fixed order defined by the topology
   - `W` = wheat
   - `o` = ore
 
-Standard map: 4 generic (3:1) + 5 resource-specific (2:1) = 9 ports. Small map: 2 generic (3:1) + 4 resource-specific (2:1) = 6 ports. Mini map: 3 generic (3:1) + 3 resource-specific (2:1) = 6 ports.
+Standard map: 4 generic (3:1) + 5 resource-specific (2:1) = 9 ports. Small map: 2 generic (3:1) + 4 resource-specific (2:1, no ore) = 6 ports. Mini map: 3 generic (3:1) + 3 resource-specific (2:1) = 6 ports.
 
 **Tokens**: `P` — mini: 6, small: 6, standard: 9.
 
@@ -111,10 +111,15 @@ Standard map: 4 generic (3:1) + 5 resource-specific (2:1) = 9 ports. Small map: 
   - `x` = choose robber location
   - `y` = choose player to rob from
   - `t` = build/trade
+- `postDevCardStage` — **turn stage** (the stage to resume after a dev card effect completes):
+  - `-` = none (no pending dev card effect)
+  - Same turn stage characters as above when a dev card is being resolved
 
 Turn stages `a`, `e`, `f`, `i` apply during initial placement. Turn stages `r`, `x`, `y`, `t` apply during normal play. If `currentPlayer = _`, the game has not started or is between rounds.
 
-**Tokens**: 2.
+The `postDevCardStage` token records the stage that was active before a dev card action changed the stage (e.g. playing road building switches to `t` for road placement while recording the prior stage). When no dev card is being resolved it is `-`. The `-` character is shared with the player ID alphabet; positional embeddings disambiguate.
+
+**Tokens**: 3.
 
 ### 5) Longest Road / Largest Army
 
@@ -181,21 +186,23 @@ Each player's 5 dev-card tokens are concatenated; players are separated by `/`.
 Let `T`, `V`, `E`, `P` be map-dependent and `N` be the number of players.
 
 ```
-(3*T) + P + 1 + 2 + 2 + (2*V) + E + (5*N) + (1*N) + (5*N)
-= (3*T + 2*V + E + P + 5) + 11*N
+(3*T) + P + 1 + 3 + 2 + (2*V) + E + (5*N) + (1*N) + (5*N)
+= (3*T + 2*V + E + P + 6) + 11*N
 ```
+
+The constant 6 = robber(1) + current-turn(3) + awards(2).
 
 ### Mini Map (T=7, V=24, E=30, P=6, N=2)
 
 ```
-(21 + 48 + 30 + 6 + 5) + 11*2
-= 110 + 22 = 132 tokens
+(21 + 48 + 30 + 6 + 6) + 11*2
+= 111 + 22 = 133 tokens
 ```
 
-### Small Map (T=10, V=32, E=41, P=7)
+### Small Map (T=10, V=32, E=41, P=6)
 
 ```
-(30 + 64 + 41 + 7 + 5) + 11*N
+(30 + 64 + 41 + 6 + 6) + 11*N
 = 147 + 11*N
 ```
 
@@ -205,12 +212,12 @@ Let `T`, `V`, `E`, `P` be map-dependent and `N` be the number of players.
 ### Standard Map (T=19, V=54, E=72, P=9)
 
 ```
-(57 + 108 + 72 + 9 + 5) + 11*N
-= 251 + 11*N
+(57 + 108 + 72 + 9 + 6) + 11*N
+= 252 + 11*N
 ```
 
-- 3 players: `251 + 33 = 284` tokens
-- 4 players: `251 + 44 = 295` tokens
+- 3 players: `252 + 33 = 285` tokens
+- 4 players: `252 + 44 = 296` tokens
 
 ## Human-Readable Examples
 
@@ -233,11 +240,11 @@ Board state:
 
 Full serialized (sections separated by `|`):
 ```
-w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t|__|._._._._._._v-._._._._._._._v+._._._._._._._._._|_____-_______+________________|21010/00130|0/0|00000/00000
-├─── 1:tiles ────────┤│2:   ││ │  │  ├──────────── 6:vertices ──────────────────────┤ ├─────── 7:edges ────────────┤ ├─ 8:res ─┤ │   ├ 10:dev ─┤
-                      ├ports┤│ │  │                                                                                              └── 9: Knights
-                             │ │  └── 5:longest-road/largest-army (__ = none/none)
-                             │ └── 4:current-turn (-=player 1, t=build/trade)
+w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t-|__|._._._._._._v-._._._._._._._v+._._._._._._._._._|_____-_______+________________|21010/00130|0/0|00000/00000
+├─── 1:tiles ────────┤│2:   ││ │   │  ├──────────── 6:vertices ──────────────────────┤ ├─────── 7:edges ────────────┤ ├─ 8:res ─┤ │   ├ 10:dev ─┤
+                      ├ports┤│ │   │                                                                                              └── 9: Knights
+                             │ │   └── 5:longest-road/largest-army (__ = none/none)
+                             │ └── 4:current-turn (-=player 1, t=build/trade, -=no pending dev card)
                              └── 3:robber (4 = tile 4)
 ```
 
@@ -247,7 +254,7 @@ After initial placement (1 round): each player has placed 1 settlement and 1 roa
 
 Board state:
 - **Tiles** (10 tiles): wheat/3, brick/4, sheep/5, wood/10, brick/11, wood/12, ore/6, wheat/9, sheep/8, desert/0
-- **Ports**: generic, wood, wheat, generic, sheep, generic, brick
+- **Ports**: generic, wood, wheat, generic, sheep, brick
 - **Robber**: tile 9 (desert)
 - **Current turn**: player 2, pre-roll
 - **Longest road / largest army**: none / none
@@ -260,12 +267,12 @@ Board state:
 
 Full serialized (sections separated by `|`):
 ```
-W2lb3ls4lw3hb2hw1ho5lW4hs5hd0n|gwWgsgb|9|+r|__|v-v+v+._._._._v-._._._._._._._._._._._._._._._._._._._._._._._._|-_+_+_-__________________________________|10010/00100|0/0|00000/00000
-├──── 1:tiles ───────────────┤ │2:   │ │ │  │  ├──────────────── 6:vertices ──────────────────────────────────┤ ├────────────── 7:edges ────────────────┤ ├─ 8:res ─┤ │   ├ 10:dev ─┤
-                               ├ports┤ │ │  │                                                                                                                         └── 9: Knights
-                                       │ │  └── 5:longest-road/largest-army (__ = none/none)
-                                       │ └── 4:current-turn (+=player 2, r=pre-roll)
-                                       └── 3:robber (9 = tile 9)
+W2lb3ls4lw3hb2hw1ho5lW4hs5hd0n|gwWgsb|9|+r-|__|v-v+v+._._._._v-._._._._._._._._._._._._._._._._._._._._._._._._|-_+_+_-__________________________________|10010/00100|0/0|00000/00000
+├──── 1:tiles ───────────────┤ │2:  │ │ │   │  ├──────────────── 6:vertices ──────────────────────────────────┤ ├────────────── 7:edges ────────────────┤ ├─ 8:res ─┤ │   ├ 10:dev ─┤
+                               ├port┤ │ │   │                                                                                                                        └── 9: Knights
+                                      │ │   └── 5:longest-road/largest-army (__ = none/none)
+                                      │ └── 4:current-turn (+=player 2, r=pre-roll, -=no pending dev card)
+                                      └── 3:robber (9 = tile 9)
 ```
 
 ### Standard Map (3 players, mid-game)
@@ -288,11 +295,11 @@ Board state:
 
 Full serialized:
 ```
-w4lo1lb5lW2lw5hs3hW4ho1hs2hw3lb5hs3hW4ho3ls4lb5lw2lW2hd0n|ggwgbsWog|5|+t|_-|._._._._._._._._v-._._._._._._._._._c+._._._._._v*._._._._._._v*._._._v-._._._._._._._._v+._._._._._._._._._ ...
-├──────────────── 1:tiles ──────────────────────────────┤ ├2:ports┤ │ │  │  ├────────────────────────────────── 6:vertices ──────────────────────────────────────────────────────────────── ...
-                                                                    │ │  │
-                                                                    │ │  └── 5:longest-road=_(none)/largest-army=-(player 1)
-                                                                    │ └── 4:current-turn (+=player 2, t=build/trade)
+w4lo1lb5lW2lw5hs3hW4ho1hs2hw3lb5hs3hW4ho3ls4lb5lw2lW2hd0n|ggwgbsWog|5|+t-|_-|._._._._._._._._v-._._._._._._._._._c+._._._._._v*._._._._._._v*._._._v-._._._._._._._._v+._._._._._._._._._ ...
+├──────────────── 1:tiles ──────────────────────────────┤ ├2:ports┤ │ │   │  ├────────────────────────────────── 6:vertices ──────────────────────────────────────────────────────────────── ...
+                                                                    │ │   │
+                                                                    │ │   └── 5:longest-road=_(none)/largest-army=-(player 1)
+                                                                    │ └── 4:current-turn (+=player 2, t=build/trade, -=no pending dev card)
                                                                     └── 3:robber (5 = tile 5)
 
 ... |______-_________-________+______+_**_____-*_____*-_____+_____+__________|31201/02143/10320|2/0/1|10000/01010/00100
@@ -305,11 +312,11 @@ w4lo1lb5lW2lw5hs3hW4ho1hs2hw3lb5hs3hW4ho3ls4lb5lw2lW2hd0n|ggwgbsWog|5|+t|_-|._._
 Remove all `/` and `|` separators. The result is a fixed-length string, one character per token. Each character belongs to one of the disjoint alphabets defined in §Token Alphabets (digits and a few others are shared across categories, disambiguated by position). Since tiles are already concatenated without separators, only `|` (section boundaries) and `/` (player separators in sections 8–10) are stripped.
 
 Compact string lengths:
-- **Mini map** (2 players): `132` characters
+- **Mini map** (2 players): `133` characters
 - **Small map** (2 players): `169` characters
 - **Small map** (3 players): `180` characters
-- **Standard map** (3 players): `284` characters
-- **Standard map** (4 players): `295` characters
+- **Standard map** (3 players): `285` characters
+- **Standard map** (4 players): `296` characters
 
 ## Notes and Constraints
 
@@ -318,3 +325,83 @@ Compact string lengths:
 - Vertex occupancy is decomposed into building type + player owner (2 tokens per vertex). The player ID alphabet is shared across all player-identity fields (current turn, longest road, largest army, vertex owner, edge occupancy), enabling the model to learn a unified player embedding.
 - Resource type characters are shared between tiles and ports, since they refer to the same underlying concept.
 - Pip count digits and count digits share the same characters (`0`–`5`). These appear at structurally distinct positions, so positional embeddings disambiguate.
+
+## Player Rotation Invariance
+
+The neural network always predicts **player 1's** win probability.  To obtain the win probability for an arbitrary target player, the serialized state is **rotated** so that the target player occupies the player-1 slot before inference.  The rotation is a cyclic shift of player identities; the board itself (tiles, ports, robber) is unchanged.
+
+### Rotation Definition
+
+Given `N` players and a target player `T` (1-based), the rotation amount is `R = T − 1`.  A player with original 1-based index `P` is mapped to new index:
+
+```
+new_index = ((P − 1 − R) mod N) + 1
+```
+
+This makes the target player `T` become player 1, and all other players shift down accordingly (wrapping around).
+
+**Example** (3-player game, target = player 2, so R = 1):
+
+| Original | New |
+|----------|-----|
+| Player 1 | Player 3 |
+| Player 2 | Player 1 |
+| Player 3 | Player 2 |
+
+### What Gets Rotated
+
+The rotation affects two kinds of data in the compact form:
+
+#### 1. Player-ID tokens (character-level remapping)
+
+Each player-ID character is remapped according to the rotation formula.  The character `_` (none) is unchanged.
+
+| Char | Meaning | Remapped to |
+|------|---------|-------------|
+| `_`  | None    | `_` (unchanged) |
+| `-`  | Player 1 | new player ID char |
+| `+`  | Player 2 | new player ID char |
+| `*`  | Player 3 | new player ID char |
+| `^`  | Player 4 | new player ID char |
+
+Affected positions:
+- **Current player** (§4): 1 token at offset `3T + P + 1`.
+- **Longest road owner** (§5): 1 token at offset `3T + P + 4`.
+- **Largest army owner** (§5): 1 token at offset `3T + P + 5`.
+- **Vertex owners** (§6): every 2nd character (the owner field) starting at offset `3T + P + 6` (i.e. positions `3T + P + 6 + 2v + 1` for each vertex `v`).
+- **Edge occupancy** (§7): every character starting at offset `3T + P + 6 + 2V`.
+
+#### 2. Per-player data blocks (block-level reordering)
+
+Contiguous blocks of tokens belonging to each player are cyclically shifted so that the target player's block comes first.  With rotation `R`, the block originally at player index `i` (0-based) moves to position `(i − R) mod N`.
+
+Affected sections:
+- **Resources** (§8): `N` blocks of 5 tokens each, starting at offset `3T + P + 6 + 2V + E`.
+- **Knights played** (§9): `N` blocks of 1 token each.
+- **Dev cards** (§10): `N` blocks of 5 tokens each.
+
+### Rotation Example
+
+Using the mini map example from above (2 players, player 1's turn):
+
+**Original (human-readable):**
+```
+w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t-|__|._._._._._._v-._._._._._._._v+._._._._._._._._._|_____-_______+________________|21010/00130|0/0|00000/00000
+```
+
+**Rotated for player 2** (R = 1, N = 2 — player 1↔player 2 swap):
+```
+w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|+t-|__|._._._._._._v+._._._._._._._v-._._._._._._._._._|_____+_______-________________|00130/21010|0/0|00000/00000
+```
+
+Changes:
+- Current player: `-` → `+`
+- Vertex owners: `v-` → `v+` and `v+` → `v-`
+- Edge occupancy: `-` → `+` and `+` → `-`
+- Resources: `21010/00130` reordered to `00130/21010`
+- Knights: `0/0` reordered (no visible change since both are `0`)
+- Dev cards: `00000/00000` reordered (no visible change)
+
+### Implementation
+
+The rotation is implemented in `python/gimbur_nn/tokenizer.py` as `rotate_player_state()`.  The inference server's `/predict-player` endpoint applies rotation automatically: callers send the original (unrotated) compact state together with the target player number, and the server handles the rest.

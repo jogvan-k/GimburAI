@@ -71,6 +71,13 @@ MODEL_LARGE = _make_model_config(
     dropout=0.05,
 )
 
+MODEL_CONFIGS_BY_NAME: dict[str, GimburTransformerConfig] = {
+    "small": MODEL_SMALL,
+    "medium": MODEL_MEDIUM,
+    "large": MODEL_LARGE,
+}
+"""Lookup table for predefined model configs."""
+
 
 class SwiGLU(nn.Module):
     def __init__(self, d_model: int, hidden_dim: int):

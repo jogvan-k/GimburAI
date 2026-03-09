@@ -38,6 +38,7 @@ internal static class Program
     private static readonly List<LoggedAction> _actionLog = new();
     private static int[] _lastSeenLogIndexByPlayer = [];
     private static readonly StringBuilder _frameBuffer = new();
+    private static NnClient? _nnClient;
 
     private static readonly Regex AnsiEscapePattern = new(
         @"\u001b\[[0-9;]*m",
@@ -46,7 +47,7 @@ internal static class Program
     private static int VisibleLength(string text) =>
         AnsiEscapePattern.Replace(text, "").Length;
 
-    private static void Main()
+    private static void Main(string[] args)
     {
         Console.WriteLine("Gimbur TUI");
         Console.WriteLine();
@@ -61,10 +62,50 @@ internal static class Program
         var players = PromptPlayerCount(config.MinPlayers, config.MaxPlayers);
         var controllers = PromptPlayerControllers(players);
 
+        // If any player uses NN, set up the inference client.
+        if (controllers.Any(c => c == PlayerController.NN))
+        {
+            // Check for --nn-url command-line argument first.
+            string? nnUrl = null;
+            for (var i = 0; i < args.Length - 1; i++)
+            {
+                if (args[i] == "--nn-url")
+                {
+                    nnUrl = args[i + 1];
+                    break;
+                }
+            }
+
+            nnUrl ??= PromptNnUrl();
+            _nnClient = new NnClient(nnUrl);
+
+            if (!_nnClient.IsHealthyAsync().GetAwaiter().GetResult())
+            {
+                Console.WriteLine($"Warning: NN server at {nnUrl} is not reachable.");
+                Console.Write("Continue anyway? (y/n): ");
+                var answer = Console.ReadLine()?.Trim().ToLowerInvariant();
+                if (answer is not ("y" or "yes"))
+                {
+                    _nnClient.Dispose();
+                    return;
+                }
+            }
+        }
+
         var rng = new Random();
         var state = new CatanState(config, players, rng);
 
         RunGameLoop(state, controllers);
+        _nnClient?.Dispose();
+    }
+
+    private const string DefaultNnUrl = "http://localhost:8000";
+
+    private static string PromptNnUrl()
+    {
+        Console.Write($"NN server URL [{DefaultNnUrl}]: ");
+        var input = Console.ReadLine()?.Trim();
+        return string.IsNullOrEmpty(input) ? DefaultNnUrl : input;
     }
 
     private static void RunGameLoop(CatanState state, PlayerController[] controllers)
@@ -93,6 +134,12 @@ internal static class Program
             if (controllers[state.CurrentPlayer] == PlayerController.MCTS)
             {
                 state = ExecuteMctsStep(state);
+                continue;
+            }
+
+            if (controllers[state.CurrentPlayer] == PlayerController.NN)
+            {
+                state = ExecuteNnStep(state);
                 continue;
             }
 
@@ -231,6 +278,129 @@ internal static class Program
         return current;
     }
 
+    /// <summary>
+    /// Runs a single NN AI step.  Forced single-action states are applied
+    /// immediately.  When a real decision is needed, all possible resulting
+    /// states are evaluated via the NN inference server and the action with
+    /// the best expected win probability is chosen.  Continues until the
+    /// acting player's turn ends.
+    /// </summary>
+    private static CatanState ExecuteNnStep(CatanState state)
+    {
+        var current = state;
+        var startingPlayer = state.CurrentPlayer;
+
+        // Apply forced actions immediately.
+        while (current.WinnerPlayer == 0 && current.CurrentPlayer == startingPlayer)
+        {
+            var forced = current.Actions();
+            if (forced.Length != 1) break;
+
+            var catanAction = UnwrapCoreAction(forced[0]);
+            current = ApplyActionAndLog(current, catanAction, aiControlled: true);
+        }
+
+        if (current.WinnerPlayer != 0
+            || current.CurrentPlayer != startingPlayer
+            || current.Actions().Length == 0)
+        {
+            return current;
+        }
+
+        // Real decision — evaluate all actions via NN.
+        var coreActions = current.Actions();
+        var actingPlayer = current.CurrentPlayer;
+
+        // Collect all resulting states for batch prediction.
+        var allStates = new List<string>();
+        var allPlayers = new List<int>();
+        var descriptors = new List<(int ActionIndex, int StartIndex, int Count, int[]? Weights)>();
+
+        for (var i = 0; i < coreActions.Length; i++)
+        {
+            var coreAction = coreActions[i];
+
+            if (coreAction.IsDeterministic)
+            {
+                var det = (CatanDeterministicAction)((CoreAction.Deterministic)coreAction).Item;
+                var resultState = (CatanState)det.State();
+                var idx = allStates.Count;
+                allStates.Add(resultState.SerializeCompact());
+                allPlayers.Add(actingPlayer);
+                descriptors.Add((i, idx, 1, null));
+            }
+            else if (coreAction.IsStochastic)
+            {
+                var stoch = (CatanStochasticAction)((CoreAction.Stochastic)coreAction).Item;
+                var outcomes = stoch.Outcomes();
+                var idx = allStates.Count;
+                var weights = new int[outcomes.Length];
+                for (var j = 0; j < outcomes.Length; j++)
+                {
+                    weights[j] = outcomes[j].Item1;
+                    allStates.Add(((CatanState)outcomes[j].Item2).SerializeCompact());
+                    allPlayers.Add(actingPlayer);
+                }
+                descriptors.Add((i, idx, outcomes.Length, weights));
+            }
+        }
+
+        var winProbs = _nnClient!.PredictPlayerAsync(allStates, allPlayers).GetAwaiter().GetResult();
+
+        var bestActionIndex = 0;
+        var bestScore = float.NegativeInfinity;
+
+        foreach (var desc in descriptors)
+        {
+            float score;
+            if (desc.Weights is null)
+            {
+                score = winProbs[desc.StartIndex];
+            }
+            else
+            {
+                var totalWeight = 0;
+                var weightedSum = 0.0f;
+                for (var j = 0; j < desc.Count; j++)
+                {
+                    var w = desc.Weights[j];
+                    totalWeight += w;
+                    weightedSum += w * winProbs[desc.StartIndex + j];
+                }
+                score = totalWeight > 0 ? weightedSum / totalWeight : 0;
+            }
+
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestActionIndex = desc.ActionIndex;
+            }
+        }
+
+        var bestAction = UnwrapCoreAction(coreActions[bestActionIndex]);
+        current = ApplyActionAndLog(current, bestAction, aiControlled: true);
+
+        // Continue applying forced actions on this player's turn.
+        while (current.WinnerPlayer == 0 && current.CurrentPlayer == startingPlayer)
+        {
+            var actions = current.Actions();
+            if (actions.Length != 1) break;
+
+            var catanAction = UnwrapCoreAction(actions[0]);
+            current = ApplyActionAndLog(current, catanAction, aiControlled: true);
+        }
+
+        // If the NN player still has a decision to make, recurse.
+        if (current.WinnerPlayer == 0
+            && current.CurrentPlayer == startingPlayer
+            && current.Actions().Length > 1)
+        {
+            return ExecuteNnStep(current);
+        }
+
+        return current;
+    }
+
     private static CatanAction UnwrapCoreAction(CoreAction coreAction)
     {
         if (coreAction.IsDeterministic)
@@ -363,11 +533,159 @@ internal static class Program
         }
     }
 
+    /// <summary>
+    /// Queries the NN server for the current state's P1 win probability.
+    /// </summary>
+    private static float ComputeCurrentStateWinRate(CatanState state)
+    {
+        return _nnClient!.PredictPlayerSingleAsync(
+            state.SerializeCompact(), state.CurrentPlayer).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// Evaluates all actions via the NN server and returns a dictionary
+    /// mapping each <see cref="CatanAction"/> to its expected win rate for
+    /// the current player.  The server rotates each state so that the
+    /// current player becomes player 1 before inference.
+    /// For stochastic actions the expected value across outcomes is used.
+    /// </summary>
+    private static Dictionary<CatanAction, float> ComputeActionWinRates(
+        CatanState state,
+        IReadOnlyList<CatanAction> actions)
+    {
+        var actingPlayer = state.CurrentPlayer;
+        var allStates = new List<string>();
+        var allPlayers = new List<int>();
+        var descriptors = new List<(CatanAction Action, int StartIndex, int Count, int[]? Weights)>();
+
+        foreach (var action in actions)
+        {
+            if (action is CatanDeterministicAction det)
+            {
+                var resultState = (CatanState)det.State();
+                var idx = allStates.Count;
+                allStates.Add(resultState.SerializeCompact());
+                allPlayers.Add(actingPlayer);
+                descriptors.Add((action, idx, 1, null));
+            }
+            else if (action is CatanStochasticAction stoch)
+            {
+                var outcomes = stoch.Outcomes();
+                var idx = allStates.Count;
+                var weights = new int[outcomes.Length];
+                for (var j = 0; j < outcomes.Length; j++)
+                {
+                    weights[j] = outcomes[j].Item1;
+                    allStates.Add(((CatanState)outcomes[j].Item2).SerializeCompact());
+                    allPlayers.Add(actingPlayer);
+                }
+                descriptors.Add((action, idx, outcomes.Length, weights));
+            }
+        }
+
+        if (allStates.Count == 0)
+        {
+            return new Dictionary<CatanAction, float>();
+        }
+
+        var winProbs = _nnClient!.PredictPlayerAsync(allStates, allPlayers).GetAwaiter().GetResult();
+
+        var result = new Dictionary<CatanAction, float>();
+        foreach (var desc in descriptors)
+        {
+            float score;
+            if (desc.Weights is null)
+            {
+                score = winProbs[desc.StartIndex];
+            }
+            else
+            {
+                var totalWeight = 0;
+                var weightedSum = 0.0f;
+                for (var j = 0; j < desc.Count; j++)
+                {
+                    var w = desc.Weights[j];
+                    totalWeight += w;
+                    weightedSum += w * winProbs[desc.StartIndex + j];
+                }
+                score = totalWeight > 0 ? weightedSum / totalWeight : 0;
+            }
+
+            result[desc.Action] = score;
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Annotates menu entry labels with NN win rate information.
+    /// For direct actions the individual win rate is shown.
+    /// For grouped entries (Place settlement, Trade, etc.) the best
+    /// win rate among the grouped actions is shown.
+    /// </summary>
+    private static void AnnotateMenuEntries(
+        List<MenuEntry> entries,
+        Dictionary<CatanAction, float> winRates)
+    {
+        for (var i = 0; i < entries.Count; i++)
+        {
+            var entry = entries[i];
+
+            if (entry.Action is not null && winRates.TryGetValue(entry.Action, out var rate))
+            {
+                entries[i] = entry with { Label = $"{entry.Label} {FgCyan}[{rate:P1}]{Reset}" };
+                continue;
+            }
+
+            // For grouped modes, find the best win rate among matching actions.
+            var matchingRates = entry.Mode switch
+            {
+                ActionSelectionMode.RollDice =>
+                    winRates.Where(kv => kv.Key is RollDiceAction).Select(kv => kv.Value).ToArray(),
+                ActionSelectionMode.BuyDevCardRandom =>
+                    winRates.Where(kv => kv.Key is BuyDevCardAction).Select(kv => kv.Value).ToArray(),
+                ActionSelectionMode.PlaceSettlement =>
+                    winRates.Where(kv => kv.Key is PlaceSettlementAction).Select(kv => kv.Value).ToArray(),
+                ActionSelectionMode.PlaceRoad =>
+                    winRates.Where(kv => kv.Key is PlaceRoadAction).Select(kv => kv.Value).ToArray(),
+                ActionSelectionMode.PlaceCity =>
+                    winRates.Where(kv => kv.Key is BuildCityAction).Select(kv => kv.Value).ToArray(),
+                ActionSelectionMode.PlaceRobber =>
+                    winRates.Where(kv => kv.Key is ChooseRobberTileAction).Select(kv => kv.Value).ToArray(),
+                ActionSelectionMode.OpenTradeMenu =>
+                    winRates.Where(kv => kv.Key is BankTradeAction).Select(kv => kv.Value).ToArray(),
+                ActionSelectionMode.OpenYearOfPlentyMenu =>
+                    winRates.Where(kv => kv.Key is PlayYearOfPlentyAction).Select(kv => kv.Value).ToArray(),
+                ActionSelectionMode.OpenMonopolyMenu =>
+                    winRates.Where(kv => kv.Key is PlayMonopolyAction).Select(kv => kv.Value).ToArray(),
+                _ => [],
+            };
+
+            if (matchingRates.Length > 0)
+            {
+                var best = matchingRates.Max();
+                entries[i] = entry with { Label = $"{entry.Label} {FgCyan}[best:{best:P1}]{Reset}" };
+            }
+        }
+    }
+
     private static CatanState ExecuteActionMenu(CatanState state, IReadOnlyList<CatanAction> actions)
     {
         var context = ActionMenuContext.Root;
         var menuEntries = BuildMenuEntries(state, actions, context);
         var selectedIndex = 0;
+
+        // Compute NN win rates for display if an inference server is connected.
+        var winRates = _nnClient is not null
+            ? ComputeActionWinRates(state, actions)
+            : null;
+        var currentWinRate = winRates is not null
+            ? ComputeCurrentStateWinRate(state)
+            : (float?)null;
+        if (winRates is not null)
+        {
+            AnnotateMenuEntries(menuEntries, winRates);
+        }
 
         while (true)
         {
@@ -381,6 +699,10 @@ internal static class Program
                     $"Last: {_statusMessage}",
                     $"LR: {(state.LongestRoadOwner == 0 ? "none" : $"Player {state.LongestRoadOwner}")}, LA: {(state.LargestArmyOwner == 0 ? "none" : $"Player {state.LargestArmyOwner}")}",
                 };
+                if (currentWinRate.HasValue)
+                {
+                    leftCol.Add($"NN win: {currentWinRate.Value:P1}");
+                }
                 leftCol.AddRange(BuildPlayerLines(state));
 
                 var rightCol = new List<string> { "Action log:" };
@@ -420,6 +742,7 @@ internal static class Program
             {
                 context = ActionMenuContext.Trade;
                 menuEntries = BuildMenuEntries(state, actions, context);
+                if (winRates is not null) AnnotateMenuEntries(menuEntries, winRates);
                 selectedIndex = 0;
                 continue;
             }
@@ -428,6 +751,7 @@ internal static class Program
             {
                 context = ActionMenuContext.YearOfPlenty;
                 menuEntries = BuildMenuEntries(state, actions, context);
+                if (winRates is not null) AnnotateMenuEntries(menuEntries, winRates);
                 selectedIndex = 0;
                 continue;
             }
@@ -436,6 +760,7 @@ internal static class Program
             {
                 context = ActionMenuContext.Monopoly;
                 menuEntries = BuildMenuEntries(state, actions, context);
+                if (winRates is not null) AnnotateMenuEntries(menuEntries, winRates);
                 selectedIndex = 0;
                 continue;
             }
@@ -444,6 +769,7 @@ internal static class Program
             {
                 context = ActionMenuContext.Root;
                 menuEntries = BuildMenuEntries(state, actions, context);
+                if (winRates is not null) AnnotateMenuEntries(menuEntries, winRates);
                 selectedIndex = 0;
                 continue;
             }
@@ -1076,7 +1402,7 @@ internal static class Program
         {
             while (true)
             {
-                Console.Write($"Player {player} controller ([h]uman/[g]reedy/[m]cts): ");
+                Console.Write($"Player {player} controller ([h]uman/[g]reedy/[m]cts/[n]n): ");
                 var input = Console.ReadLine()?.Trim().ToLowerInvariant();
                 if (string.IsNullOrEmpty(input) || input is "h" or "human")
                 {
@@ -1096,7 +1422,13 @@ internal static class Program
                     break;
                 }
 
-                Console.WriteLine("Please enter 'h' for human, 'g' for greedy, or 'm' for MCTS.");
+                if (input is "n" or "nn")
+                {
+                    controllers[player] = PlayerController.NN;
+                    break;
+                }
+
+                Console.WriteLine("Please enter 'h' for human, 'g' for greedy, 'm' for MCTS, or 'n' for NN.");
             }
         }
 
@@ -1675,6 +2007,7 @@ internal enum PlayerController
     Human,
     Greedy,
     MCTS,
+    NN,
 }
 
 internal enum ActionMenuContext
