@@ -19,6 +19,7 @@ internal enum AiKind
     Random,
     Greedy,
     Mcts,
+    Nn,
 }
 
 /// <summary>
@@ -56,6 +57,12 @@ internal record BenchmarkOptions
     /// Maximum rollout depth for MCTS simulations. Defaults to 500.
     /// </summary>
     public int MaxRolloutDepth { get; init; } = 500;
+
+    /// <summary>
+    /// Base URL for the neural network inference server.
+    /// Defaults to <c>http://localhost:8000</c>.
+    /// </summary>
+    public string NnUrl { get; init; } = "http://localhost:8000";
 }
 
 /// <summary>
@@ -242,6 +249,7 @@ internal class BenchmarkRunner
 {
     private readonly BenchmarkOptions _options;
     private readonly bool _quiet;
+    private NnClient? _nnClient;
 
     public BenchmarkRunner(BenchmarkOptions options)
     {
@@ -262,6 +270,17 @@ internal class BenchmarkRunner
             return;
         }
 
+        if (_options.Players.Contains(AiKind.Nn))
+        {
+            _nnClient = new NnClient(_options.NnUrl);
+            if (!_nnClient.IsHealthyAsync().GetAwaiter().GetResult())
+            {
+                Console.Error.WriteLine($"NN inference server at {_options.NnUrl} is not reachable.");
+                _nnClient.Dispose();
+                return;
+            }
+        }
+
         if (!_quiet)
         {
             Console.WriteLine($"Starting benchmark: {_options.NumberOfGames} game(s)");
@@ -274,6 +293,10 @@ internal class BenchmarkRunner
                 Console.WriteLine($"  MCTS search time: {_options.SearchTimeMs}ms");
                 Console.WriteLine($"  MCTS max simulations: {(_options.MaxSimulations == int.MaxValue ? "unlimited" : _options.MaxSimulations.ToString())}");
                 Console.WriteLine($"  MCTS max rollout depth: {_options.MaxRolloutDepth}");
+            }
+            if (_options.Players.Contains(AiKind.Nn))
+            {
+                Console.WriteLine($"  NN server: {_options.NnUrl}");
             }
             Console.WriteLine();
         }
@@ -346,6 +369,8 @@ internal class BenchmarkRunner
         {
             ExportResults(stats, _options.OutputPath);
         }
+
+        _nnClient?.Dispose();
     }
 
     /// <summary>
@@ -364,6 +389,7 @@ internal class BenchmarkRunner
                 _options.MaxRolloutDepth,
                 System.Math.Sqrt(2.0),
                 int.MaxValue)),
+            AiKind.Nn => new NnPlayer(_nnClient!),
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, $"Unknown AI kind: {kind}"),
         };
     }

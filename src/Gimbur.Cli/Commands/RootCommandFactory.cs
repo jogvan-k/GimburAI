@@ -221,8 +221,8 @@ internal static class RootCommandFactory
 
         var playersOption = new Option<string[]>("--ai")
         {
-            Description = "AI for each player seat (e.g. --ai random greedy mcts). " +
-                          "Available: random, greedy, mcts",
+            Description = "AI for each player seat (e.g. --ai random greedy mcts nn). " +
+                          "Available: random, greedy, mcts, nn",
             AllowMultipleArgumentsPerToken = true,
         };
         playersOption.DefaultValueFactory = _ => new[] { "random", "greedy" };
@@ -250,6 +250,12 @@ internal static class RootCommandFactory
             DefaultValueFactory = _ => 500,
         };
 
+        var nnUrlOption = new Option<string>("--nn-url")
+        {
+            Description = "Base URL of the NN inference server (e.g. http://localhost:8000)",
+            DefaultValueFactory = _ => "http://localhost:8000",
+        };
+
         var command = new Command("benchmark", "Run AI-vs-AI games and compute win rates.")
         {
             noOfGamesOption,
@@ -258,6 +264,7 @@ internal static class RootCommandFactory
             searchTimeOption,
             maxSimulationsOption,
             maxRolloutDepthOption,
+            nnUrlOption,
         };
 
         command.SetAction(parseResult =>
@@ -271,6 +278,7 @@ internal static class RootCommandFactory
             int searchTimeMs = parseResult.GetValue(searchTimeOption);
             int maxSimulations = parseResult.GetValue(maxSimulationsOption);
             int maxRolloutDepth = parseResult.GetValue(maxRolloutDepthOption);
+            string nnUrl = parseResult.GetValue(nnUrlOption)!;
 
             var aiKinds = new AiKind[aiNames.Length];
             for (var i = 0; i < aiNames.Length; i++)
@@ -301,6 +309,7 @@ internal static class RootCommandFactory
                 SearchTimeMs = searchTimeMs,
                 MaxSimulations = maxSimulations,
                 MaxRolloutDepth = maxRolloutDepth,
+                NnUrl = nnUrl,
             };
 
             var runner = new BenchmarkRunner(options);

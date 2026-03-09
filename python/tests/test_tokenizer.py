@@ -5,7 +5,15 @@ from __future__ import annotations
 import pytest
 import torch
 
-from gimbur_nn.tokenizer import VOCAB, VOCAB_CHARS, VOCAB_SIZE, tokenize, tokenize_batch
+from gimbur_nn.game_config import MINI_2P, SMALL_2P, STANDARD_3P
+from gimbur_nn.tokenizer import (
+    VOCAB,
+    VOCAB_CHARS,
+    VOCAB_SIZE,
+    rotate_player_state,
+    tokenize,
+    tokenize_batch,
+)
 
 # ---------------------------------------------------------------------------
 # Example states copied verbatim from docs/state-serialization.md
@@ -15,7 +23,7 @@ MINI_STATE = (
     "w5lb3ls4lW3hd0nW4ho2l"
     "|gsgbgw"
     "|4"
-    "|-t"
+    "|-t-"
     "|__"
     "|._._._._._._v-._._._._._._._v+._._._._._._._._._"
     "|_____-_______+________________"
@@ -26,9 +34,9 @@ MINI_STATE = (
 
 SMALL_STATE = (
     "W2lb3ls4lw3hb2hw1ho5lW4hs5hd0n"
-    "|gwWgsgb"
+    "|gwWgsb"
     "|9"
-    "|+r"
+    "|+r-"
     "|__"
     "|v-v+v+._._._._v-._._._._._._._._._._._._._._._._._._._._._._._._"
     "|-_+_+_-__________________________________"
@@ -41,7 +49,7 @@ STANDARD_STATE = (
     "w4lo1lb5lW2lw5hs3hW4ho1hs2hw3lb5hs3hW4ho3ls4lb5lw2lW2hd0n"
     "|ggwgbsWog"
     "|5"
-    "|+t"
+    "|+t-"
     "|_-"
     "|._._._._._._._._v-._._._._._._._._._c+._._._._._v*._._._._._._v*._._._v-._._._._._._._._v+._._._._._._._._._"
     "|______-_________-________+______+_**_____-*_____*-_____+_____+__________"
@@ -59,7 +67,7 @@ MINI_EXPECTED = [
     1, 12, 13, 2, 10, 13, 3, 11, 13, 4, 10, 14, 0, 7, 15, 4, 11, 14, 5, 9, 13,
     6, 3, 6, 2, 6, 1,
     11,
-    20, 31,
+    20, 31, 20,
     19, 19,
     16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 17, 20, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 17, 21, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19,
     19, 19, 19, 19, 19, 20, 19, 19, 19, 19, 19, 19, 19, 21, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19,
@@ -70,9 +78,9 @@ MINI_EXPECTED = [
 
 SMALL_EXPECTED = [
     4, 9, 13, 2, 10, 13, 3, 11, 13, 1, 10, 14, 2, 9, 14, 1, 8, 14, 5, 12, 13, 4, 11, 14, 3, 12, 14, 0, 7, 15,
-    6, 1, 4, 6, 3, 6, 2,
+    6, 1, 4, 6, 3, 2,
     35,
-    21, 28,
+    21, 28, 20,
     19, 19,
     17, 20, 17, 21, 17, 21, 16, 19, 16, 19, 16, 19, 16, 19, 17, 20, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19,
     20, 19, 21, 19, 21, 19, 20, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19,
@@ -85,7 +93,7 @@ STANDARD_EXPECTED = [
     1, 11, 13, 5, 8, 13, 2, 12, 13, 4, 9, 13, 1, 12, 14, 3, 10, 14, 4, 11, 14, 5, 8, 14, 3, 9, 14, 1, 10, 13, 2, 12, 14, 3, 10, 14, 4, 11, 14, 5, 10, 13, 3, 11, 13, 2, 12, 13, 1, 9, 13, 4, 9, 14, 0, 7, 15,
     6, 6, 1, 6, 2, 3, 4, 5, 6,
     12,
-    21, 31,
+    21, 31, 20,
     19, 20,
     16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 17, 20, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 18, 21, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 17, 22, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 17, 22, 16, 19, 16, 19, 16, 19, 17, 20, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 17, 21, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19,
     19, 19, 19, 19, 19, 19, 20, 19, 19, 19, 19, 19, 19, 19, 19, 19, 20, 19, 19, 19, 19, 19, 19, 19, 19, 21, 19, 19, 19, 19, 19, 19, 21, 19, 22, 22, 19, 19, 19, 19, 19, 20, 22, 19, 19, 19, 19, 19, 22, 20, 19, 19, 19, 19, 19, 21, 19, 19, 19, 19, 19, 21, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19,
@@ -123,7 +131,7 @@ class TestVocab:
 class TestMiniMap:
     def test_full_tensor(self) -> None:
         t = tokenize(MINI_STATE)
-        assert t.shape == (132,)
+        assert t.shape == (133,)
         assert t.dtype == torch.int32
         assert t.tolist() == MINI_EXPECTED
 
@@ -139,7 +147,7 @@ class TestSmallMap:
 class TestStandardMap:
     def test_full_tensor(self) -> None:
         t = tokenize(STANDARD_STATE)
-        assert t.shape == (284,)
+        assert t.shape == (285,)
         assert t.dtype == torch.int32
         assert t.tolist() == STANDARD_EXPECTED
 
@@ -166,7 +174,7 @@ class TestCompactForm:
 class TestBatch:
     def test_same_map_batch(self) -> None:
         t = tokenize_batch([MINI_STATE, MINI_STATE])
-        assert t.shape == (2, 132)
+        assert t.shape == (2, 133)
         assert t.dtype == torch.int32
 
     def test_batch_matches_single(self) -> None:
@@ -193,3 +201,224 @@ class TestErrors:
     def test_unknown_character_raises(self) -> None:
         with pytest.raises(KeyError):
             tokenize("w5l#invalid")
+
+
+# ---------------------------------------------------------------------------
+# Compact-form helpers for rotation tests
+# ---------------------------------------------------------------------------
+
+_STRIP = str.maketrans("", "", "|/")
+
+MINI_COMPACT = MINI_STATE.translate(_STRIP)
+SMALL_COMPACT = SMALL_STATE.translate(_STRIP)
+STANDARD_COMPACT = STANDARD_STATE.translate(_STRIP)
+
+
+# ---------------------------------------------------------------------------
+# Player rotation
+# ---------------------------------------------------------------------------
+
+
+class TestRotatePlayerState:
+    """Tests for rotate_player_state()."""
+
+    # -- Identity rotation (target=1 returns input unchanged) ---------------
+
+    def test_identity_mini(self) -> None:
+        result = rotate_player_state(MINI_COMPACT, 1, MINI_2P)
+        assert result == MINI_COMPACT
+
+    def test_identity_small(self) -> None:
+        result = rotate_player_state(SMALL_COMPACT, 1, SMALL_2P)
+        assert result == SMALL_COMPACT
+
+    def test_identity_standard(self) -> None:
+        result = rotate_player_state(STANDARD_COMPACT, 1, STANDARD_3P)
+        assert result == STANDARD_COMPACT
+
+    # -- Length preserved ---------------------------------------------------
+
+    def test_length_preserved_mini(self) -> None:
+        result = rotate_player_state(MINI_COMPACT, 2, MINI_2P)
+        assert len(result) == len(MINI_COMPACT)
+
+    def test_length_preserved_standard(self) -> None:
+        for target in (2, 3):
+            result = rotate_player_state(STANDARD_COMPACT, target, STANDARD_3P)
+            assert len(result) == len(STANDARD_COMPACT)
+
+    # -- Board sections unchanged (tiles, ports, robber) --------------------
+
+    def test_board_unchanged_mini(self) -> None:
+        """Tiles, ports, robber must be identical after rotation."""
+        cfg = MINI_2P
+        board_end = 3 * cfg.tile_count + cfg.port_count + 1  # tiles + ports + robber
+        result = rotate_player_state(MINI_COMPACT, 2, cfg)
+        assert result[:board_end] == MINI_COMPACT[:board_end]
+
+    def test_board_unchanged_standard(self) -> None:
+        cfg = STANDARD_3P
+        board_end = 3 * cfg.tile_count + cfg.port_count + 1
+        for target in (2, 3):
+            result = rotate_player_state(STANDARD_COMPACT, target, cfg)
+            assert result[:board_end] == STANDARD_COMPACT[:board_end]
+
+    # -- Double rotation is identity (2-player) -----------------------------
+
+    def test_double_rotation_identity_2p(self) -> None:
+        """Rotating by player 2 twice should return the original (N=2)."""
+        once = rotate_player_state(MINI_COMPACT, 2, MINI_2P)
+        twice = rotate_player_state(once, 2, MINI_2P)
+        assert twice == MINI_COMPACT
+
+    # -- Full-cycle rotation is identity (3-player) -------------------------
+
+    def test_full_cycle_identity_3p(self) -> None:
+        """Rotating p2 then p2 then p2 (3 times) returns original (N=3)."""
+        state = STANDARD_COMPACT
+        for _ in range(3):
+            state = rotate_player_state(state, 2, STANDARD_3P)
+        assert state == STANDARD_COMPACT
+
+    # -- Mini 2p rotation example from docs ---------------------------------
+
+    def test_mini_2p_rotation_matches_doc(self) -> None:
+        """Verify the rotation example from docs/state-serialization.md."""
+        original_hr = (
+            "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t-|__|"
+            "._._._._._._v-._._._._._._._v+._._._._._._._._._|"
+            "_____-_______+________________|"
+            "21010/00130|0/0|00000/00000"
+        )
+        expected_hr = (
+            "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|+t-|__|"
+            "._._._._._._v+._._._._._._._v-._._._._._._._._._|"
+            "_____+_______-________________|"
+            "00130/21010|0/0|00000/00000"
+        )
+        original = original_hr.translate(_STRIP)
+        expected = expected_hr.translate(_STRIP)
+        result = rotate_player_state(original, 2, MINI_2P)
+        assert result == expected
+
+    # -- Current player is remapped -----------------------------------------
+
+    def test_current_player_remapped_mini(self) -> None:
+        """Mini example: current player '-' (P1) should become '+' (P2)."""
+        cfg = MINI_2P
+        pos = 3 * cfg.tile_count + cfg.port_count + 1  # offset of currentPlayer
+        assert MINI_COMPACT[pos] == "-"
+        result = rotate_player_state(MINI_COMPACT, 2, cfg)
+        assert result[pos] == "+"
+
+    def test_current_player_remapped_standard(self) -> None:
+        """Standard example: current player '+' (P2) rotated for P3."""
+        cfg = STANDARD_3P
+        pos = 3 * cfg.tile_count + cfg.port_count + 1
+        assert STANDARD_COMPACT[pos] == "+"
+        result = rotate_player_state(STANDARD_COMPACT, 3, cfg)
+        # P2 with R=2, N=3: ((2-1-2) mod 3)+1 = ((-1) mod 3)+1 = 2+1 = 3 -> '*'
+        assert result[pos] == "*"
+
+    # -- postDevCardStage unchanged (it's a turn-stage char, not player) ----
+
+    def test_post_dev_card_stage_unchanged(self) -> None:
+        """The postDevCardStage token is '-' meaning 'none' and should not
+        be modified by rotation (it's at a turn-stage position, not player)."""
+        cfg = MINI_2P
+        pos = 3 * cfg.tile_count + cfg.port_count + 3  # 3rd token of section 4
+        assert MINI_COMPACT[pos] == "-"
+        result = rotate_player_state(MINI_COMPACT, 2, cfg)
+        # postDevCardStage is NOT a player-ID field — it should stay '-'
+        assert result[pos] == "-"
+
+    # -- Longest road / largest army remapped --------------------------------
+
+    def test_awards_remapped_standard(self) -> None:
+        """Standard example: LR=none, LA=player1. Rotate for player 2."""
+        cfg = STANDARD_3P
+        lr_pos = 3 * cfg.tile_count + cfg.port_count + 4
+        la_pos = lr_pos + 1
+        assert STANDARD_COMPACT[lr_pos] == "_"  # no longest road
+        assert STANDARD_COMPACT[la_pos] == "-"  # player 1
+        result = rotate_player_state(STANDARD_COMPACT, 2, cfg)
+        assert result[lr_pos] == "_"  # still none
+        # P1 with R=1, N=3: ((1-1-1) mod 3)+1 = ((-1) mod 3)+1 = 2+1 = 3 -> '*'
+        assert result[la_pos] == "*"
+
+    # -- Resources reordered ------------------------------------------------
+
+    def test_resources_reordered_mini(self) -> None:
+        """Mini 2p: resources '21010''00130' should swap to '00130''21010'."""
+        cfg = MINI_2P
+        res_start = 3 * cfg.tile_count + cfg.port_count + 6 + 2 * cfg.vertex_count + cfg.edge_count
+        original_res = MINI_COMPACT[res_start : res_start + 10]
+        assert original_res == "2101000130"
+        result = rotate_player_state(MINI_COMPACT, 2, cfg)
+        rotated_res = result[res_start : res_start + 10]
+        assert rotated_res == "0013021010"
+
+    def test_resources_reordered_standard(self) -> None:
+        """Standard 3p: 3 blocks of 5 should rotate for target=2."""
+        cfg = STANDARD_3P
+        res_start = 3 * cfg.tile_count + cfg.port_count + 6 + 2 * cfg.vertex_count + cfg.edge_count
+        original_res = STANDARD_COMPACT[res_start : res_start + 15]
+        assert original_res == "312010214310320"
+        result = rotate_player_state(STANDARD_COMPACT, 2, cfg)
+        rotated_res = result[res_start : res_start + 15]
+        # Rotation R=1: blocks shift by 1 -> P2,P3,P1
+        assert rotated_res == "021431032031201"
+
+    # -- Knights reordered --------------------------------------------------
+
+    def test_knights_reordered_standard(self) -> None:
+        """Standard 3p: knights '2','0','1' -> for target=2: '0','1','2'."""
+        cfg = STANDARD_3P
+        kn_start = (
+            3 * cfg.tile_count
+            + cfg.port_count
+            + 6
+            + 2 * cfg.vertex_count
+            + cfg.edge_count
+            + 5 * cfg.player_count
+        )
+        original_kn = STANDARD_COMPACT[kn_start : kn_start + 3]
+        assert original_kn == "201"
+        result = rotate_player_state(STANDARD_COMPACT, 2, cfg)
+        rotated_kn = result[kn_start : kn_start + 3]
+        assert rotated_kn == "012"
+
+    # -- Dev cards reordered ------------------------------------------------
+
+    def test_dev_cards_reordered_standard(self) -> None:
+        """Standard 3p: dev blocks reorder for target=3."""
+        cfg = STANDARD_3P
+        dev_start = (
+            3 * cfg.tile_count
+            + cfg.port_count
+            + 6
+            + 2 * cfg.vertex_count
+            + cfg.edge_count
+            + 5 * cfg.player_count
+            + cfg.player_count
+        )
+        original_dev = STANDARD_COMPACT[dev_start : dev_start + 15]
+        assert original_dev == "100000101000100"
+        result = rotate_player_state(STANDARD_COMPACT, 3, cfg)
+        rotated_dev = result[dev_start : dev_start + 15]
+        # Rotation R=2: blocks shift by 2 -> P3,P1,P2
+        assert rotated_dev == "001001000001010"
+
+    # -- Error handling -----------------------------------------------------
+
+    def test_invalid_target_player_raises(self) -> None:
+        with pytest.raises(ValueError, match="target_player"):
+            rotate_player_state(MINI_COMPACT, 0, MINI_2P)
+
+    def test_target_too_high_raises(self) -> None:
+        with pytest.raises(ValueError, match="target_player"):
+            rotate_player_state(MINI_COMPACT, 3, MINI_2P)
+
+    def test_wrong_length_raises(self) -> None:
+        with pytest.raises(ValueError, match="Expected"):
+            rotate_player_state(MINI_COMPACT + "x", 2, MINI_2P)
