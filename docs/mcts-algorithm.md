@@ -7,15 +7,16 @@ multiple players and mixed deterministic/stochastic action spaces.
 
 ## Overview
 
-The search loop repeats four phases until a budget (time or simulation count) is
+The search loop repeats five phases until a budget (time or simulation count) is
 exhausted:
 
 ```
-while budget remains:
-    1. Selection    — walk the tree from root to a frontier node
-    2. Expansion    — create a new child node at the frontier
-    3. Simulation   — random rollout from the new node to a terminal state
-    4. Backpropagation — propagate the rollout result up to the root
+while budget remains AND NOT all root actions are Terminal:
+    1. Selection              — walk the tree from root to a frontier node
+    2. Expansion              — create a new child node at the frontier
+    3. Simulation             — random rollout from the new node to a terminal state
+    4. Backpropagation        — propagate the rollout result up to the root
+    5. Terminal propagation   — check if resolved subtrees can be collapsed
 ```
 
 After the loop, `extractBestPath` reads the tree greedily to return the
@@ -191,6 +192,107 @@ backPropagate(visitedStates, outcome):
 
 This is a simple additive update — every node on the path gets the full outcome.
 
+## Phase 5 — Terminal Propagation
+
+Terminal propagation replaces expanded actions with `Terminal` when the subtree
+below them is fully resolved — the outcome is known with certainty and no
+further simulation is needed. This redirects the search budget to unresolved
+parts of the tree and is especially valuable in endgame positions where many
+branches lead to forced outcomes.
+
+After backpropagation, the selection path is checked bottom-up (deepest visited
+node first, working toward the root). An expanded action (`DeterministicAction`
+or `StochasticAction`) is replaced by `Terminal(outcome)` when either of the
+following conditions holds for the **resulting state**:
+
+### Condition 1 — Guaranteed win
+
+The resulting state has at least one action that is `Terminal` with a 100% win
+probability for the **active player of the resulting state**. The active player
+can choose a move that guarantees a win, so the outcome is known.
+
+The outcome stored in the new `Terminal` is the best possible outcome for the
+active player — the `Terminal` action that gives them the highest win value.
+
+```
+Parent (Player 1's turn)
+  └─ action[2] = DeterministicAction(child)
+       child (Player 2's turn)
+         ├─ action[0] = Terminal([0.0, 1.0, 0.0])   ← P2 wins 100%
+         ├─ action[1] = DeterministicAction(...)
+         └─ action[2] = Terminal([1.0, 0.0, 0.0])   ← P1 wins 100%
+
+→ Condition 1 met: action[0] gives P2 (active player) a 100% win
+→ Parent's action[2] becomes Terminal([0.0, 1.0, 0.0])
+  (best outcome for P2, the active player of child)
+```
+
+### Condition 2 — Fully resolved subtree
+
+**All** actions of the resulting state are `Terminal`. Since every possible move
+leads to a known outcome, the active player will choose the action that gives
+them the highest win value.
+
+```
+Parent (Player 1's turn)
+  └─ action[0] = DeterministicAction(child)
+       child (Player 2's turn)
+         ├─ action[0] = Terminal([0.5, 0.3, 0.2])
+         └─ action[1] = Terminal([0.1, 0.6, 0.3])
+
+→ Condition 2 met: all actions are Terminal
+→ P2 picks action[1] (0.6 > 0.3, best for P2)
+→ Parent's action[0] becomes Terminal([0.1, 0.6, 0.3])
+```
+
+### Terminal game states (no actions)
+
+When expansion creates a child that has no actions (an empty `Actions` array),
+the parent's action pointing to it is immediately replaced with
+`Terminal(oneHotOutcome(child.PlayerTurn))`.
+
+### Stochastic actions
+
+A `StochasticAction` becomes `Terminal` under the same two conditions, but
+applied across all its outcomes. Since the game (not the player) chooses the
+stochastic outcome:
+
+- **Condition 1**: Only met if **all** outcome states satisfy condition 1 or 2
+  for the **same** player winning with 100%.
+
+- **Condition 2**: All outcome states have all their actions resolved as
+  `Terminal`. The stored outcome is the **weighted average** of the best outcomes
+  across the stochastic branches.
+
+```
+Parent
+  └─ action[1] = StochasticAction(outcomes)
+       outcome[0] (weight=1, P1's turn)
+         ├─ Terminal([1.0, 0.0])
+         └─ Terminal([0.0, 1.0])
+       outcome[1] (weight=2, P1's turn)
+         └─ Terminal([1.0, 0.0])
+
+→ All outcome states are fully resolved (condition 2)
+→ outcome[0]: P1 picks [1.0, 0.0] (best for P1)
+→ outcome[1]: P1 picks [1.0, 0.0] (best for P1)
+→ Weighted average: (1*[1.0, 0.0] + 2*[1.0, 0.0]) / 3 = [1.0, 0.0]
+→ Parent's action[1] becomes Terminal([1.0, 0.0])
+```
+
+Propagation stops as soon as a state does not satisfy either condition, since
+its parent cannot become Terminal if the state itself has unresolved actions.
+
+### Early search termination
+
+When all root actions become `Terminal`, the search stops early — no further
+simulation can change the outcome. The game itself continues to play out (to
+produce training labels, etc.), but no additional MCTS searches are required for
+the remaining moves.
+
+`LogInfo` includes a `reachedTerminal` field that is `true` when the search
+terminated early because the root was fully resolved.
+
 ## Best Path Extraction
 
 After the search loop, `extractBestPath` greedily follows the highest-valued
@@ -329,6 +431,17 @@ next chance event.
 | MaxSimulations       | int        | Int32.MaxValue | Maximum number of rollouts                         |
 | MaxRolloutDepth      | int        | 500            | Maximum depth per rollout before score fallback     |
 | ExplorationConstant  | float      | sqrt(2)        | UCB1 exploration weight (C)                        |
+| ActionRolloutLimit   | int        | Int32.MaxValue | Stop when any single action reaches this many rollouts |
 
-The search stops when either the time or simulation budget is exhausted,
-whichever comes first.
+The search stops when any budget is exhausted, or when all root actions have
+been resolved to `Terminal` via terminal propagation.
+
+## Logging
+
+`LogInfo` tracks per-search statistics:
+
+| Field            | Type     | Description                                                    |
+|------------------|----------|----------------------------------------------------------------|
+| simulations      | int      | Number of iterations performed                                 |
+| elapsedTime      | TimeSpan | Wall-clock time spent in the search                            |
+| reachedTerminal  | bool     | `true` if all root actions became `Terminal` during the search |

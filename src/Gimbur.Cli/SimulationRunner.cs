@@ -86,6 +86,12 @@ internal record StateRecord
     /// For stochastic actions, this is the sum of rollouts across all outcomes.
     /// </summary>
     public int BestActionRollouts { get; init; }
+
+    /// <summary>
+    /// Whether the MCTS search fully resolved the tree via terminal propagation.
+    /// When true, all root actions are Terminal and the win estimates are exact.
+    /// </summary>
+    public bool ReachedTerminal { get; init; }
 }
 
 /// <summary>
@@ -303,11 +309,21 @@ internal class SimulationRunner
     /// Extracts win counts and win rate for a given player from a child action
     /// in the MCTS tree. For deterministic actions, reads the child state directly.
     /// For stochastic actions, computes probability-weighted averages across outcomes.
-    /// Returns empty data for unexplored or terminal actions.
+    /// For terminal actions, returns the resolved outcome directly.
+    /// Returns empty data for unexplored actions.
     /// </summary>
     private static (double[] Wins, double WinRate, int Rollouts) GetChildWinData(
         Kjarni.MCTS.Types.Action childAction, int playerIndex)
     {
+        if (childAction.IsTerminal)
+        {
+            var outcome = ((Kjarni.MCTS.Types.Action.Terminal)childAction).Item;
+            var wins = (double[])outcome.Clone();
+            var wr = playerIndex < wins.Length ? wins[playerIndex] : 0.0;
+            // Rollouts = 0 signals that this is a resolved outcome, not a rollout estimate.
+            return (wins, wr, 0);
+        }
+
         if (childAction.IsDeterministicAction)
         {
             var child = ((Kjarni.MCTS.Types.Action.DeterministicAction)childAction).Item;
@@ -456,6 +472,7 @@ internal class SimulationRunner
                     BestActionWinRate = bestActionWinRate,
                     BestActionWins = bestActionWins,
                     BestActionRollouts = bestActionRollouts,
+                    ReachedTerminal = logInfo.reachedTerminal,
                 });
 
                 // Apply the best action from MCTS and advance the tree.
@@ -537,6 +554,14 @@ internal class SimulationRunner
                 .Where(s => s.Simulations > 0)
                 .Average(s => s.Simulations);
             Console.WriteLine($"Avg rollouts/MCTS decision: {avgRollouts:F0}");
+
+            var terminalCount = stats.Games
+                .SelectMany(g => g.States)
+                .Count(s => s.ReachedTerminal);
+            if (terminalCount > 0)
+            {
+                Console.WriteLine($"Reached terminal: {terminalCount}/{mctsStates} ({100.0 * terminalCount / mctsStates:F1}%)");
+            }
         }
 
         var wins = new int[5]; // index 0 = no winner
@@ -625,6 +650,7 @@ internal class SimulationRunner
                 s.BestActionWinRate,
                 s.BestActionWins,
                 s.BestActionRollouts,
+                s.ReachedTerminal,
                 permutations = symmetryPerms.Length > 0
                     ? symmetryPerms.Select(p => BoardSymmetry.PermuteState(s.SerializedState, p)).ToArray()
                     : Array.Empty<string>(),
