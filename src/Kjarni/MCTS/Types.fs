@@ -39,4 +39,5 @@ type LogInfo =
         val mutable winCounts: float array
         val mutable successfulTranspositionTableLookup: int
         val mutable transpositionTableSize: int
+        val mutable reachedTerminal: bool
     end

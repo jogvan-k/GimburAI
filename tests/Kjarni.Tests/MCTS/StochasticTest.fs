@@ -494,7 +494,9 @@ type StochasticSearchIntegrationTests() =
     [<Test>]
     member _.SearchWithStochasticAction_Completes() =
         // Root with a stochastic action: outcome A is P1 terminal, outcome B is P2 terminal.
-        // Weights are equal, so MCTS should converge.
+        // Weights are equal, so the expected result is a 50/50 win rate.
+        // Because both outcomes are terminal game states, terminal propagation
+        // resolves the tree after just 2 rollouts (one per outcome).
         let outcomeA = terminalNode p1 10
         let outcomeB = terminalNode p2 11
         let root = stochastic_node (p1, 0, 0, 0, [ (1, outcomeA); (1, outcomeB) ])
@@ -502,9 +504,12 @@ type StochasticSearchIntegrationTests() =
 
         let mcts = MonteCarloTreeSearch({ MCTSConfig.Default with SearchTime = Seconds 5; MaxSimulations = 100 })
         let result = mcts.RunSimulation(mctsRoot)
+        let logInfo = mcts.LatestLogInfo()
 
-        result.Rollouts |> should equal 100
-        mctsRoot.Rollouts |> should equal 100
+        // Search terminates early via terminal propagation
+        logInfo.reachedTerminal |> should be True
+        result.Rollouts |> should be (lessThan 100)
+        mctsRoot.Rollouts |> should equal result.Rollouts
 
     [<Test>]
     member _.SearchWithMixedActions_PrefersWinningPath() =
@@ -540,7 +545,8 @@ type StochasticSearchIntegrationTests() =
     member _.SearchWithHeavilyBiasedStochastic_ConvergesCorrectly() =
         // Root has a single stochastic action with:
         // weight 9 → P1 wins, weight 1 → P2 wins
-        // After many simulations, the root should have ~90% P1 win rate.
+        // Both outcomes are terminal game states, so terminal propagation
+        // resolves the tree with the weighted average outcome [0.9, 0.1].
         let outcomeA = terminalNode p1 10
         let outcomeB = terminalNode p2 11
         let root = stochastic_node (p1, 0, 0, 0, [ (9, outcomeA); (1, outcomeB) ])
@@ -548,7 +554,14 @@ type StochasticSearchIntegrationTests() =
 
         let mcts = MonteCarloTreeSearch({ MCTSConfig.Default with SearchTime = Seconds 5; MaxSimulations = 1000 })
         let _ = mcts.RunSimulation(mctsRoot)
+        let logInfo = mcts.LatestLogInfo()
 
-        let p1WinRate = winRate mctsRoot Player.Player1
-        // Should be close to 0.9
-        p1WinRate |> should (equalWithin 0.1) 0.9
+        // Search terminates early via terminal propagation
+        logInfo.reachedTerminal |> should be True
+
+        // The root's only action should now be Terminal with the weighted average
+        match mctsRoot.Actions.[0] with
+        | Terminal outcome ->
+            outcome.[int Player.Player1] |> should (equalWithin 0.001) 0.9
+            outcome.[int Player.Player2] |> should (equalWithin 0.001) 0.1
+        | a -> Assert.Fail $"Expected Terminal, got %A{a}"

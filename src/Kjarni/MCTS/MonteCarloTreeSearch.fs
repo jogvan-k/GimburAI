@@ -26,6 +26,7 @@ type MonteCarloTreeSearch(config: MCTSConfig) =
         let mutable logInfo = LogInfo()
         logInfo.simulations <- root.Rollouts
         logInfo.elapsedTime <- timer.Elapsed
+        logInfo.reachedTerminal <- isResolved root
 
         _logInfos <- logInfo :: _logInfos
 

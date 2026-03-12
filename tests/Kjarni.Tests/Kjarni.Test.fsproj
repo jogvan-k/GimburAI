@@ -23,6 +23,7 @@
         <Compile Include="MCTS\BenchmarkTest.fs" />
         <Compile Include="MCTS\StateTest.fs" />
         <Compile Include="MCTS\StochasticTest.fs" />
+        <Compile Include="MCTS\TerminalPropagationTest.fs" />
         <Compile Include="program.fs" />
     </ItemGroup>
 
