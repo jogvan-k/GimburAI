@@ -12,17 +12,23 @@ Each sample is a ``(token_ids, target_bucket)`` pair where:
 - ``target_bucket`` is the index of the nearest bucket centre to the
   target player's win probability derived from ``bestActionWins``.
 
+The train/val/test split is performed at the **game** level so that all
+samples derived from a single game belong to exactly one split.
+
 Usage::
 
-    from gimbur_nn.data_loader import SimulationDataset
+    from gimbur_nn.data_loader import load_games, split_games, SimulationDataset
 
-    dataset = SimulationDataset("games.jsonl", game_cfg)
-    loader = torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=True)
+    games = load_games("exports/")
+    train_games, val_games, test_games = split_games(games, val=0.1, test=0.1)
+    train_ds = SimulationDataset(train_games, game_cfg)
+    loader = torch.utils.data.DataLoader(train_ds, batch_size=64, shuffle=True)
 """
 
 from __future__ import annotations
 
 import json
+import random
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -64,36 +70,108 @@ def _prob_to_bucket(prob: float, n_buckets: int) -> int:
     return min(bucket, n_buckets - 1)
 
 
-def load_samples(
-    path: str | Path,
+# ── Loading games ────────────────────────────────────────────────────
+
+
+def load_games(path: str | Path) -> list[dict]:
+    """Load game records from a JSONL file or directory of JSONL files.
+
+    Args:
+        path: A single ``.jsonl`` file or a directory containing one or
+            more ``.jsonl`` files.
+
+    Returns:
+        A list of parsed game dicts (one per JSONL line).
+    """
+    p = Path(path)
+    if p.is_dir():
+        files = sorted(p.glob("*.jsonl"))
+    else:
+        files = [p]
+
+    games: list[dict] = []
+    for f in files:
+        with f.open() as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                games.append(json.loads(line))
+    return games
+
+
+# ── Splitting ────────────────────────────────────────────────────────
+
+
+def split_games(
+    games: list[dict],
+    *,
+    val: float = 0.1,
+    test: float = 0.0,
+    seed: int = 42,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Split games into train / val / test sets.
+
+    The split is performed at the **game** level so samples from the
+    same game never leak across sets.
+
+    Args:
+        games: Full list of game dicts.
+        val: Fraction of games for validation (0 to skip).
+        test: Fraction of games for test (0 to skip).
+        seed: Random seed for reproducibility.
+
+    Returns:
+        ``(train_games, val_games, test_games)`` — three disjoint lists.
+    """
+    if val < 0 or test < 0 or val + test > 1.0:
+        msg = f"val ({val}) + test ({test}) must be in [0, 1]"
+        raise ValueError(msg)
+
+    n = len(games)
+    indices = list(range(n))
+    random.Random(seed).shuffle(indices)
+
+    n_test = int(n * test)
+    n_val = int(n * val)
+
+    test_idx = indices[:n_test]
+    val_idx = indices[n_test : n_test + n_val]
+    train_idx = indices[n_test + n_val :]
+
+    return (
+        [games[i] for i in train_idx],
+        [games[i] for i in val_idx],
+        [games[i] for i in test_idx],
+    )
+
+
+# ── Sample expansion ────────────────────────────────────────────────
+
+
+def expand_games(
+    games: list[dict],
     cfg: GameConfig,
     *,
     n_buckets: int = 128,
 ) -> list[tuple[torch.Tensor, int]]:
-    """Load all training samples from a JSONL file.
+    """Expand a list of game dicts into ``(token_ids, bucket)`` samples.
 
-    Each sample is a ``(token_ids, target_bucket)`` tuple.
+    Each game's states are expanded via symmetry permutations and player
+    rotation.
 
     Args:
-        path: Path to the JSONL file exported by ``gimbur simulate --export``.
+        games: List of parsed game dicts.
         cfg: Game configuration matching the exported data.
         n_buckets: Number of output buckets (must match the model).
 
     Returns:
         A flat list of ``(token_ids, target_bucket)`` pairs.
     """
-    path = Path(path)
     samples: list[tuple[torch.Tensor, int]] = []
     n_players = cfg.player_count
-
-    with path.open() as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            game = json.loads(line)
-            _process_game(game, cfg, n_players, n_buckets, samples)
-
+    for game in games:
+        _process_game(game, cfg, n_players, n_buckets, samples)
     return samples
 
 
@@ -130,53 +208,47 @@ def _process_game(
                 samples.append((token_ids, bucket))
 
 
-def load_samples_from_dir(
-    directory: str | Path,
+# ── Legacy convenience (used by tests) ───────────────────────────────
+
+
+def load_samples(
+    path: str | Path,
     cfg: GameConfig,
     *,
     n_buckets: int = 128,
 ) -> list[tuple[torch.Tensor, int]]:
-    """Load training samples from all ``.jsonl`` files in *directory*.
+    """Load and expand all samples from a JSONL file.
 
-    Files are discovered with ``*.jsonl`` glob and processed in sorted
-    order.  Returns a flat list identical in format to :func:`load_samples`.
+    Convenience wrapper: ``load_games(path)`` → ``expand_games(…)``.
     """
-    directory = Path(directory)
-    files = sorted(directory.glob("*.jsonl"))
-    samples: list[tuple[torch.Tensor, int]] = []
-    for f in files:
-        samples.extend(load_samples(f, cfg, n_buckets=n_buckets))
-    return samples
+    return expand_games(load_games(path), cfg, n_buckets=n_buckets)
+
+
+# ── Dataset ──────────────────────────────────────────────────────────
 
 
 class SimulationDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
-    """PyTorch dataset backed by JSONL export files.
+    """PyTorch dataset backed by a list of game records.
 
-    Loads all samples into memory on construction.  Each item is a
-    ``(token_ids, target_bucket)`` pair where ``token_ids`` is a 1-D
-    ``int`` tensor and ``target_bucket`` is a scalar ``long`` tensor.
-
-    *path* may be a single ``.jsonl`` file **or** a directory containing
-    one or more ``.jsonl`` files.
+    Expands games into samples on construction and holds them in memory.
+    Each item is a ``(token_ids, target_bucket)`` pair where
+    ``token_ids`` is a 1-D ``int`` tensor and ``target_bucket`` is a
+    scalar ``long`` tensor.
 
     Args:
-        path: Path to a JSONL file or a directory of JSONL files.
+        games: List of parsed game dicts (from :func:`load_games`).
         cfg: Game configuration matching the exported data.
         n_buckets: Number of output buckets (default 128).
     """
 
     def __init__(
         self,
-        path: str | Path,
+        games: list[dict],
         cfg: GameConfig,
         *,
         n_buckets: int = 128,
     ) -> None:
-        p = Path(path)
-        if p.is_dir():
-            raw = load_samples_from_dir(p, cfg, n_buckets=n_buckets)
-        else:
-            raw = load_samples(p, cfg, n_buckets=n_buckets)
+        raw = expand_games(games, cfg, n_buckets=n_buckets)
         self._tokens = [t for t, _ in raw]
         self._targets = torch.tensor([b for _, b in raw], dtype=torch.long)
 

@@ -12,7 +12,10 @@ from gimbur_nn.data_loader import (
     SimulationDataset,
     _prob_to_bucket,
     _win_probability,
+    expand_games,
+    load_games,
     load_samples,
+    split_games,
 )
 from gimbur_nn.game_config import MINI_2P
 
@@ -79,6 +82,22 @@ def _write_jsonl(path: Path, games: list[dict]) -> None:
             f.write(json.dumps(game) + "\n")
 
 
+def _simple_game(wins: list[float] | None = None) -> dict:
+    """Shorthand for a 1-state mini 2p game with no permutations."""
+    return _make_game(
+        board=MINI_BOARD,
+        board_perms=[],
+        states=[
+            _make_state(
+                state_str=MINI_STATE_ONLY,
+                state_perms=[],
+                best_action_wins=wins or [50.0, 50.0],
+            ),
+        ],
+        n_players=2,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Mini 2p example strings (from docs/state-serialization.md)
 # ---------------------------------------------------------------------------
@@ -134,7 +153,85 @@ class TestProbToBucket:
 
 
 # ---------------------------------------------------------------------------
-# Integration: load_samples
+# load_games
+# ---------------------------------------------------------------------------
+
+
+class TestLoadGames:
+    def test_single_file(self, tmp_path: Path) -> None:
+        games = [_simple_game(), _simple_game()]
+        _write_jsonl(tmp_path / "a.jsonl", games)
+        loaded = load_games(tmp_path / "a.jsonl")
+        assert len(loaded) == 2
+
+    def test_directory(self, tmp_path: Path) -> None:
+        _write_jsonl(tmp_path / "a.jsonl", [_simple_game()])
+        _write_jsonl(tmp_path / "b.jsonl", [_simple_game(), _simple_game()])
+        loaded = load_games(tmp_path)
+        assert len(loaded) == 3
+
+    def test_empty_file(self, tmp_path: Path) -> None:
+        (tmp_path / "empty.jsonl").write_text("")
+        loaded = load_games(tmp_path / "empty.jsonl")
+        assert len(loaded) == 0
+
+    def test_blank_lines_skipped(self, tmp_path: Path) -> None:
+        content = "\n" + json.dumps(_simple_game()) + "\n\n"
+        (tmp_path / "test.jsonl").write_text(content)
+        loaded = load_games(tmp_path / "test.jsonl")
+        assert len(loaded) == 1
+
+
+# ---------------------------------------------------------------------------
+# split_games
+# ---------------------------------------------------------------------------
+
+
+class TestSplitGames:
+    def test_default_split(self) -> None:
+        games = [_simple_game() for _ in range(100)]
+        train, val, test = split_games(games)
+        assert len(train) == 90
+        assert len(val) == 10
+        assert len(test) == 0
+        assert len(train) + len(val) + len(test) == 100
+
+    def test_val_and_test(self) -> None:
+        games = [_simple_game() for _ in range(100)]
+        train, val, test = split_games(games, val=0.1, test=0.1)
+        assert len(test) == 10
+        assert len(val) == 10
+        assert len(train) == 80
+
+    def test_no_split(self) -> None:
+        games = [_simple_game() for _ in range(10)]
+        train, val, test = split_games(games, val=0.0, test=0.0)
+        assert len(train) == 10
+        assert len(val) == 0
+        assert len(test) == 0
+
+    def test_deterministic(self) -> None:
+        games = [_simple_game() for _ in range(50)]
+        t1, v1, te1 = split_games(games, val=0.2, test=0.1)
+        t2, v2, te2 = split_games(games, val=0.2, test=0.1)
+        assert t1 == t2
+        assert v1 == v2
+        assert te1 == te2
+
+    def test_invalid_fractions_raises(self) -> None:
+        with pytest.raises(ValueError):
+            split_games([], val=0.6, test=0.5)
+
+    def test_small_dataset_no_val(self) -> None:
+        """With only 1 game, int(1*0.1)=0 so all go to train."""
+        games = [_simple_game()]
+        train, val, test = split_games(games, val=0.1)
+        assert len(train) == 1
+        assert len(val) == 0
+
+
+# ---------------------------------------------------------------------------
+# Integration: load_samples (convenience wrapper)
 # ---------------------------------------------------------------------------
 
 
@@ -165,8 +262,6 @@ class TestLoadSamples:
 
     def test_with_permutations(self, tmp_path: Path) -> None:
         """With 2 permutations: 1 state * 3 combos * 2 players = 6 samples."""
-        # Use the identity board/state as "permutations" for simplicity.
-        # The loader doesn't validate content, just expansion count.
         game = _make_game(
             board=MINI_BOARD,
             board_perms=[MINI_BOARD, MINI_BOARD],
@@ -302,26 +397,30 @@ class TestLoadSamples:
 
 
 # ---------------------------------------------------------------------------
-# SimulationDataset
+# expand_games
+# ---------------------------------------------------------------------------
+
+
+class TestExpandGames:
+    def test_expand_single_game(self) -> None:
+        games = [_simple_game()]
+        samples = expand_games(games, MINI_2P)
+        assert len(samples) == 2  # 1 state * 1 combo * 2 players
+
+    def test_expand_empty(self) -> None:
+        samples = expand_games([], MINI_2P)
+        assert len(samples) == 0
+
+
+# ---------------------------------------------------------------------------
+# SimulationDataset (now takes games list)
 # ---------------------------------------------------------------------------
 
 
 class TestSimulationDataset:
-    def test_len_and_getitem(self, tmp_path: Path) -> None:
-        game = _make_game(
-            board=MINI_BOARD,
-            board_perms=[],
-            states=[
-                _make_state(
-                    state_str=MINI_STATE_ONLY,
-                    state_perms=[],
-                    best_action_wins=[60.0, 40.0],
-                ),
-            ],
-            n_players=2,
-        )
-        _write_jsonl(tmp_path / "test.jsonl", [game])
-        ds = SimulationDataset(tmp_path / "test.jsonl", MINI_2P)
+    def test_len_and_getitem(self) -> None:
+        games = [_simple_game([60.0, 40.0])]
+        ds = SimulationDataset(games, MINI_2P)
 
         assert len(ds) == 2
 
@@ -331,23 +430,15 @@ class TestSimulationDataset:
         assert target.dtype == torch.long
         assert 0 <= target.item() < 128
 
-    def test_compatible_with_dataloader(self, tmp_path: Path) -> None:
-        game = _make_game(
-            board=MINI_BOARD,
-            board_perms=[],
-            states=[
-                _make_state(
-                    state_str=MINI_STATE_ONLY,
-                    state_perms=[],
-                    best_action_wins=[50.0, 50.0],
-                ),
-            ],
-            n_players=2,
-        )
-        _write_jsonl(tmp_path / "test.jsonl", [game])
-        ds = SimulationDataset(tmp_path / "test.jsonl", MINI_2P)
+    def test_compatible_with_dataloader(self) -> None:
+        games = [_simple_game()]
+        ds = SimulationDataset(games, MINI_2P)
         loader = torch.utils.data.DataLoader(ds, batch_size=2)
 
         batch_tokens, batch_targets = next(iter(loader))
         assert batch_tokens.shape == (2, MINI_2P.state_token_size)
         assert batch_targets.shape == (2,)
+
+    def test_empty_games_list(self) -> None:
+        ds = SimulationDataset([], MINI_2P)
+        assert len(ds) == 0
