@@ -36,9 +36,9 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 
-from .data_loader import SimulationDataset
+from .data_loader import SimulationDataset, load_games, split_games
 from .game_config import CONFIGS_BY_NAME
 from .transformer_model import (
     MODEL_CONFIGS_BY_NAME,
@@ -98,7 +98,13 @@ def parse_args() -> argparse.Namespace:
         "--val-split",
         type=float,
         default=0.1,
-        help="Fraction of data to hold out for validation (0 to disable).",
+        help="Fraction of games to hold out for validation (0 to disable).",
+    )
+    parser.add_argument(
+        "--test-split",
+        type=float,
+        default=0.0,
+        help="Fraction of games to hold out for testing (0 to disable).",
     )
     parser.add_argument(
         "--log-interval",
@@ -185,35 +191,37 @@ def main() -> None:
     )
 
     # ── Data ─────────────────────────────────────────────────────────
-    print(f"Loading data from {args.data} ...")
+    print(f"Loading games from {args.data} ...")
     t0 = time.monotonic()
-    full_dataset = SimulationDataset(
-        args.data,
-        game_cfg,
-        n_buckets=model_cfg.n_buckets,
-    )
+    all_games = load_games(args.data)
     elapsed = time.monotonic() - t0
-    print(f"Loaded {len(full_dataset):,} samples in {elapsed:.1f}s")
+    print(f"Loaded {len(all_games):,} games in {elapsed:.1f}s")
 
-    if len(full_dataset) == 0:
-        print("No samples found — nothing to train on.")
+    if not all_games:
+        print("No games found — nothing to train on.")
         return
 
-    # ── Train / val split ────────────────────────────────────────────
-    val_size = int(len(full_dataset) * args.val_split)
-    train_size = len(full_dataset) - val_size
+    # ── Game-level train / val / test split ──────────────────────────
+    train_games, val_games, test_games = split_games(
+        all_games, val=args.val_split, test=args.test_split
+    )
 
-    if val_size > 0:
-        train_dataset, val_dataset = random_split(
-            full_dataset,
-            [train_size, val_size],
-            generator=torch.Generator().manual_seed(42),
-        )
-        print(f"Split: {train_size:,} train, {val_size:,} val")
-    else:
-        train_dataset = full_dataset
-        val_dataset = None
-        print(f"No validation split (all {train_size:,} samples used for training)")
+    train_dataset = SimulationDataset(train_games, game_cfg, n_buckets=model_cfg.n_buckets)
+    print(f"Train: {len(train_games):,} games -> {len(train_dataset):,} samples")
+
+    val_dataset: SimulationDataset | None = None
+    if val_games:
+        val_dataset = SimulationDataset(val_games, game_cfg, n_buckets=model_cfg.n_buckets)
+        print(f"Val:   {len(val_games):,} games -> {len(val_dataset):,} samples")
+
+    test_dataset: SimulationDataset | None = None
+    if test_games:
+        test_dataset = SimulationDataset(test_games, game_cfg, n_buckets=model_cfg.n_buckets)
+        print(f"Test:  {len(test_games):,} games -> {len(test_dataset):,} samples")
+
+    if len(train_dataset) == 0:
+        print("No training samples — nothing to train on.")
+        return
 
     train_loader = DataLoader(
         train_dataset,
@@ -274,6 +282,18 @@ def main() -> None:
             break
 
     print(f"Training complete ({epoch} epochs). Checkpoint at {args.out}")
+
+    # ── Test evaluation ──────────────────────────────────────────────
+    if test_dataset is not None and len(test_dataset) > 0:
+        test_loader: DataLoader[tuple[torch.Tensor, torch.Tensor]] = DataLoader(
+            test_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+        )
+        # Reload best checkpoint for test evaluation.
+        model.load_state_dict(torch.load(args.out, map_location=device, weights_only=True))
+        test_loss = _run_epoch(model, test_loader, device, None, 0, 0, "test")
+        print(f"Test loss: {test_loss:.4f}")
 
 
 if __name__ == "__main__":
