@@ -1,34 +1,59 @@
 """
 Training loop for GimburTransformer.
 
-Currently implements a dummy training mode that initialises a model with
-random weights and saves it to disk.  Real training (reading JSONL data
-exported by ``gimbur simulate --export``) will be added later.
+Reads JSONL data exported by ``gimbur simulate --export``, expands
+states via symmetry permutations and player rotation, and trains the
+model to predict a win-probability bucket distribution via
+cross-entropy loss.
 
 Usage::
 
+    # Train until val loss plateaus (default: patience=5)
     python -m gimbur_nn.train \
+        --data exports/ \
         --game-config mini_2p \
         --model-config small \
         --out model.pt
+
+    # Train for a fixed number of epochs (still stops early if val loss plateaus)
+    python -m gimbur_nn.train \
+        --data exports/ \
+        --game-config mini_2p \
+        --model-config small \
+        --out model.pt \
+        --epochs 20 \
+        --patience 10
+
+``--data`` may point to a single ``.jsonl`` file **or** a directory
+containing one or more ``.jsonl`` files.
 """
 
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, random_split
 
+from .data_loader import SimulationDataset
 from .game_config import CONFIGS_BY_NAME
 from .transformer_model import (
-    GimburTransformer,
     MODEL_CONFIGS_BY_NAME,
+    GimburTransformer,
 )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train GimburTransformer on simulation data.")
+    parser.add_argument(
+        "--data",
+        type=Path,
+        required=True,
+        help="Path to a JSONL file or a directory of JSONL files.",
+    )
     parser.add_argument(
         "--game-config",
         type=str,
@@ -49,7 +74,92 @@ def parse_args() -> argparse.Namespace:
         default=Path("model.pt"),
         help="Output checkpoint path (default: model.pt).",
     )
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="Path to an existing checkpoint to resume training from.",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=0,
+        help="Max training epochs (0 = unlimited, stop only via patience).",
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=5,
+        help="Stop after N epochs with no val loss improvement (requires --val-split > 0).",
+    )
+    parser.add_argument("--batch-size", type=int, default=64, help="Batch size.")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")
+    parser.add_argument(
+        "--val-split",
+        type=float,
+        default=0.1,
+        help="Fraction of data to hold out for validation (0 to disable).",
+    )
+    parser.add_argument(
+        "--log-interval",
+        type=int,
+        default=50,
+        help="Print training loss every N batches (0 to disable).",
+    )
     return parser.parse_args()
+
+
+def _run_epoch(
+    model: GimburTransformer,
+    loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
+    device: torch.device,
+    optimizer: torch.optim.Optimizer | None,
+    log_interval: int,
+    epoch: int,
+    phase: str,
+) -> float:
+    """Run one epoch (train or eval).
+
+    When *optimizer* is ``None`` the model runs in eval mode with no
+    gradient updates (validation).
+
+    Returns the mean loss over the epoch.
+    """
+    is_train = optimizer is not None
+    model.train(is_train)
+
+    total_loss = 0.0
+    total_samples = 0
+
+    ctx = torch.no_grad() if not is_train else torch.enable_grad()
+    with ctx:
+        for batch_idx, (token_ids, targets) in enumerate(loader):
+            token_ids = token_ids.to(device)
+            targets = targets.to(device)
+
+            logits = model(token_ids)  # (batch, seq_len, n_buckets)
+            last_logits = logits[:, -1, :]  # (batch, n_buckets)
+
+            loss = F.cross_entropy(last_logits, targets)
+
+            if is_train:
+                assert optimizer is not None
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+            batch_size = token_ids.shape[0]
+            total_loss += loss.item() * batch_size
+            total_samples += batch_size
+
+            if is_train and log_interval > 0 and (batch_idx + 1) % log_interval == 0:
+                avg = total_loss / total_samples
+                print(
+                    f"  [{phase}] epoch {epoch} | batch {batch_idx + 1} | "
+                    f"loss {loss.item():.4f} (running avg {avg:.4f})"
+                )
+
+    return total_loss / total_samples if total_samples > 0 else 0.0
 
 
 def main() -> None:
@@ -58,14 +168,112 @@ def main() -> None:
     game_cfg = CONFIGS_BY_NAME[args.game_config]
     model_cfg = MODEL_CONFIGS_BY_NAME[args.model_config]
 
+    # ── Device ───────────────────────────────────────────────────────
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # ── Model ────────────────────────────────────────────────────────
     model = GimburTransformer(game_cfg, model_cfg)
+    if args.resume is not None:
+        model.load_state_dict(torch.load(args.resume, map_location=device, weights_only=True))
+        print(f"Resumed from checkpoint {args.resume}")
+    model.to(device)
+
     param_count = sum(p.numel() for p in model.parameters())
     print(
-        f"Initialised {args.model_config} model for {args.game_config} ({param_count:,} parameters)"
+        f"Model: {args.model_config} for {args.game_config} "
+        f"({param_count:,} parameters) on {device}"
     )
 
-    torch.save(model.state_dict(), args.out)
-    print(f"Saved checkpoint to {args.out}")
+    # ── Data ─────────────────────────────────────────────────────────
+    print(f"Loading data from {args.data} ...")
+    t0 = time.monotonic()
+    full_dataset = SimulationDataset(
+        args.data,
+        game_cfg,
+        n_buckets=model_cfg.n_buckets,
+    )
+    elapsed = time.monotonic() - t0
+    print(f"Loaded {len(full_dataset):,} samples in {elapsed:.1f}s")
+
+    if len(full_dataset) == 0:
+        print("No samples found — nothing to train on.")
+        return
+
+    # ── Train / val split ────────────────────────────────────────────
+    val_size = int(len(full_dataset) * args.val_split)
+    train_size = len(full_dataset) - val_size
+
+    if val_size > 0:
+        train_dataset, val_dataset = random_split(
+            full_dataset,
+            [train_size, val_size],
+            generator=torch.Generator().manual_seed(42),
+        )
+        print(f"Split: {train_size:,} train, {val_size:,} val")
+    else:
+        train_dataset = full_dataset
+        val_dataset = None
+        print(f"No validation split (all {train_size:,} samples used for training)")
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+    )
+    val_loader: DataLoader[tuple[torch.Tensor, torch.Tensor]] | None = None
+    if val_dataset is not None:
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+        )
+
+    # ── Optimizer ────────────────────────────────────────────────────
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+
+    # ── Training loop ────────────────────────────────────────────────
+    best_val_loss = float("inf")
+    epochs_without_improvement = 0
+    max_epochs = args.epochs if args.epochs > 0 else None
+    epoch = 0
+
+    while True:
+        epoch += 1
+        if max_epochs is not None and epoch > max_epochs:
+            break
+
+        t_start = time.monotonic()
+
+        train_loss = _run_epoch(
+            model, train_loader, device, optimizer, args.log_interval, epoch, "train"
+        )
+
+        label = f"{epoch}/{max_epochs}" if max_epochs else str(epoch)
+        msg = f"Epoch {label} | train loss {train_loss:.4f}"
+
+        if val_loader is not None:
+            val_loss = _run_epoch(model, val_loader, device, None, 0, epoch, "val")
+            msg += f" | val loss {val_loss:.4f}"
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                epochs_without_improvement = 0
+                torch.save(model.state_dict(), args.out)
+                msg += " (best, saved)"
+            else:
+                epochs_without_improvement += 1
+        else:
+            torch.save(model.state_dict(), args.out)
+
+        elapsed = time.monotonic() - t_start
+        msg += f" | {elapsed:.1f}s"
+        print(msg)
+
+        if val_loader is not None and epochs_without_improvement >= args.patience:
+            print(f"Early stopping: no val loss improvement for {args.patience} epochs")
+            break
+
+    print(f"Training complete ({epoch} epochs). Checkpoint at {args.out}")
 
 
 if __name__ == "__main__":

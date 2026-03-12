@@ -29,8 +29,8 @@ from pydantic import BaseModel
 from .game_config import CONFIGS_BY_NAME, GameConfig
 from .tokenizer import rotate_player_state, tokenize_batch
 from .transformer_model import (
-    GimburTransformer,
     MODEL_CONFIGS_BY_NAME,
+    GimburTransformer,
 )
 
 
