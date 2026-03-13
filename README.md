@@ -100,29 +100,35 @@ The goal is to train a neural network that evaluates board positions (state to w
 
 #### 3a: Data Pipeline
 
-- [ ] Export game states as training examples (state, win probability label)
-- [ ] Random rollout labeling (play N random games from state, label = win%)
-- [ ] MCTS-informed labeling (MCTS search value as label)
-- [ ] Dihedral group D₆ expansion: augment each training example by applying all 12 symmetries (6 rotations + 6 reflections) of the hexagonal board, multiplying dataset size by 12
+- [x] Export game states as training examples (state, win probability label)
+- [x] Random rollout labeling (play N random games from state, label = win%)
+- [x] MCTS-informed labeling (MCTS search value as label)
+- [x] Dihedral group D₆ expansion: augment each training example by applying all 12 symmetries (6 rotations + 6 reflections) of the hexagonal board, multiplying dataset size by 12
 - [ ] Large-scale batch generation (parallel simulation, output to files)
 
 #### 3b: Transformer Model (v1)
 
-- [ ] Python project setup (PyTorch, pyproject.toml)
-- [ ] Transformer architecture: serialized state tokens to win probability (scalar 0-1)
-- [ ] Training loop, validation, metrics (MSE, win/loss prediction accuracy)
-- [ ] Model export for .NET inference (ONNX)
+- [x] Python project setup (PyTorch, pyproject.toml)
+- [x] Transformer architecture: serialized state tokens to win probability (scalar 0-1)
+- [x] Training loop, validation, metrics (MSE, win/loss prediction accuracy)
+- [x] Serve model using python endpoint
 
 #### 3c: Self-Play Loop (AlphaZero-style)
 
-- [ ] Generation 0: train model on greedy-rollout-labeled data
+- [x] Generation 0: train model on greedy-rollout-labeled data
 - [ ] Inference integration: load model into Kjarni as leaf evaluator
 - [ ] Generation N: model-backed MCTS plays games, generate training data, retrain
 - [ ] Automated pipeline: generate, train, evaluate, promote best model, repeat
-- [ ] Elo tracking per generation (each generation vs. previous + vs. greedy baseline)
+- [ ] Elo tracking per generation (each generation vs. previous + vs. random and greedy baseline)
 - [ ] Win-rate plotting across generations (improvement curve)
 - [ ] Loss / accuracy plots per training run
 - [ ] Saturation detection: identify when win-rate gains plateau across generations
+
+#### 3d: Scale to compute cluster
+
+- [ ] Set up Azure resource templates using bicept, including storage, compute & inference VMs, and k8s
+- [ ] Deployment scripts for resources
+- [ ] Create orchestration node on local machine that starts and monitors jobs, and iterates between label generation, model training, and benchmarking
 
 ### Phase 4: Final AI (Model-Only, No Search)
 
@@ -131,11 +137,11 @@ The goal is to train a neural network that evaluates board positions (state to w
 - [ ] Performance optimization (batch inference, caching)
 - [ ] Comparison: model-only vs. MCTS-backed vs. greedy baseline
 
-### Phase 5: Catanatron Benchmark Adapter
+### Phase 5: JSettlers Benchmark Adapter
 
-- [ ] Research Catanatron API for plugging in custom AI players
-- [ ] Adapter: translate Catanatron state/actions to GimburAI and back
-- [ ] Tournament runner: GimburAI vs. Catanatron built-in AIs
+- [ ] Research JSettlers API for plugging in custom AI players
+- [ ] Adapter: translate JSettlers state/actions to GimburAI and back
+- [ ] Tournament runner: GimburAI vs. JSettlers built-in AIs
 - [ ] Elo / win-rate benchmarking
 
 ### Phase 6: Model Architecture Experiments
