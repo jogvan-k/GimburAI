@@ -1,12 +1,18 @@
 module Kjarni.MCTS.Types
 
 open System
+open System.Threading
 open Kjarni
 
 type MCTSState(state: ICoreState) =
+    static let mutable _nextNodeId = 0L
+    let _nodeId = Interlocked.Increment(&_nextNodeId)
     let mutable _rollouts = 0
     let mutable _winCounts = Array.zeroCreate<float> state.NumberOfPlayers
     let mutable _actions = state.Actions() |> Array.map Unexplored
+    let mutable _priors: float[] option = None
+    /// Unique identifier for this node, used to correlate prior responses.
+    member _.NodeId = _nodeId
     member _.Rollouts
       with get () = _rollouts
       and set value = _rollouts <- value
@@ -17,6 +23,11 @@ type MCTSState(state: ICoreState) =
     member _.Actions
       with get () = _actions
       and set value = _actions <- value
+    /// Optional NN prior policy over actions. When Some, actionEvaluator uses
+    /// P(action_i) = Priors[i] in the PUCT formula. When None, uniform prior.
+    member _.Priors
+      with get () = _priors
+      and set value = _priors <- value
 
 and Action =
     | Unexplored of CoreAction
@@ -40,4 +51,7 @@ type LogInfo =
         val mutable successfulTranspositionTableLookup: int
         val mutable transpositionTableSize: int
         val mutable reachedTerminal: bool
+        val mutable priorsRequested: int
+        val mutable priorsApplied: int
+        val mutable priorStatesEvaluated: int
     end

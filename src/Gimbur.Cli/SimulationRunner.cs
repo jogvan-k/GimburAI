@@ -51,6 +51,18 @@ internal record SimulationOptions
     /// Defaults to true (all valid symmetries for the map).
     /// </summary>
     public bool Symmetries { get; init; } = true;
+
+    /// <summary>
+    /// Whether to enable async NN prior evaluation during MCTS search.
+    /// Requires a running inference server at <see cref="NnUrl"/>.
+    /// </summary>
+    public bool Prior { get; init; }
+
+    /// <summary>
+    /// Base URL of the NN inference server. Used when <see cref="Prior"/> is true.
+    /// Defaults to http://localhost:8000.
+    /// </summary>
+    public string NnUrl { get; init; } = "http://localhost:8000";
 }
 
 /// <summary>
@@ -92,6 +104,22 @@ internal record StateRecord
     /// When true, all root actions are Terminal and the win estimates are exact.
     /// </summary>
     public bool ReachedTerminal { get; init; }
+
+    /// <summary>
+    /// Number of prior requests sent to the NN inference server during this MCTS search.
+    /// </summary>
+    public int PriorsRequested { get; init; }
+
+    /// <summary>
+    /// Number of prior responses successfully applied to tree nodes during this MCTS search.
+    /// </summary>
+    public int PriorsApplied { get; init; }
+
+    /// <summary>
+    /// Number of individual states evaluated by the NN server during this MCTS search.
+    /// A single request may contain multiple states (one per action outcome).
+    /// </summary>
+    public int PriorStatesEvaluated { get; init; }
 }
 
 /// <summary>
@@ -159,6 +187,9 @@ internal class SimulationRunner
             Console.WriteLine($"  MCTS search time: {_options.SearchTimeMs}ms");
             Console.WriteLine($"  MCTS max simulations: {(_options.MaxSimulations == int.MaxValue ? "unlimited" : _options.MaxSimulations.ToString())}");
             Console.WriteLine($"  MCTS action rollout limit: {(_options.ActionRolloutLimit == int.MaxValue ? "unlimited" : _options.ActionRolloutLimit.ToString())}");
+            Console.WriteLine($"  Prior: {(_options.Prior ? "enabled" : "disabled")}");
+            if (_options.Prior)
+                Console.WriteLine($"  NN server: {_options.NnUrl}");
             Console.WriteLine($"  Parallelism: {Environment.ProcessorCount} cores");
             if (_options.ExportPath is not null)
             {
@@ -193,6 +224,13 @@ internal class SimulationRunner
 
         var totalStopwatch = Stopwatch.StartNew();
 
+        // Create shared PriorClient when prior evaluation is enabled.
+        PriorClient? priorClient = null;
+        if (_options.Prior)
+        {
+            priorClient = new PriorClient(_options.NnUrl);
+        }
+
         try
         {
             Parallel.For(0, (int)_options.NumberOfGames, new ParallelOptions
@@ -205,7 +243,7 @@ internal class SimulationRunner
                 var rng = new Random(gameSeed);
 
                 var gameStopwatch = Stopwatch.StartNew();
-                var result = RunSingleGame(config, playerCount, rng, gameSeed, gameIndex + 1);
+                var result = RunSingleGame(config, playerCount, rng, gameSeed, gameIndex + 1, priorClient);
                 gameStopwatch.Stop();
 
                 gameResults.Add((gameIndex + 1, result, gameStopwatch.Elapsed));
@@ -233,6 +271,7 @@ internal class SimulationRunner
         finally
         {
             exportWriter?.Dispose();
+            priorClient?.Dispose();
         }
 
         totalStopwatch.Stop();
@@ -380,7 +419,8 @@ internal class SimulationRunner
         int playerCount,
         Random rng,
         int gameSeed,
-        int gameNumber)
+        int gameNumber,
+        PriorClient? priorClient)
     {
         var state = new CatanState(config, playerCount, rng);
         var mctsConfig = new Kjarni.MCTSConfig(
@@ -388,7 +428,8 @@ internal class SimulationRunner
             _options.MaxSimulations,
             _options.MaxRolloutDepth,
             System.Math.Sqrt(2.0),
-            _options.ActionRolloutLimit);
+            _options.ActionRolloutLimit,
+            priorClient);
         var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(mctsConfig);
         var states = new List<StateRecord>();
 
@@ -473,6 +514,9 @@ internal class SimulationRunner
                     BestActionWins = bestActionWins,
                     BestActionRollouts = bestActionRollouts,
                     ReachedTerminal = logInfo.reachedTerminal,
+                    PriorsRequested = logInfo.priorsRequested,
+                    PriorsApplied = logInfo.priorsApplied,
+                    PriorStatesEvaluated = logInfo.priorStatesEvaluated,
                 });
 
                 // Apply the best action from MCTS and advance the tree.
@@ -561,6 +605,26 @@ internal class SimulationRunner
             if (terminalCount > 0)
             {
                 Console.WriteLine($"Reached terminal: {terminalCount}/{mctsStates} ({100.0 * terminalCount / mctsStates:F1}%)");
+            }
+
+            // Prior stats (only shown when prior evaluation was used).
+            var totalPriorsRequested = stats.Games
+                .SelectMany(g => g.States)
+                .Sum(s => s.PriorsRequested);
+            if (totalPriorsRequested > 0)
+            {
+                var totalPriorsApplied = stats.Games
+                    .SelectMany(g => g.States)
+                    .Sum(s => s.PriorsApplied);
+                var totalPriorStatesEvaluated = stats.Games
+                    .SelectMany(g => g.States)
+                    .Sum(s => s.PriorStatesEvaluated);
+                var avgRequested = (double)totalPriorsRequested / mctsStates;
+                var avgApplied = (double)totalPriorsApplied / mctsStates;
+                var avgStatesEvaluated = (double)totalPriorStatesEvaluated / mctsStates;
+                Console.WriteLine($"Priors requested: {totalPriorsRequested} (avg {avgRequested:F1}/decision)");
+                Console.WriteLine($"Priors applied: {totalPriorsApplied} (avg {avgApplied:F1}/decision)");
+                Console.WriteLine($"Prior states evaluated: {totalPriorStatesEvaluated} (avg {avgStatesEvaluated:F1}/decision)");
             }
         }
 
@@ -651,6 +715,9 @@ internal class SimulationRunner
                 s.BestActionWins,
                 s.BestActionRollouts,
                 s.ReachedTerminal,
+                s.PriorsRequested,
+                s.PriorsApplied,
+                s.PriorStatesEvaluated,
                 permutations = symmetryPerms.Length > 0
                     ? symmetryPerms.Select(p => BoardSymmetry.PermuteState(s.SerializedState, p)).ToArray()
                     : Array.Empty<string>(),

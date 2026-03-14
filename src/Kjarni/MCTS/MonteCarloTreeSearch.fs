@@ -12,7 +12,7 @@ type MonteCarloTreeSearch(config: MCTSConfig) =
     member _.RunSimulation (root : MCTSState) =
         let timer = Stopwatch.StartNew()
 
-        let result =
+        let (result, priorStats) =
             search (
                 root,
                 config.MaxSimulations,
@@ -20,13 +20,22 @@ type MonteCarloTreeSearch(config: MCTSConfig) =
                 Utility.toStopwatchTics config.SearchTime,
                 config.MaxRolloutDepth,
                 config.ExplorationConstant,
-                config.ActionRolloutLimit
+                config.ActionRolloutLimit,
+                config.PriorClient
             )
+
+        // Flush the prior queue after search completes
+        match config.PriorClient with
+        | Some client -> client.Flush()
+        | None -> ()
 
         let mutable logInfo = LogInfo()
         logInfo.simulations <- root.Rollouts
         logInfo.elapsedTime <- timer.Elapsed
         logInfo.reachedTerminal <- isResolved root
+        logInfo.priorsRequested <- priorStats.priorsRequested
+        logInfo.priorsApplied <- priorStats.priorsApplied
+        logInfo.priorStatesEvaluated <- priorStats.priorStatesEvaluated
 
         _logInfos <- logInfo :: _logInfos
 

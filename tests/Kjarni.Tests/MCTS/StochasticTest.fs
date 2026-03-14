@@ -305,9 +305,22 @@ type StochasticActionEvaluatorTests() =
             [| makeOutcome 1 0 0. 0.
                makeOutcome 3 0 0. 0. |]
 
-        let score = actionEvaluator (sqrt 2.) root (StochasticAction outcomes)
-        // Zero total rollouts → returns 10.0 (unexplored constant)
-        score |> should equal 10.
+        // Root has 2 actions (from terminalNode which has no children, but
+        // dummyRoot wraps a terminalNode). We test the evaluator with a
+        // StochasticAction as if it were at index 0 of a single-action node.
+        // For PUCT with uniform prior (P=1/1=1.0 for single action), zero
+        // rollouts: C * P * sqrt(N_parent) / 1 = sqrt(2) * 1.0 * sqrt(10) ≈ 4.47
+        // But the root has no Actions array that matches this scenario, so we
+        // just set up a node with one action to get the right prior.
+        let stochRoot = MCTSState(terminalNode p1 0)
+        stochRoot.Rollouts <- 10
+        stochRoot.WinCounts <- [| 5.; 5. |]
+        stochRoot.Actions <- [| StochasticAction outcomes |]
+
+        let score = actionEvaluator (sqrt 2.) stochRoot 0 (StochasticAction outcomes)
+        // Zero total rollouts → PUCT with uniform prior P=1.0 (single action):
+        // C * P * sqrt(N_parent) / 1 = sqrt(2) * 1.0 * sqrt(10) ≈ 4.47
+        score |> should (equalWithin 0.01) (sqrt 2. * sqrt 10.)
 
     [<Test>]
     member _.WithRollouts_CombinesWinRateAndExploration() =
@@ -316,13 +329,17 @@ type StochasticActionEvaluatorTests() =
             [| makeOutcome 1 5 5. 0.   // WinRate P1 = 1.0
                makeOutcome 1 5 0. 5. |] // WinRate P1 = 0.0
 
-        let score = actionEvaluator (sqrt 2.) root (StochasticAction outcomes)
+        // Set up root with a single stochastic action for correct uniform prior
+        root.Actions <- [| StochasticAction outcomes |]
+
+        let score = actionEvaluator (sqrt 2.) root 0 (StochasticAction outcomes)
         // sampledWinRate = (1*1.0 + 1*0.0) / 2 = 0.5
-        // totalRollouts = 10, stateRollouts = 10
-        // explorationRate = sqrt(2) * sqrt(ln(10)/10) ≈ 0.678
-        // score = 0.5 + 0.678 ≈ 1.178
-        score |> should be (greaterThan 1.1)
-        score |> should be (lessThan 1.3)
+        // totalRollouts = 10
+        // PUCT: winRate + C * P * sqrt(N_parent) / (1 + N_action)
+        //     = 0.5 + sqrt(2) * 1.0 * sqrt(10) / (1 + 10)
+        //     = 0.5 + 4.47 / 11 ≈ 0.5 + 0.406 ≈ 0.906
+        score |> should be (greaterThan 0.85)
+        score |> should be (lessThan 0.97)
 
 // ────────────────────────────────────────────────────────────────
 // backPropagate through stochastic outcome states

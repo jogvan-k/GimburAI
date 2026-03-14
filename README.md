@@ -167,6 +167,188 @@ dotnet test                 # run all tests
 dotnet run --project src/Gimbur.Cli  # run CLI
 ```
 
+## Gimbur CLI
+
+The CLI (`gimbur`) is the main entry point for running simulations and benchmarks.
+
+```bash
+dotnet run --project src/Gimbur.Cli -- <command> [options]
+```
+
+### Global Options
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--config <file>` | `-c` | Path to a configuration file |
+| `--seed <int>` | | Random seed for reproducibility |
+| `--map-config <preset>` | | Map layout: `mini`, `small`, or `standard` |
+| `--verbosity <level>` | `-v` | Verbosity: `q[uiet]`, `m[inimal]`, `n[ormal]`, `d[etailed]`, `diag[nostic]` |
+| `-q` | | Shorthand for `--verbosity quiet` |
+| `--verbose` | | Shorthand for `--verbosity diagnostic` |
+
+### `simulate` -- AI Self-Play
+
+Run MCTS self-play games with optional JSONL training data export.
+
+```bash
+# Run 100 games on the mini map, export training data
+dotnet run --project src/Gimbur.Cli -- simulate \
+    --games 100 --map-config mini --export training.jsonl
+
+# Quick run with limited search budget
+dotnet run --project src/Gimbur.Cli -- simulate \
+    --games 10 --search-time 500 --max-simulations 200
+
+# Self-play with NN prior evaluation (requires running inference server)
+dotnet run --project src/Gimbur.Cli -- simulate \
+    --games 50 --prior --nn-url http://localhost:8000 --export training.jsonl
+```
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--games <n>` | `-g` | `1` | Number of games to simulate |
+| `--players <n>` | `-p` | map default | Player count (1-4) |
+| `--export <file>` | | none | Path to export training data as JSONL |
+| `--search-time <ms>` | | `1000` | MCTS search time limit in ms per decision |
+| `--max-simulations <n>` | | unlimited | Max MCTS simulations per decision |
+| `--max-rollout-depth <n>` | | `500` | Max rollout depth |
+| `--action-rollout-limit <n>` | | unlimited | Stop MCTS when any action reaches this many rollouts |
+| `--no-symmetries` | | `false` | Disable board symmetry permutations in export |
+| `--prior` | | `false` | Enable async NN prior evaluation during MCTS search |
+| `--nn-url <url>` | | `http://localhost:8000` | Base URL of the NN inference server (used with `--prior`) |
+
+The exported JSONL file contains one record per game state, with the serialized board state and the game winner, suitable for training the neural network. Board symmetry augmentation (D6 group, 12x) is applied by default.
+
+When `--prior` is enabled, the MCTS search uses asynchronous neural network priors to bias action selection via the PUCT formula. This requires a running inference server (see the Python `serve` command below). Prior requests are fire-and-forget on node expansion; the search loop is never blocked.
+
+### `benchmark` -- AI vs AI
+
+Run games between different AI players and compute win rates. Seat rotation is applied to eliminate positional bias.
+
+```bash
+# MCTS vs greedy, 50 games
+dotnet run --project src/Gimbur.Cli -- benchmark \
+    --games 50 --ai mcts greedy --map-config mini
+
+# NN-backed player vs MCTS (requires running inference server)
+dotnet run --project src/Gimbur.Cli -- benchmark \
+    --ai nn mcts --nn-url http://localhost:8000
+```
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--games <n>` | `-g` | `100` | Number of games to run |
+| `--ai <types...>` | | `random greedy` | AI for each player seat |
+| `--output <file>` | `-o` | none | Path to write JSON results file |
+| `--search-time <ms>` | | `1000` | MCTS search time limit in ms |
+| `--max-simulations <n>` | | unlimited | Max MCTS simulations per decision |
+| `--max-rollout-depth <n>` | | `500` | Max rollout depth |
+| `--nn-url <url>` | | `http://localhost:8000` | Base URL of the NN inference server |
+
+Available AI types: `random`, `greedy`, `mcts`, `nn`. The `nn` type queries the Python inference server's `/predict-player` endpoint.
+
+## Python CLI (gimbur-nn)
+
+The Python package provides model training and an inference server. Run from the `python/` directory.
+
+### Setup
+
+```bash
+cd python
+pip install -e ".[serve,dev]"
+```
+
+### `train` -- Train the Neural Network
+
+Train a transformer model on JSONL data exported by `gimbur simulate --export`.
+
+```bash
+python -m gimbur_nn.train \
+    --data exports/ \
+    --game-config mini_2p \
+    --model-config small \
+    --out model.pt
+```
+
+| Argument | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `--data <path>` | yes | | JSONL file or directory of JSONL files |
+| `--game-config <preset>` | yes | | Game config preset |
+| `--model-config <preset>` | yes | | Model size preset |
+| `--out <path>` | no | `model.pt` | Output checkpoint path |
+| `--resume <path>` | no | none | Resume training from existing checkpoint |
+| `--epochs <n>` | no | `0` | Max epochs (0 = unlimited, stop via patience) |
+| `--patience <n>` | no | `5` | Stop after N epochs with no val loss improvement |
+| `--batch-size <n>` | no | `64` | Batch size |
+| `--lr <float>` | no | `1e-4` | Learning rate |
+| `--val-split <frac>` | no | `0.1` | Fraction of games for validation (0 to disable) |
+| `--test-split <frac>` | no | `0.0` | Fraction of games for test (0 to disable) |
+| `--log-interval <n>` | no | `50` | Print training loss every N batches (0 to disable) |
+
+Game config presets: `mini_2p`, `small_2p`, `small_3p`, `standard_3p`, `standard_4p`.
+Model config presets: `small`, `medium`, `large`.
+
+### `serve` -- Inference Server
+
+Serve a trained model over HTTP for use by the `nn` AI player and MCTS prior evaluation.
+
+```bash
+python -m gimbur_nn.serve \
+    --model model.pt \
+    --game-config mini_2p \
+    --model-config small \
+    --port 8000
+```
+
+| Argument | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `--model <path>` | yes | | Path to trained model checkpoint |
+| `--game-config <preset>` | yes | | Game config preset (must match training) |
+| `--model-config <preset>` | yes | | Model size preset (must match training) |
+| `--port <int>` | no | `8000` | HTTP port |
+| `--host <addr>` | no | `127.0.0.1` | Bind address |
+
+Endpoints:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check |
+| `POST` | `/predict` | Batch predict win probabilities for serialized states |
+| `POST` | `/predict-player` | Predict win probability for a specific player |
+| `POST` | `/prior-enqueue` | Enqueue MCTS prior requests into priority queue |
+| `POST` | `/prior-collect` | Collect completed prior inference results |
+| `POST` | `/prior-flush` | Clear priority queue and pending results |
+
+### End-to-End Workflow
+
+```bash
+# 1. Generate training data (dotnet CLI)
+dotnet run --project src/Gimbur.Cli -- simulate \
+    --games 1000 --map-config mini --export data/training.jsonl -q
+
+# 2. Train the model (Python)
+cd python
+python -m gimbur_nn.train \
+    --data ../data/training.jsonl \
+    --game-config mini_2p --model-config small \
+    --out model.pt
+
+# 3. Start inference server (Python)
+python -m gimbur_nn.serve \
+    --model model.pt \
+    --game-config mini_2p --model-config small
+
+# 4. Benchmark NN player vs baselines (dotnet CLI, in another terminal)
+dotnet run --project src/Gimbur.Cli -- benchmark \
+    --ai nn greedy --games 100 --map-config mini
+
+# 5. Generate improved training data with NN prior self-play
+dotnet run --project src/Gimbur.Cli -- simulate \
+    --games 1000 --map-config mini --prior --export data/gen1.jsonl -q
+
+# 6. Retrain the model on the new data and repeat from step 3
+```
+
 ## TUI Manual Testing
 
 Run the TUI:

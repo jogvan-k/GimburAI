@@ -144,6 +144,17 @@ internal static class RootCommandFactory
             Description = "Disable board symmetry permutations in exported training data",
         };
 
+        var priorOption = new Option<bool>("--prior")
+        {
+            Description = "Enable async NN prior evaluation during MCTS search (requires running inference server)",
+        };
+
+        var nnUrlOption = new Option<string>("--nn-url")
+        {
+            Description = "Base URL of the NN inference server (e.g. http://localhost:8000)",
+            DefaultValueFactory = _ => "http://localhost:8000",
+        };
+
         var command = new Command("simulate", "Run Settlers of Catan AI self-play simulations.")
         {
           noOfGamesOption,
@@ -154,6 +165,8 @@ internal static class RootCommandFactory
           maxRolloutDepthOption,
           actionRolloutLimitOption,
           noSymmetriesOption,
+          priorOption,
+          nnUrlOption,
         };
 
         command.SetAction(parseResult =>
@@ -169,6 +182,12 @@ internal static class RootCommandFactory
             int maxRolloutDepth = parseResult.GetValue(maxRolloutDepthOption);
             int actionRolloutLimit = parseResult.GetValue(actionRolloutLimitOption);
             bool noSymmetries = parseResult.GetValue(noSymmetriesOption);
+            bool prior = parseResult.GetValue(priorOption);
+            string nnUrl = parseResult.GetValue(nnUrlOption)!;
+
+            // Auto-enable prior when --nn-url is explicitly provided.
+            if (!prior && parseResult.Tokens.Any(t => t.Value == "--nn-url"))
+                prior = true;;
 
             var options = new SimulationOptions
             {
@@ -183,6 +202,8 @@ internal static class RootCommandFactory
                 MaxRolloutDepth = maxRolloutDepth,
                 ActionRolloutLimit = actionRolloutLimit,
                 Symmetries = !noSymmetries,
+                Prior = prior,
+                NnUrl = nnUrl,
             };
 
             var runner = new SimulationRunner(options);
