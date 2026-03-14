@@ -30,6 +30,36 @@ and IStochasticCoreAction =
 type IEvaluator =
     abstract Evaluate : ICoreState -> int
 
+/// A completed prior response from the inference server.
+/// NodeId is an opaque identifier used to correlate the response back to the
+/// parent MCTSState. WinProbabilities contains per-action-state win probabilities
+/// in the same order as the request's states array.
+type PriorResponse =
+  struct
+    val NodeId: int64
+    val WinProbabilities: float[]
+    new(nodeId, winProbabilities) = { NodeId = nodeId; WinProbabilities = winProbabilities }
+  end
+
+/// Asynchronous prior client for NN-guided MCTS search.
+/// Fires non-blocking prior requests on node expansion and collects completed
+/// responses after backpropagation.
+type IPriorClient =
+    /// Enqueue an async prior request for the given node.
+    /// nodeId — opaque identifier to correlate response back to the MCTSState.
+    /// states — result states for each action (one per deterministic action,
+    ///          one per stochastic outcome). The implementation is responsible
+    ///          for serialization.
+    /// actingPlayer — the player whose turn it is at the parent node.
+    /// depth — depth from root (lower = higher priority).
+    abstract RequestPrior : nodeId: int64 * states: ICoreState[] * actingPlayer: int * depth: int -> unit
+
+    /// Drain all completed prior responses from the mailbox. Non-blocking.
+    abstract CollectPriors : unit -> PriorResponse[]
+
+    /// Clear the server queue and discard pending results.
+    abstract Flush : unit -> unit
+
 type SimulationResult = 
   struct
     val mutable Rollouts: int
@@ -57,11 +87,13 @@ type MCTSConfig =
       MaxSimulations: int
       MaxRolloutDepth: int
       ExplorationConstant: float
-      ActionRolloutLimit: int }
+      ActionRolloutLimit: int
+      PriorClient: IPriorClient option }
 
     static member Default =
         { SearchTime = Unlimited
           MaxSimulations = System.Int32.MaxValue
           MaxRolloutDepth = 500
           ExplorationConstant = sqrt 2.
-          ActionRolloutLimit = System.Int32.MaxValue }
+          ActionRolloutLimit = System.Int32.MaxValue
+          PriorClient = None }

@@ -1,7 +1,7 @@
 module Kjarni.MCTS.Algorithm
 
 open System
-
+open System.Collections.Generic
 open System.Diagnostics
 open Kjarni
 open Kjarni.MCTS.Types
@@ -13,12 +13,11 @@ let oneHotOutcome (winner: Player, maxTrackedPlayers) =
     outcome.[int winner] <- 1.
     outcome
 
-let explorationRate (explorationConstant: float) (stateVisitCount: int) (actionVisitCount: int) =
+let explorationRate (explorationConstant: float) (parentVisitCount: int) (actionVisitCount: int) (prior: float) =
     explorationConstant
-    * sqrt (
-        log (float stateVisitCount)
-        / float actionVisitCount
-    )
+    * prior
+    * sqrt (float parentVisitCount)
+    / (1. + float actionVisitCount)
 
 let winRate (state: MCTSState) (player: Player) =
     state.WinCounts[int player] / float state.Rollouts
@@ -32,21 +31,27 @@ let sampledWinRate outcomes player =
     else
         Array.sumBy (fun o -> float o.ProbabilityWeight * winRate o.State player) sampledOutcomes / denominator
 
-let actionEvaluator (explorationConstant: float) (state: MCTSState) (l: Action) =
+let actionEvaluator (explorationConstant: float) (state: MCTSState) (actionIndex: int) (l: Action) =
     let actingPlayer = state.State.PlayerTurn
+    let prior =
+        match state.Priors with
+        | Some p -> p.[actionIndex]
+        | None -> 1. / float state.Actions.Length
 
     match l with
-    | Unexplored _ -> 10.
+    | Unexplored _ ->
+        explorationRate explorationConstant state.Rollouts 0 prior
     | DeterministicAction resState ->
         let winRate = winRate resState actingPlayer
-        let explorationRate = explorationRate explorationConstant state.Rollouts resState.Rollouts
+        let explorationRate = explorationRate explorationConstant state.Rollouts resState.Rollouts prior
         winRate + explorationRate
     | StochasticAction outcomes ->
         let totalRollouts = Array.sumBy (fun i -> i.State.Rollouts) outcomes
-        if totalRollouts = 0 then 10. // treat as unexplored
+        if totalRollouts = 0 then
+            explorationRate explorationConstant state.Rollouts 0 prior
         else
             let winRate = sampledWinRate outcomes actingPlayer
-            let explorationRate = explorationRate explorationConstant state.Rollouts totalRollouts
+            let explorationRate = explorationRate explorationConstant state.Rollouts totalRollouts prior
             winRate + explorationRate
     | Terminal win -> win.[int actingPlayer]
 
@@ -68,7 +73,7 @@ let rec recSelect (explorationConstant: float) (s: MCTSState, visitedStates: MCT
         let selectedAction =
             s.Actions
               |> Array.indexed
-              |> Array.maxBy (fun a -> actionEvaluator explorationConstant s (snd a))
+              |> Array.maxBy (fun (i, a) -> actionEvaluator explorationConstant s i a)
         match snd selectedAction with
         | Unexplored _ -> Candidate(visitedStates, fst selectedAction)
         | DeterministicAction ds -> recSelect explorationConstant (ds,  ds :: visitedStates)
@@ -267,6 +272,108 @@ let tryResolveStochasticAction (outcomes: StochasticOutcome[]) =
 let isResolved (s: MCTSState) =
     tryResolveState s |> Option.isSome
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Prior support: helpers for enqueuing requests and applying responses
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Collect the result ICoreStates for every action of a node by peeking at the
+/// underlying CoreActions. For deterministic actions the result is a single
+/// state from action.State(). For stochastic actions each outcome is a separate
+/// state. Returns the flat array of states, a layout descriptor that records
+/// how many states each action contributed, and (for stochastic actions) the
+/// outcome weights so win probabilities can be mapped back.
+///
+/// This works on Unexplored actions (calling the CoreAction interface) as well
+/// as already-expanded actions (reading the MCTSState wrappers). The typical
+/// use case is right after a node is expanded — the expanded node's own actions
+/// are still Unexplored.
+let collectActionStates (s: MCTSState) : (ICoreState[] * int[] * int[][]) =
+    let states = ResizeArray<ICoreState>()
+    let layout = ResizeArray<int>()
+    let weights = ResizeArray<int[]>()
+
+    for action in s.Actions do
+        match action with
+        | Unexplored coreAction ->
+            match coreAction with
+            | Deterministic da ->
+                states.Add(da.State())
+                layout.Add(1)
+                weights.Add([| 1 |])
+            | Stochastic sa ->
+                let outcomes = sa.Outcomes()
+                for (_, resultState) in outcomes do
+                    states.Add(resultState)
+                layout.Add(outcomes.Length)
+                weights.Add(outcomes |> Array.map fst)
+        | DeterministicAction child ->
+            states.Add(child.State)
+            layout.Add(1)
+            weights.Add([| 1 |])
+        | StochasticAction outcomes ->
+            for o in outcomes do
+                states.Add(o.State.State)
+            layout.Add(outcomes.Length)
+            weights.Add(outcomes |> Array.map (fun o -> o.ProbabilityWeight))
+        | Terminal _ ->
+            layout.Add(0)
+            weights.Add(Array.empty)
+
+    (states.ToArray(), layout.ToArray(), weights.ToArray())
+
+/// Given an array of per-state win probabilities (from the NN, in the same
+/// order as collectActionStates produced), the layout descriptor, and the
+/// outcome weights, compute a normalised prior policy over the node's actions.
+///
+/// For deterministic actions: prior = winProb directly.
+/// For stochastic actions: prior = weighted average of outcome winProbs.
+/// Actions with 0 states in the layout (Terminal) get zero prior.
+/// The result is normalised so it sums to 1.
+let computePriorPolicy (winProbs: float[]) (layout: int[]) (outcomeWeights: int[][]) : float[] =
+    let n = layout.Length
+    let rawPriors = Array.zeroCreate<float> n
+    let mutable probIdx = 0
+
+    for i in 0 .. n - 1 do
+        let count = layout.[i]
+        if count = 0 then
+            rawPriors.[i] <- 0.
+        elif count = 1 then
+            rawPriors.[i] <- winProbs.[probIdx]
+            probIdx <- probIdx + 1
+        else
+            // Stochastic: weighted average across outcomes
+            let weights = outcomeWeights.[i]
+            let mutable weightedSum = 0.
+            let mutable totalWeight = 0.
+            for j in 0 .. count - 1 do
+                let w = float weights.[j]
+                weightedSum <- weightedSum + w * winProbs.[probIdx + j]
+                totalWeight <- totalWeight + w
+            rawPriors.[i] <- if totalWeight > 0. then weightedSum / totalWeight else 0.
+            probIdx <- probIdx + count
+
+    // Normalise to sum to 1
+    let total = Array.sum rawPriors
+    if total > 0. then
+        for i in 0 .. n - 1 do
+            rawPriors.[i] <- rawPriors.[i] / total
+    else
+        // All zero — fall back to uniform
+        let uniform = 1. / float n
+        for i in 0 .. n - 1 do
+            rawPriors.[i] <- uniform
+
+    rawPriors
+
+/// Stats tracked during prior request/collection in the search loop.
+type PriorStats =
+  struct
+    val mutable priorsRequested: int
+    val mutable priorsApplied: int
+    val mutable priorStatesEvaluated: int
+  end
+
 /// Walk the selection path bottom-up, replacing actions with Terminal when
 /// their subtree is fully resolved. The path is ordered [deepest; ...; root].
 /// In the visitedStates list from selection, index 0 is the most recent
@@ -317,7 +424,56 @@ let propagateTerminals (visitedStates: MCTSState list) =
 
     propagate visitedStates
 
-let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float, actionRolloutLimit: int) =
+let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float, actionRolloutLimit: int, priorClient: IPriorClient option) =
+    // Node registry and layout registry for correlating prior responses.
+    // Only allocated when a prior client is configured.
+    let nodeRegistry =
+        match priorClient with
+        | Some _ -> Some (Dictionary<int64, MCTSState>())
+        | None -> None
+    let layoutRegistry =
+        match priorClient with
+        | Some _ -> Some (Dictionary<int64, int[] * int[][]>())
+        | None -> None
+
+    let mutable priorStats = PriorStats()
+
+    /// Fire a prior request for the given node (non-blocking).
+    let requestPrior (node: MCTSState) (depth: int) =
+        match priorClient, nodeRegistry, layoutRegistry with
+        | Some client, Some nodeReg, Some layoutReg ->
+            if not (Array.isEmpty node.Actions) && node.Priors.IsNone then
+                let (actionStates, layout, outcomeWeights) = collectActionStates node
+                if actionStates.Length > 0 then
+                    nodeReg.[node.NodeId] <- node
+                    layoutReg.[node.NodeId] <- (layout, outcomeWeights)
+                    client.RequestPrior(node.NodeId, actionStates, int node.State.PlayerTurn + 1, depth)
+                    priorStats.priorsRequested <- priorStats.priorsRequested + 1
+                    priorStats.priorStatesEvaluated <- priorStats.priorStatesEvaluated + actionStates.Length
+        | _ -> ()
+
+    /// Collect completed prior responses and apply them to tree nodes.
+    let collectPriors () =
+        match priorClient, nodeRegistry, layoutRegistry with
+        | Some client, Some nodeReg, Some layoutReg ->
+            let responses = client.CollectPriors()
+            for resp in responses do
+                match nodeReg.TryGetValue(resp.NodeId) with
+                | true, node ->
+                    match layoutReg.TryGetValue(resp.NodeId) with
+                    | true, (layout, outcomeWeights) ->
+                        let policy = computePriorPolicy resp.WinProbabilities layout outcomeWeights
+                        node.Priors <- Some policy
+                        priorStats.priorsApplied <- priorStats.priorsApplied + 1
+                        // Remove from registries once applied
+                        nodeReg.Remove(resp.NodeId) |> ignore
+                        layoutReg.Remove(resp.NodeId) |> ignore
+                    | _ -> ()
+                | _ ->
+                    // Stale response (node no longer in registry) — discard
+                    ()
+        | _ -> ()
+
     while root.Rollouts < maxSimulationCount
           && (not evaluateUntil.IsSome
               || timer.ElapsedTicks < evaluateUntil.Value)
@@ -327,11 +483,17 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
         | Exhausted (stateHistory, outcome) ->
             backPropagate stateHistory outcome
             propagateTerminals stateHistory
+            collectPriors ()
         | Candidate (stateHistory, i) ->
             let mostRecentState = stateHistory.[0]
+            let depth = stateHistory.Length - 1
 
             let expandedState = expand (mostRecentState, i)
             let visitedStates = expandedState :: stateHistory
+
+            // Phase 3 — Prior request: enqueue async NN evaluation for the
+            // expanded node's actions.
+            requestPrior expandedState depth
 
             // Check if the expanded state is a terminal game state (no actions).
             // For deterministic actions, replace the parent's action with Terminal
@@ -346,10 +508,12 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                     mostRecentState.Actions.[i] <- Terminal outcome
                 | _ -> ()
                 propagateTerminals visitedStates
+                collectPriors ()
             else
                 let outcome = simulate maxRolloutDepth expandedState
                 backPropagate visitedStates outcome
                 propagateTerminals visitedStates
+                collectPriors ()
         | StochasticCandidate (stateHistory, ia, is) ->
             match stateHistory.[0].Actions.[ia] with
             | StochasticAction stochasticOutcomes ->
@@ -360,10 +524,12 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                     let outcome = oneHotOutcome (expandedState.State.PlayerTurn, expandedState.State.NumberOfPlayers)
                     backPropagate visitedStates outcome
                     propagateTerminals visitedStates
+                    collectPriors ()
                 else
                     let outcome = simulate maxRolloutDepth expandedState
                     backPropagate visitedStates outcome
                     propagateTerminals visitedStates
+                    collectPriors ()
             | _ -> failwith "unreachable"
 
-    extractBestPath root |> List.toArray
+    (extractBestPath root |> List.toArray, priorStats)

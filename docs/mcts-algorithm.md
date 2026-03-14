@@ -7,16 +7,18 @@ multiple players and mixed deterministic/stochastic action spaces.
 
 ## Overview
 
-The search loop repeats five phases until a budget (time or simulation count) is
+The search loop repeats seven phases until a budget (time or simulation count) is
 exhausted:
 
 ```
 while budget remains AND NOT all root actions are Terminal:
     1. Selection              — walk the tree from root to a frontier node
     2. Expansion              — create a new child node at the frontier
-    3. Simulation             — random rollout from the new node to a terminal state
-    4. Backpropagation        — propagate the rollout result up to the root
-    5. Terminal propagation   — check if resolved subtrees can be collapsed
+    3. Prior request          — enqueue async NN evaluation for the expanded node
+    4. Simulation             — random rollout from the new node to a terminal state
+    5. Backpropagation        — propagate the rollout result up to the root
+    6. Terminal propagation   — check if resolved subtrees can be collapsed
+    7. Prior collection       — apply any completed NN priors to tree nodes
 ```
 
 After the loop, `extractBestPath` reads the tree greedily to return the
@@ -87,7 +89,7 @@ type StochasticOutcome = { ProbabilityWeight: int; State: MCTSState }
 ## Phase 1 — Selection
 
 Selection walks from the root toward the frontier. At each node it picks the
-action with the highest evaluation score (UCB1-based) and follows it.
+action with the highest evaluation score (PUCT-based) and follows it.
 
 ```
 select(root):
@@ -112,27 +114,34 @@ The result is one of three cases:
   unvisited outcome; no expansion needed, just simulate from that outcome.
 - **Exhausted** — the path reached a terminal node; backpropagate immediately.
 
-### Action Evaluation (UCB1)
+### Action Evaluation (PUCT)
 
 ```
-actionEvaluator(state, action):
+actionEvaluator(state, action, index):
+    P = state.Priors[index] if priors exist, else 1 / len(actions)
     match action:
-        Unexplored → 10.0   (high constant ensures exploration)
+        Unexplored →
+            C_puct * P * sqrt(N_parent) / 1
         DeterministicAction(child) →
-            winRate(child, actingPlayer) + explorationRate(state, child)
+            winRate(child, actingPlayer) + C_puct * P * sqrt(N_parent) / (1 + child.Rollouts)
         StochasticAction(outcomes) →
-            if totalRollouts = 0 → 10.0
-            else sampledWinRate(outcomes, actingPlayer) + explorationRate(state, totalRollouts)
+            if totalRollouts = 0 →
+                C_puct * P * sqrt(N_parent) / 1
+            else
+                sampledWinRate(outcomes, actingPlayer)
+                + C_puct * P * sqrt(N_parent) / (1 + totalRollouts)
         Terminal(outcome) → outcome[actingPlayer]
 ```
 
-The exploration term uses the standard UCB1 formula:
+This is a variant of the PUCT (Predictor + UCB applied to Trees) formula. When
+no neural network priors are available, `P` defaults to a uniform distribution
+(`1 / number_of_actions`), which produces equivalent behavior to standard UCB1
+exploration. When NN priors are applied to a node, `P` is overwritten with the
+NN-informed policy, biasing selection toward actions the network considers
+promising.
 
-```
-explorationRate(C, parentVisits, childVisits) = C * sqrt(ln(parentVisits) / childVisits)
-```
-
-where `C` defaults to `sqrt(2)` and is configurable via `MCTSConfig.ExplorationConstant`.
+The exploration constant `C_puct` is configured via
+`MCTSConfig.ExplorationConstant` (default: `sqrt(2)`).
 
 ## Phase 2 — Expansion
 
@@ -148,7 +157,17 @@ When selection returns a `Candidate`, the unexplored action is expanded:
 When selection returns a `StochasticCandidate`, the stochastic action is already
 expanded — the unvisited outcome state is used directly for simulation.
 
-## Phase 3 — Simulation (Rollout)
+## Phase 3 — Prior Request
+
+After expansion, if a prior client is configured, the search loop enqueues an
+asynchronous prior request for the newly expanded node. The request contains the
+serialized result state of every action from the expanded node — the NN evaluates
+each resulting position independently and returns win probabilities. This call is
+non-blocking; the search continues immediately with simulation. See
+[Asynchronous Neural Network Priors](#asynchronous-neural-network-priors) for
+the full request lifecycle.
+
+## Phase 4 — Simulation (Rollout)
 
 From the expanded node, a random playout proceeds until a terminal state is
 reached or the maximum rollout depth is exceeded:
@@ -177,7 +196,7 @@ When `maxRolloutDepth` is reached, `Scores()` is called on the current state.
 The player(s) with the highest score share a win equally. If all scores are zero
 or negative, a draw (all zeros) is returned.
 
-## Phase 4 — Backpropagation
+## Phase 5 — Backpropagation
 
 The outcome vector is added to every node along the selection path (the
 `visitedStates` list plus the expanded/simulated node):
@@ -192,7 +211,7 @@ backPropagate(visitedStates, outcome):
 
 This is a simple additive update — every node on the path gets the full outcome.
 
-## Phase 5 — Terminal Propagation
+## Phase 6 — Terminal Propagation
 
 Terminal propagation replaces expanded actions with `Terminal` when the subtree
 below them is fully resolved — the outcome is known with certainty and no
@@ -292,6 +311,19 @@ the remaining moves.
 
 `LogInfo` includes a `reachedTerminal` field that is `true` when the search
 terminated early because the root was fully resolved.
+
+## Phase 7 — Prior Collection
+
+After terminal propagation, if a prior client is configured, the search loop
+calls `collectPriors()` to drain any completed NN inference responses from the
+mailbox. For each response, the win probabilities are normalized into a prior
+policy and stored on the corresponding `MCTSState` node. This is non-blocking —
+if no responses are ready, the loop continues immediately.
+
+Prior collection runs after terminal propagation so that priors are not applied
+to nodes that have just been collapsed into `Terminal` actions. See
+[Asynchronous Neural Network Priors](#asynchronous-neural-network-priors) for
+details.
 
 ## Best Path Extraction
 
@@ -405,8 +437,8 @@ sampledWinRate(outcomes, player):
 ```
 
 The exploration bonus uses the total rollout count across all outcomes as the
-"child visit count" in the UCB1 formula. If no outcome has been visited yet, the
-action scores 10.0 (same as unexplored).
+"child visit count" in the PUCT formula. If no outcome has been visited yet, the
+action is treated as unexplored.
 
 ### Rollout through stochastic actions
 
@@ -421,27 +453,269 @@ controls the outcome, recommending a specific branch would be meaningless. The
 extracted path therefore represents the sequence of *player decisions* up to the
 next chance event.
 
+## Asynchronous Neural Network Priors
+
+The search uses neural network priors to bias action selection toward promising
+moves. The NN evaluates the resulting state of each action to produce a win
+probability, which is then converted into a prior policy over the parent node's
+actions. Because NN inference is expensive relative to a single MCTS iteration,
+prior requests are issued asynchronously — the search loop does not block while
+waiting for results.
+
+### Components
+
+Three components cooperate:
+
+1. **MCTS search loop** (Kjarni, F#) — fires prior requests on node expansion,
+   collects responses after terminal propagation.
+2. **Prior client** (Gimbur, C#) — manages HTTP communication with the inference
+   server and a local response mailbox.
+3. **Inference server** (gimbur-nn, Python) — receives prior requests, queues
+   them by priority, runs batched GPU inference, and returns results.
+
+```
+MCTS Search Loop                   Prior Client                    Inference Server
+────────────────                   ────────────                    ────────────────
+expand(node)                              │                              │
+  ├─ create child MCTSState(s)            │                              │
+  ├─ requestPrior(                        │                              │
+  │    parentNode,                        │                              │
+  │    actionStates[], depth) ───────────►├─ POST /prior-enqueue ───────►├─ enqueue by depth
+  │   (non-blocking, fire & forget)       │   { states[], depth }        │
+  │                                       │                              ├─ dequeue batch
+  ├─ simulate(child)                      │                              │   (lowest depth first)
+  ├─ backPropagate(path, outcome)         │                              ├─ GPU inference
+  ├─ propagateTerminals(path)             │                              │
+  │                                       │                              │
+  ├─ collectPriors() ◄────────────────────┤◄─────── response ────────────┤
+  │   check mailbox for responses         │   { id, win_probs[] }        │
+  │   if found: normalize win_probs       │                              │
+  │   into prior policy, apply to node    │                              │
+  │                                       │                              │
+  └─ continue loop                        │                              │
+                                          │                              │
+search ends ──────────────────────────────┼─ POST /prior-flush ─────────►├─ clear queue
+```
+
+### Prior Request Lifecycle
+
+#### 1. Request on expansion
+
+When `expand` creates a new child `MCTSState`, the search loop calls
+`requestPrior(parentNode, actionStates, depth)` where `depth` is the number of
+edges from the root to the newly expanded node. This call is **non-blocking** —
+it enqueues the request and returns immediately. The MCTS iteration continues
+with rollout and backpropagation as normal.
+
+The request contains a list of serialized game states — one per action from the
+expanded node. Each state represents the result of applying that action. The
+inference server does not know how to apply game actions; Kjarni is responsible
+for materializing the resulting states and sending them.
+
+For **deterministic actions**, the resulting state is `action.State()`. For
+**stochastic actions**, each possible outcome is a separate state. A node with
+3 deterministic actions and 1 stochastic action with 4 outcomes sends 7 states
+total.
+
+The request payload contains:
+- A client-side ID to correlate the response back to the parent `MCTSState`.
+- The list of serialized action-result states (compact strings, same format as
+  training data).
+- The acting player (1-based, for server-side player rotation).
+- The priority (depth from root; lower = more important).
+
+#### 2. Priority queuing on the server
+
+The inference server maintains a **min-heap priority queue** ordered by depth.
+When the server is ready to run inference, it dequeues a batch of the
+highest-priority (lowest-depth) requests and processes them together in a single
+GPU forward pass.
+
+Positions near the root are visited many more times during the search than deep
+positions. A prior applied to a depth-1 node influences every subsequent
+selection pass; a prior applied to a depth-20 node affects very few future
+iterations. Processing shallow positions first maximizes the impact of each
+inference batch.
+
+The queue has a bounded capacity. When the queue is full, new requests with
+higher depth (lower priority) than the worst queued item are **dropped
+silently** — the MCTS continues without priors for those nodes, falling back to
+rollout-derived statistics. Requests with lower depth (higher priority) than the
+worst queued item evict the lowest-priority entry.
+
+#### 3. Response collection after terminal propagation
+
+After each backpropagation and terminal propagation step, the search loop calls
+`collectPriors()` which checks a **lock-free mailbox** (concurrent queue) for
+completed prior responses. For each response:
+
+1. Look up the corresponding parent `MCTSState` by its ID.
+2. Convert the per-action win probabilities into a normalized prior policy.
+3. Store the prior on the parent node.
+
+If no responses are available, `collectPriors` returns immediately with no
+blocking. Multiple responses may arrive between iterations; all are consumed in
+a single pass.
+
+#### 4. Flush on search completion
+
+When the MCTS search finishes (budget exhausted or root resolved), the caller
+invokes `flush()` on the server. This clears the priority queue and drops all
+pending requests. Any in-flight responses that arrive after the flush are
+discarded by the client (the node IDs no longer exist in the new tree).
+
+This is necessary because the tree is advanced to a new root after each game
+move. Pending requests reference nodes in the old tree that are no longer
+relevant.
+
+### Converting Win Probabilities to Priors
+
+The NN returns a win probability for each action-result state. Kjarni converts
+these into a prior policy (probability distribution over actions) by normalizing:
+
+```
+P(action_i) = winProb(action_i) / sum(winProb(action_j) for all j)
+```
+
+For **stochastic actions** with multiple outcomes, the action's win probability
+is the probability-weighted average across its outcomes:
+
+```
+winProb(stochastic_action) = sum(weight_k * winProb(outcome_k)) / sum(weight_k)
+```
+
+This collapses multiple outcome evaluations into a single value per action
+before normalization. The resulting prior policy is stored on the parent
+`MCTSState` node and used by `actionEvaluator` (see
+[Action Evaluation (PUCT)](#action-evaluation-puct)).
+
+### Prior Data Format
+
+#### Request (MCTS → server)
+
+```json
+{
+    "requests": [
+        {
+            "id": "node-0x1a2b3c",
+            "states": [
+                "<compact_state_for_action_0>",
+                "<compact_state_for_action_1>",
+                "<compact_state_for_action_2>"
+            ],
+            "player": 2,
+            "priority": 3
+        }
+    ]
+}
+```
+
+- `id` — opaque string the server echoes back to correlate responses.
+- `states` — serialized game states, one per action result. For deterministic
+  actions this is the single successor state; for stochastic actions this is
+  one state per outcome. The order matches the parent node's `Actions()` array,
+  with stochastic actions expanded inline (outcomes in weight order).
+- `player` — the acting player (1-based), for server-side player rotation.
+- `priority` — depth from root (0 = root's children). Lower = serve first.
+
+#### Response (server → MCTS)
+
+```json
+{
+    "responses": [
+        {
+            "id": "node-0x1a2b3c",
+            "win_probabilities": [0.62, 0.45, 0.38]
+        }
+    ]
+}
+```
+
+- `id` — matches the request ID.
+- `win_probabilities` — per-state win probability for the acting player, in the
+  same order as the request's `states` array. Kjarni maps these back to actions,
+  computes weighted averages for stochastic actions, and normalizes to produce
+  the prior policy.
+
+### Server Endpoints
+
+#### `POST /prior-enqueue`
+
+Accepts a batch of prior requests. Each request is inserted into the priority
+queue. Returns immediately with 202 Accepted (results are delivered
+asynchronously via `/prior-collect`).
+
+#### `POST /prior-collect`
+
+Returns all completed inference results since the last call. The response body
+contains an array of prior responses. If no results are ready, returns an empty
+array immediately (non-blocking).
+
+#### `POST /prior-flush`
+
+Clears the priority queue and discards any pending results. Called when the game
+advances to a new position and the old tree is abandoned.
+
+### MCTSState Changes
+
+`MCTSState` has an optional prior field:
+
+```fsharp
+type MCTSState(state: ICoreState) =
+    // ... existing fields ...
+    let mutable _priors: float[] option = None
+    member _.Priors
+        with get () = _priors
+        and set value = _priors <- value
+```
+
+When `Priors` is `None`, `actionEvaluator` uses the uniform default
+(`1 / number_of_actions`). When `Priors` is `Some(p)`, it uses `p[i]` as
+`P(action_i)` in the PUCT formula.
+
+### Graceful Degradation
+
+The system degrades gracefully when the inference server is slow or unavailable:
+
+- **Server unreachable**: Prior requests fail silently. MCTS runs with uniform
+  priors and rollout-based evaluation — identical to search without an NN.
+- **Server slow**: Priors arrive late (after many rollouts have already visited
+  the node). The NN policy still improves selection for remaining iterations,
+  but the benefit diminishes as the node accumulates its own statistics.
+- **Queue full**: Low-priority (deep) requests are dropped. Shallow nodes that
+  matter most still receive priors.
+- **Stale responses**: After a flush, any late-arriving responses from the
+  previous search are discarded (the node IDs no longer exist in the new tree).
+
 ## Configuration
 
 `MCTSConfig` controls the search:
 
-| Field                | Type       | Default        | Description                                        |
-|----------------------|------------|----------------|----------------------------------------------------|
-| SearchTime           | searchTime | Unlimited      | Wall-clock budget (Minutes, Seconds, MilliSeconds)  |
-| MaxSimulations       | int        | Int32.MaxValue | Maximum number of rollouts                         |
-| MaxRolloutDepth      | int        | 500            | Maximum depth per rollout before score fallback     |
-| ExplorationConstant  | float      | sqrt(2)        | UCB1 exploration weight (C)                        |
-| ActionRolloutLimit   | int        | Int32.MaxValue | Stop when any single action reaches this many rollouts |
+| Field                | Type             | Default        | Description                                        |
+|----------------------|------------------|----------------|----------------------------------------------------|
+| SearchTime           | searchTime       | Unlimited      | Wall-clock budget (Minutes, Seconds, MilliSeconds)  |
+| MaxSimulations       | int              | Int32.MaxValue | Maximum number of rollouts                         |
+| MaxRolloutDepth      | int              | 500            | Maximum depth per rollout before score fallback     |
+| ExplorationConstant  | float            | sqrt(2)        | UCB1 exploration weight (C)                        |
+| ActionRolloutLimit   | int              | Int32.MaxValue | Stop when any single action reaches this many rollouts |
+| PriorClient          | IPriorClient opt | None           | Async prior client for NN-guided search (see below) |
 
 The search stops when any budget is exhausted, or when all root actions have
 been resolved to `Terminal` via terminal propagation.
+
+When `PriorClient` is `None`, the search uses uniform priors and rollout-based
+evaluation (the current default behavior). When set, the search fires prior
+requests on node expansion and collects responses after terminal propagation.
 
 ## Logging
 
 `LogInfo` tracks per-search statistics:
 
-| Field            | Type     | Description                                                    |
-|------------------|----------|----------------------------------------------------------------|
-| simulations      | int      | Number of iterations performed                                 |
-| elapsedTime      | TimeSpan | Wall-clock time spent in the search                            |
-| reachedTerminal  | bool     | `true` if all root actions became `Terminal` during the search |
+| Field               | Type     | Description                                                    |
+|---------------------|----------|----------------------------------------------------------------|
+| simulations         | int      | Number of iterations performed                                 |
+| elapsedTime         | TimeSpan | Wall-clock time spent in the search                            |
+| reachedTerminal     | bool     | `true` if all root actions became `Terminal` during the search |
+| priorsRequested     | int      | Number of prior requests enqueued (one per expanded node)      |
+| priorsApplied       | int      | Number of prior responses received and applied to nodes        |
+| priorStatesEvaluated| int      | Total action-result states sent for NN evaluation              |

@@ -243,7 +243,8 @@ internal static class Program
             System.Int32.MaxValue,
             500,
             System.Math.Sqrt(2.0),
-            System.Int32.MaxValue);
+            System.Int32.MaxValue,
+            null);
         var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(config);
 
         var mctsRoot = new Kjarni.MCTS.Types.MCTSState((ICoreState)current);

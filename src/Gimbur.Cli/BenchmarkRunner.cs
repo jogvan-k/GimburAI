@@ -123,11 +123,21 @@ internal sealed class GreedyPlayer : IBenchmarkPlayer
 /// <summary>
 /// MCTS-based player that mirrors SimulationRunner behavior:
 /// skips forced moves, follows the best path, and reuses the search tree.
+/// Accumulates prior stats across all MCTS decisions for reporting.
 /// </summary>
 internal sealed class MctsPlayer : IBenchmarkPlayer
 {
     private readonly Kjarni.MCTS.AI.MonteCarloTreeSearch _mcts;
     private Kjarni.MCTS.Types.MCTSState? _mctsRoot;
+
+    /// <summary>Total prior requests across all MCTS decisions in this game.</summary>
+    public int TotalPriorsRequested { get; private set; }
+
+    /// <summary>Total prior responses applied across all MCTS decisions in this game.</summary>
+    public int TotalPriorsApplied { get; private set; }
+
+    /// <summary>Total individual states evaluated by the NN server across all decisions.</summary>
+    public int TotalPriorStatesEvaluated { get; private set; }
 
     public MctsPlayer(MCTSConfig config)
     {
@@ -151,6 +161,12 @@ internal sealed class MctsPlayer : IBenchmarkPlayer
         _mctsRoot ??= new Kjarni.MCTS.Types.MCTSState((ICoreState)state);
         _mcts.RunSimulation(_mctsRoot);
         var bestPath = extractBestPath(_mctsRoot);
+
+        // Accumulate prior stats from this decision.
+        var logInfo = _mcts.LatestLogInfo();
+        TotalPriorsRequested += logInfo.priorsRequested;
+        TotalPriorsApplied += logInfo.priorsApplied;
+        TotalPriorStatesEvaluated += logInfo.priorStatesEvaluated;
 
         if (!bestPath.IsEmpty && bestPath.Head < actions.Length)
         {
@@ -228,6 +244,22 @@ internal record BenchmarkGameResult
 
     public required int Turns { get; init; }
     public required TimeSpan Elapsed { get; init; }
+
+    /// <summary>
+    /// Total prior requests across all MCTS decisions in this game.
+    /// Zero when no MCTS player uses priors.
+    /// </summary>
+    public int PriorsRequested { get; init; }
+
+    /// <summary>
+    /// Total prior responses applied across all MCTS decisions in this game.
+    /// </summary>
+    public int PriorsApplied { get; init; }
+
+    /// <summary>
+    /// Total individual states evaluated by the NN server across all decisions.
+    /// </summary>
+    public int PriorStatesEvaluated { get; init; }
 }
 
 /// <summary>
@@ -321,7 +353,7 @@ internal class BenchmarkRunner
             }
 
             var gameStopwatch = Stopwatch.StartNew();
-            var (winnerSeat, turns) = RunSingleGame(config, rng, seatAssignment);
+            var (winnerSeat, turns, priorsRequested, priorsApplied, priorStatesEvaluated) = RunSingleGame(config, rng, seatAssignment);
             gameStopwatch.Stop();
 
             AiKind? winnerAi = winnerSeat > 0 ? seatAssignment[winnerSeat - 1] : null;
@@ -335,6 +367,9 @@ internal class BenchmarkRunner
                 WinnerSeat = winnerSeat,
                 Turns = turns,
                 Elapsed = gameStopwatch.Elapsed,
+                PriorsRequested = priorsRequested,
+                PriorsApplied = priorsApplied,
+                PriorStatesEvaluated = priorStatesEvaluated,
             };
 
             gameResults.Add(result);
@@ -388,13 +423,14 @@ internal class BenchmarkRunner
                 _options.MaxSimulations,
                 _options.MaxRolloutDepth,
                 System.Math.Sqrt(2.0),
-                int.MaxValue)),
+                int.MaxValue,
+                null)),
             AiKind.Nn => new NnPlayer(_nnClient!),
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, $"Unknown AI kind: {kind}"),
         };
     }
 
-    private (int WinnerSeat, int Turns) RunSingleGame(GameConfig config, Random rng, AiKind[] seatAssignment)
+    private (int WinnerSeat, int Turns, int PriorsRequested, int PriorsApplied, int PriorStatesEvaluated) RunSingleGame(GameConfig config, Random rng, AiKind[] seatAssignment)
     {
         var playerCount = seatAssignment.Length;
         var state = new CatanState(config, playerCount, rng);
@@ -427,7 +463,21 @@ internal class BenchmarkRunner
             }
         }
 
-        return (state.WinnerPlayer, state.TurnNumber);
+        // Aggregate prior stats from all MCTS players in this game.
+        var priorsRequested = 0;
+        var priorsApplied = 0;
+        var priorStatesEvaluated = 0;
+        foreach (var player in players)
+        {
+            if (player is MctsPlayer mctsPlayer)
+            {
+                priorsRequested += mctsPlayer.TotalPriorsRequested;
+                priorsApplied += mctsPlayer.TotalPriorsApplied;
+                priorStatesEvaluated += mctsPlayer.TotalPriorStatesEvaluated;
+            }
+        }
+
+        return (state.WinnerPlayer, state.TurnNumber, priorsRequested, priorsApplied, priorStatesEvaluated);
     }
 
     private GameConfig ResolveGameConfig()
@@ -489,6 +539,24 @@ internal class BenchmarkRunner
             var rate = stats.TotalGames > 0 ? (double)seatWins / stats.TotalGames * 100 : 0;
             Console.WriteLine($"  Seat {seat}: {seatWins}/{stats.TotalGames} ({rate:F1}%)");
         }
+
+        // Prior stats (only shown when priors were used).
+        var totalPriorsRequested = stats.Games.Sum(g => g.PriorsRequested);
+        if (totalPriorsRequested > 0)
+        {
+            var totalPriorsApplied = stats.Games.Sum(g => g.PriorsApplied);
+            var totalPriorStatesEvaluated = stats.Games.Sum(g => g.PriorStatesEvaluated);
+            Console.WriteLine();
+            Console.WriteLine("Prior stats:");
+            Console.WriteLine($"  Priors requested: {totalPriorsRequested}");
+            Console.WriteLine($"  Priors applied: {totalPriorsApplied}");
+            Console.WriteLine($"  Prior states evaluated: {totalPriorStatesEvaluated}");
+            if (stats.TotalGames > 0)
+            {
+                Console.WriteLine($"  Avg requested/game: {(double)totalPriorsRequested / stats.TotalGames:F1}");
+                Console.WriteLine($"  Avg applied/game: {(double)totalPriorsApplied / stats.TotalGames:F1}");
+            }
+        }
     }
 
     private static void ExportResults(BenchmarkStats stats, FileInfo outputPath)
@@ -526,6 +594,9 @@ internal class BenchmarkRunner
                 winnerSeat = g.WinnerSeat,
                 turns = g.Turns,
                 elapsedSeconds = Math.Round(g.Elapsed.TotalSeconds, 3),
+                priorsRequested = g.PriorsRequested,
+                priorsApplied = g.PriorsApplied,
+                priorStatesEvaluated = g.PriorStatesEvaluated,
             }).ToArray(),
         };
 

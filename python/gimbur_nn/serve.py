@@ -18,12 +18,16 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import asyncio
+import heapq
+import threading
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .game_config import CONFIGS_BY_NAME, GameConfig
@@ -66,6 +70,131 @@ class PredictPlayerResponse(BaseModel):
     """Scalar expected win probability for each target player."""
 
 
+# ── Prior queue models ────────────────────────────────────────────────────────
+
+
+class PriorRequest(BaseModel):
+    """A single prior request for one tree node."""
+
+    id: str
+    """Opaque ID to correlate response back to the MCTSState."""
+
+    states: list[str]
+    """Serialized result states for each action (deterministic: 1 state,
+    stochastic: 1 per outcome)."""
+
+    player: int
+    """1-based acting player for server-side rotation."""
+
+    priority: int
+    """Depth from root; lower = more important."""
+
+
+class PriorEnqueueRequest(BaseModel):
+    """Request body for /prior-enqueue."""
+
+    requests: list[PriorRequest]
+
+
+class PriorResponseItem(BaseModel):
+    """A completed prior inference result for one tree node."""
+
+    id: str
+    win_probabilities: list[float]
+
+
+class PriorCollectResponse(BaseModel):
+    """Response body for /prior-collect."""
+
+    responses: list[PriorResponseItem]
+
+
+# ── Priority queue for async prior inference ──────────────────────────────────
+
+_PRIOR_QUEUE_CAPACITY = 4096
+
+
+class PriorQueue:
+    """Thread-safe priority queue for prior requests, with bounded capacity.
+
+    Requests are ordered by priority (depth from root, lower = higher
+    priority).  When the queue is full, a new request with lower priority
+    than the worst queued item is silently dropped; one with higher
+    priority evicts the lowest-priority entry.
+    """
+
+    def __init__(self, capacity: int = _PRIOR_QUEUE_CAPACITY) -> None:
+        self._capacity = capacity
+        self._lock = threading.Lock()
+        # Min-heap of (priority, sequence_no, PriorRequest).
+        # sequence_no breaks ties to maintain FIFO within the same priority.
+        self._heap: list[tuple[int, int, PriorRequest]] = []
+        self._seq = 0
+        # Completed results waiting to be collected.
+        self._results: list[PriorResponseItem] = []
+
+    def enqueue(self, req: PriorRequest) -> bool:
+        """Add a request.  Returns True if accepted, False if dropped."""
+        with self._lock:
+            if len(self._heap) < self._capacity:
+                heapq.heappush(self._heap, (req.priority, self._seq, req))
+                self._seq += 1
+                return True
+            # Queue full — check if the new request is higher priority
+            # than the worst (highest priority value) in the heap.
+            # Since this is a min-heap, the worst is *not* at index 0.
+            # We maintain a min-heap by priority, so the *largest* priority
+            # is the one we'd want to evict.  Using nlargest(1) is O(n) but
+            # the queue is bounded so this is fine.
+            worst_priority = max(item[0] for item in self._heap)
+            if req.priority < worst_priority:
+                # Evict the worst entry.
+                # Find and remove the worst (largest priority, latest seq).
+                worst_idx = max(
+                    range(len(self._heap)), key=lambda i: (self._heap[i][0], self._heap[i][1])
+                )
+                self._heap[worst_idx] = self._heap[-1]
+                self._heap.pop()
+                heapq.heapify(self._heap)
+                heapq.heappush(self._heap, (req.priority, self._seq, req))
+                self._seq += 1
+                return True
+            # New request is lower priority — drop it.
+            return False
+
+    def dequeue_batch(self, batch_size: int) -> list[PriorRequest]:
+        """Remove and return up to *batch_size* highest-priority requests."""
+        with self._lock:
+            batch: list[PriorRequest] = []
+            for _ in range(min(batch_size, len(self._heap))):
+                _, _, req = heapq.heappop(self._heap)
+                batch.append(req)
+            return batch
+
+    def add_results(self, results: list[PriorResponseItem]) -> None:
+        """Add completed inference results to the collection buffer."""
+        with self._lock:
+            self._results.extend(results)
+
+    def collect_results(self) -> list[PriorResponseItem]:
+        """Drain and return all completed results."""
+        with self._lock:
+            results = self._results
+            self._results = []
+            return results
+
+    def flush(self) -> None:
+        """Clear the queue and all pending results."""
+        with self._lock:
+            self._heap.clear()
+            self._results.clear()
+            self._seq = 0
+
+    def pending_count(self) -> int:
+        with self._lock:
+            return len(self._heap)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Serve GimburNet for inference.")
     parser.add_argument(
@@ -100,6 +229,7 @@ def create_app(
 ) -> FastAPI:
     """Build the FastAPI application with the model captured in closure."""
     app = FastAPI(title="GimburNet Inference")
+    prior_queue = PriorQueue()
 
     def _expected_win_prob(probs: torch.Tensor) -> float:
         """Compute expected win probability from a 1-D bucket distribution."""
@@ -107,6 +237,59 @@ def create_app(
         centres = torch.arange(n, dtype=probs.dtype, device=probs.device)
         centres = (centres + 0.5) / n
         return float((probs * centres).sum())
+
+    def _infer_prior_batch(batch: list[PriorRequest]) -> list[PriorResponseItem]:
+        """Run inference on a batch of prior requests and return results."""
+        results: list[PriorResponseItem] = []
+        for req in batch:
+            if not req.states:
+                results.append(PriorResponseItem(id=req.id, win_probabilities=[]))
+                continue
+            try:
+                rotated = [rotate_player_state(s, req.player, game_cfg) for s in req.states]
+                token_ids = tokenize_batch(rotated).to(device)
+            except (KeyError, ValueError):
+                # Bad state — return zeros so the MCTS falls back to uniform.
+                results.append(
+                    PriorResponseItem(
+                        id=req.id,
+                        win_probabilities=[0.0] * len(req.states),
+                    )
+                )
+                continue
+
+            with torch.no_grad():
+                logits = model(token_ids)
+                last_logits = logits[:, -1, :]
+                probs = F.softmax(last_logits, dim=-1)
+
+            win_probs = [_expected_win_prob(probs[i]) for i in range(probs.shape[0])]
+            results.append(PriorResponseItem(id=req.id, win_probabilities=win_probs))
+
+        return results
+
+    async def _prior_worker() -> None:
+        """Background task that continuously processes the prior queue."""
+        batch_size = 8
+        while True:
+            batch = prior_queue.dequeue_batch(batch_size)
+            if batch:
+                # Run inference in a thread pool to avoid blocking the event loop.
+                loop = asyncio.get_event_loop()
+                results = await loop.run_in_executor(None, _infer_prior_batch, batch)
+                prior_queue.add_results(results)
+            else:
+                # No work — sleep briefly to avoid busy-waiting.
+                await asyncio.sleep(0.005)
+
+    # Store background task reference to prevent garbage collection.
+    _background_tasks: set[asyncio.Task[None]] = set()
+
+    @app.on_event("startup")
+    async def start_prior_worker() -> None:
+        task = asyncio.create_task(_prior_worker())
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
     @app.post("/predict", response_model=PredictResponse)
     async def predict(request: PredictRequest) -> PredictResponse:
@@ -168,6 +351,35 @@ def create_app(
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    # ── Prior endpoints ───────────────────────────────────────────────────────
+
+    @app.post("/prior-enqueue", status_code=202)
+    async def prior_enqueue(request: PriorEnqueueRequest) -> JSONResponse:
+        """Accept a batch of prior requests into the priority queue."""
+        accepted = 0
+        dropped = 0
+        for req in request.requests:
+            if prior_queue.enqueue(req):
+                accepted += 1
+            else:
+                dropped += 1
+        return JSONResponse(
+            status_code=202,
+            content={"accepted": accepted, "dropped": dropped},
+        )
+
+    @app.post("/prior-collect", response_model=PriorCollectResponse)
+    async def prior_collect() -> PriorCollectResponse:
+        """Return all completed prior inference results."""
+        results = prior_queue.collect_results()
+        return PriorCollectResponse(responses=results)
+
+    @app.post("/prior-flush")
+    async def prior_flush() -> dict[str, str]:
+        """Clear the priority queue and discard pending results."""
+        prior_queue.flush()
+        return {"status": "flushed"}
 
     return app
 
