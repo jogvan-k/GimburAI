@@ -36,6 +36,7 @@ type MonteCarloTreeSearch(config: MCTSConfig) =
         logInfo.priorsRequested <- priorStats.priorsRequested
         logInfo.priorsApplied <- priorStats.priorsApplied
         logInfo.priorStatesEvaluated <- priorStats.priorStatesEvaluated
+        logInfo.priorStatesPerDepth <- priorStats.priorStatesPerDepth
 
         _logInfos <- logInfo :: _logInfos
 

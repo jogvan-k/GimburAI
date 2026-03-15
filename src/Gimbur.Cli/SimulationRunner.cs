@@ -120,6 +120,13 @@ internal record StateRecord
     /// A single request may contain multiple states (one per action outcome).
     /// </summary>
     public int PriorStatesEvaluated { get; init; }
+
+    /// <summary>
+    /// Per-depth count of prior states evaluated during this MCTS search.
+    /// Key is depth (0 = root), value is number of states evaluated at that depth.
+    /// Null when no priors were used.
+    /// </summary>
+    public Dictionary<int, int>? PriorStatesPerDepth { get; init; }
 }
 
 /// <summary>
@@ -138,6 +145,13 @@ internal record GameResult
     public required int ActionRolloutLimit { get; init; }
     public required string BoardSerialized { get; init; }
     public required List<StateRecord> States { get; init; }
+
+    /// <summary>
+    /// Per-depth count of prior states evaluated across all MCTS decisions in this game.
+    /// Key is depth (0 = root), value is total number of states evaluated at that depth.
+    /// Null when no priors were used.
+    /// </summary>
+    public Dictionary<int, int>? PriorsCalculated { get; init; }
 }
 
 /// <summary>
@@ -517,6 +531,9 @@ internal class SimulationRunner
                     PriorsRequested = logInfo.priorsRequested,
                     PriorsApplied = logInfo.priorsApplied,
                     PriorStatesEvaluated = logInfo.priorStatesEvaluated,
+                    PriorStatesPerDepth = logInfo.priorStatesPerDepth is { Count: > 0 }
+                        ? new Dictionary<int, int>(logInfo.priorStatesPerDepth)
+                        : null,
                 });
 
                 // Apply the best action from MCTS and advance the tree.
@@ -540,6 +557,19 @@ internal class SimulationRunner
             }
         }
 
+        // Aggregate per-depth prior stats across all MCTS decisions.
+        Dictionary<int, int>? priorsCalculated = null;
+        foreach (var s in states)
+        {
+            if (s.PriorStatesPerDepth is not { Count: > 0 }) continue;
+            priorsCalculated ??= new Dictionary<int, int>();
+            foreach (var (depth, count) in s.PriorStatesPerDepth)
+            {
+                priorsCalculated.TryGetValue(depth, out var existing);
+                priorsCalculated[depth] = existing + count;
+            }
+        }
+
         return new GameResult
         {
             Seed = gameSeed,
@@ -553,6 +583,7 @@ internal class SimulationRunner
             ActionRolloutLimit = _options.ActionRolloutLimit,
             BoardSerialized = boardSerialized,
             States = states,
+            PriorsCalculated = priorsCalculated,
         };
     }
 
@@ -625,6 +656,24 @@ internal class SimulationRunner
                 Console.WriteLine($"Priors requested: {totalPriorsRequested} (avg {avgRequested:F1}/decision)");
                 Console.WriteLine($"Priors applied: {totalPriorsApplied} (avg {avgApplied:F1}/decision)");
                 Console.WriteLine($"Prior states evaluated: {totalPriorStatesEvaluated} (avg {avgStatesEvaluated:F1}/decision)");
+
+                // Per-depth breakdown of prior states evaluated.
+                var aggregatedDepths = new SortedDictionary<int, int>();
+                foreach (var game in stats.Games)
+                {
+                    if (game.PriorsCalculated is not { Count: > 0 }) continue;
+                    foreach (var (depth, count) in game.PriorsCalculated)
+                    {
+                        aggregatedDepths.TryGetValue(depth, out var existing);
+                        aggregatedDepths[depth] = existing + count;
+                    }
+                }
+
+                if (aggregatedDepths.Count > 0)
+                {
+                    var depthParts = aggregatedDepths.Select(kv => $"{kv.Key}:{kv.Value}");
+                    Console.WriteLine($"Prior states by depth: {string.Join(", ", depthParts)}");
+                }
             }
         }
 
@@ -722,6 +771,9 @@ internal class SimulationRunner
                     ? symmetryPerms.Select(p => BoardSymmetry.PermuteState(s.SerializedState, p)).ToArray()
                     : Array.Empty<string>(),
             }).ToArray(),
+            priorsCalculated = game.PriorsCalculated != null
+                ? game.PriorsCalculated.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
+                : null,
         };
 
         return JsonSerializer.Serialize(jsonObj, jsonOptions);
