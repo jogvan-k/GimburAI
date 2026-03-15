@@ -239,6 +239,9 @@ class _ServerProcess:
         if self._proc is not None:
             self.stop()
 
+        # Fail fast if the port is already occupied by another process.
+        self._check_port_available(serve_cfg.host, serve_cfg.port)
+
         args = [
             sys.executable,
             "-m",
@@ -275,6 +278,19 @@ class _ServerProcess:
             self._proc.wait()
         self._proc = None
 
+    @staticmethod
+    def _check_port_available(host: str, port: int) -> None:
+        """Raise if another process is already listening on host:port."""
+        import socket
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(1)
+            if sock.connect_ex((host, port)) == 0:
+                raise RuntimeError(
+                    f"Port {port} on {host} is already in use. "
+                    f"Kill the existing process before running the pipeline."
+                )
+
     def _wait_for_health(self, url: str, timeout: float) -> None:
         """Poll the /health endpoint until the server is ready."""
         import urllib.error
@@ -282,6 +298,12 @@ class _ServerProcess:
 
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            # If the server process has exited, stop waiting immediately.
+            if self._proc is not None and self._proc.poll() is not None:
+                raise RuntimeError(
+                    f"Inference server exited with code {self._proc.returncode} "
+                    f"before becoming healthy."
+                )
             try:
                 with urllib.request.urlopen(url, timeout=2) as resp:
                     if resp.status == 200:

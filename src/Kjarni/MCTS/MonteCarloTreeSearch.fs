@@ -26,8 +26,8 @@ type MonteCarloTreeSearch(config: MCTSConfig) =
 
         // Flush the prior queue after search completes
         match config.PriorClient with
-        | Some client -> client.Flush()
-        | None -> ()
+        | Some client when not (isNull (box client)) -> client.Flush()
+        | _ -> ()
 
         let mutable logInfo = LogInfo()
         logInfo.simulations <- root.Rollouts
