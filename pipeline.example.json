@@ -1,0 +1,61 @@
+{
+  // Shared identifiers — used by simulate, train, serve, and benchmark.
+  "mapConfig": "mini",
+  "gameConfig": "mini_2p",
+  "modelConfig": "small",
+
+  // Omit "seed" for non-reproducible runs, or set for reproducibility.
+  // Each generation offsets the seed: seed + gen for simulate, seed + gen*1000 for benchmark.
+  "seed": 42,
+
+  // Directories for pipeline artifacts (relative to project root).
+  "dataDir": "pipeline/data",
+  "modelDir": "pipeline/models",
+  "resultsDir": "pipeline/results",
+
+  // Number of generations to run (gen 0 .. generations-1).
+  "generations": 10,
+
+  // Self-play simulation parameters (gimbur simulate).
+  "simulate": {
+    "games": 1000,
+    "players": 2,
+    "searchTimeMs": 500,
+    "maxSimulations": 200,
+    "maxRolloutDepth": 500,
+    // "actionRolloutLimit": 50,  // uncomment to cap per-action rollouts
+    "symmetries": true,
+    "verbosity": "quiet"
+  },
+
+  // Model training parameters (python -m gimbur_nn.train).
+  "train": {
+    "epochs": 0,
+    "patience": 5,
+    "batchSize": 64,
+    "lr": 1e-4,
+    "valSplit": 0.1,
+    "testSplit": 0.0,
+    "logInterval": 50
+  },
+
+  // Inference server parameters (python -m gimbur_nn.serve).
+  "serve": {
+    "port": 8000,
+    "host": "127.0.0.1"
+  },
+
+  // Benchmark configurations. Each entry runs independently after training.
+  "benchmarks": [
+    {
+      "name": "nn-vs-greedy",
+      "games": 100,
+      "ai": ["nn", "greedy"]
+    },
+    {
+      "name": "nn-vs-random",
+      "games": 100,
+      "ai": ["nn", "random"]
+    }
+  ]
+}

@@ -118,7 +118,7 @@ The goal is to train a neural network that evaluates board positions (state to w
 - [x] Generation 0: train model on greedy-rollout-labeled data
 - [x] Inference integration: load model into Kjarni as leaf evaluator
 - [ ] Generation N: model-backed MCTS plays games, generate training data, retrain
-- [ ] Automated pipeline: generate, train, evaluate, promote best model, repeat
+- [x] Automated pipeline: generate, train, evaluate, promote best model, repeat
 - [ ] Elo tracking per generation (each generation vs. previous + vs. random and greedy baseline)
 - [ ] Win-rate plotting across generations (improvement curve)
 - [ ] Loss / accuracy plots per training run
@@ -319,7 +319,7 @@ Endpoints:
 | `POST` | `/prior-collect` | Collect completed prior inference results |
 | `POST` | `/prior-flush` | Clear priority queue and pending results |
 
-### End-to-End Workflow
+### End-to-End Workflow (Manual)
 
 ```bash
 # 1. Generate training data (dotnet CLI)
@@ -348,6 +348,76 @@ dotnet run --project src/Gimbur.Cli -- simulate \
 
 # 6. Retrain the model on the new data and repeat from step 3
 ```
+
+### `pipeline` -- Automated Self-Play Loop
+
+The pipeline orchestrator automates the AlphaZero-style loop: simulate, train, benchmark, repeat. It manages the inference server lifecycle, passes the right arguments to each tool, and tracks results across generations.
+
+```bash
+cd python
+python -m gimbur_nn.pipeline --config ../pipeline.example.json
+```
+
+**Per-generation flow:**
+1. **Simulate** -- Gen 0 uses greedy rollouts (no NN). Gen N>0 starts the inference server with gen N-1's model and enables `--prior`.
+2. **Train** -- Trains on the new generation's data. Resumes from previous generation's checkpoint when available.
+3. **Benchmark** -- Starts the inference server with this generation's model and runs all configured benchmarks.
+4. **Report** -- Prints win rates and saves results.
+
+| Argument | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `--config <file>` | yes | | Path to pipeline configuration JSON |
+| `--start-gen <n>` | no | `0` | Generation to resume from |
+| `--project-root <dir>` | no | auto-detect | Project root directory |
+
+**Pipeline configuration** (see `pipeline.example.json`):
+
+```json
+{
+  "mapConfig": "mini",
+  "gameConfig": "mini_2p",
+  "modelConfig": "small",
+  "seed": 42,
+  "dataDir": "pipeline/data",
+  "modelDir": "pipeline/models",
+  "resultsDir": "pipeline/results",
+  "generations": 10,
+
+  "simulate": {
+    "games": 1000,
+    "players": 2,
+    "searchTimeMs": 500,
+    "maxSimulations": 200,
+    "maxRolloutDepth": 500,
+    "symmetries": true,
+    "verbosity": "quiet"
+  },
+
+  "train": {
+    "epochs": 0,
+    "patience": 5,
+    "batchSize": 64,
+    "lr": 1e-4,
+    "valSplit": 0.1,
+    "logInterval": 50
+  },
+
+  "serve": { "port": 8000, "host": "127.0.0.1" },
+
+  "benchmarks": [
+    { "name": "nn-vs-greedy", "games": 100, "ai": ["nn", "greedy"] },
+    { "name": "nn-vs-random", "games": 100, "ai": ["nn", "random"] }
+  ]
+}
+```
+
+Per-generation artifacts are stored at deterministic paths:
+- Training data: `{dataDir}/gen{N}.jsonl`
+- Model checkpoint: `{modelDir}/gen{N}.pt`
+- Benchmark results: `{resultsDir}/gen{N}/{name}.json`
+- Cross-generation summary: `{resultsDir}/summary.json`
+
+The pipeline supports `// comments` in the JSON config file. To resume after interruption, use `--start-gen N` to skip completed generations.
 
 ## TUI Manual Testing
 
