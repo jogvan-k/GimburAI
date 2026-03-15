@@ -427,6 +427,12 @@ let propagateTerminals (visitedStates: MCTSState list) =
     propagate visitedStates
 
 let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float, actionRolloutLimit: int, priorClient: IPriorClient option) =
+    // Normalise the option to guard against C# passing Some(null).
+    let priorClient =
+        match priorClient with
+        | Some client when not (isNull (box client)) -> Some client
+        | _ -> None
+
     // Node registry and layout registry for correlating prior responses.
     // Only allocated when a prior client is configured.
     let nodeRegistry =
