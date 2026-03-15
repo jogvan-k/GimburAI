@@ -331,13 +331,19 @@ internal class BenchmarkRunner
             }
         }
 
+        // When NN is in use, limit parallelism to avoid overwhelming the
+        // inference server with concurrent requests.
+        var maxParallelism = _options.Players.Contains(AiKind.Nn)
+            ? Math.Min(4, Environment.ProcessorCount)
+            : Environment.ProcessorCount;
+
         if (!_quiet)
         {
             Console.WriteLine($"Starting benchmark: {_options.NumberOfGames} game(s)");
             Console.WriteLine($"  Map: {_options.MapConfig ?? "standard"}");
             Console.WriteLine($"  Players: {string.Join(" vs ", _options.Players.Select((ai, i) => $"P{i + 1}={ai}"))}");
             Console.WriteLine($"  Seed: {_options.Seed}");
-            Console.WriteLine($"  Parallelism: {Environment.ProcessorCount} cores");
+            Console.WriteLine($"  Parallelism: {maxParallelism} cores");
             if (_options.Players.Contains(AiKind.Mcts))
             {
                 Console.WriteLine($"  MCTS search time: {_options.SearchTimeMs}ms");
@@ -352,11 +358,12 @@ internal class BenchmarkRunner
         }
 
         var gameResults = new ConcurrentBag<BenchmarkGameResult>();
+        var failedGames = new ConcurrentBag<(int GameIndex, Exception Error)>();
         var totalStopwatch = Stopwatch.StartNew();
 
         Parallel.For(0, (int)_options.NumberOfGames, new ParallelOptions
         {
-            MaxDegreeOfParallelism = Environment.ProcessorCount,
+            MaxDegreeOfParallelism = maxParallelism,
         }, gameIndex =>
         {
             var gameSeed = unchecked(_options.Seed + gameIndex);
@@ -370,46 +377,66 @@ internal class BenchmarkRunner
                 seatAssignment[i] = _options.Players[(i + rotation) % playerCount];
             }
 
-            var gameStopwatch = Stopwatch.StartNew();
-            var (winnerSeat, turns, priorsRequested, priorsApplied, priorStatesEvaluated, priorsCalculated) = RunSingleGame(config, rng, seatAssignment);
-            gameStopwatch.Stop();
-
-            AiKind? winnerAi = winnerSeat > 0 ? seatAssignment[winnerSeat - 1] : null;
-
-            var result = new BenchmarkGameResult
+            try
             {
-                GameNumber = gameIndex + 1,
-                Seed = gameSeed,
-                WinnerAi = winnerAi,
-                SeatAssignment = seatAssignment,
-                WinnerSeat = winnerSeat,
-                Turns = turns,
-                Elapsed = gameStopwatch.Elapsed,
-                PriorsRequested = priorsRequested,
-                PriorsApplied = priorsApplied,
-                PriorStatesEvaluated = priorStatesEvaluated,
-                PriorsCalculated = priorsCalculated,
-            };
+                var gameStopwatch = Stopwatch.StartNew();
+                var (winnerSeat, turns, priorsRequested, priorsApplied, priorStatesEvaluated, priorsCalculated) = RunSingleGame(config, rng, seatAssignment);
+                gameStopwatch.Stop();
 
-            gameResults.Add(result);
+                AiKind? winnerAi = winnerSeat > 0 ? seatAssignment[winnerSeat - 1] : null;
 
-            if (!_quiet)
+                var result = new BenchmarkGameResult
+                {
+                    GameNumber = gameIndex + 1,
+                    Seed = gameSeed,
+                    WinnerAi = winnerAi,
+                    SeatAssignment = seatAssignment,
+                    WinnerSeat = winnerSeat,
+                    Turns = turns,
+                    Elapsed = gameStopwatch.Elapsed,
+                    PriorsRequested = priorsRequested,
+                    PriorsApplied = priorsApplied,
+                    PriorStatesEvaluated = priorStatesEvaluated,
+                    PriorsCalculated = priorsCalculated,
+                };
+
+                gameResults.Add(result);
+
+                if (!_quiet)
+                {
+                    var winnerLabel = winnerSeat == 0
+                        ? "draw"
+                        : $"P{winnerSeat}({winnerAi})";
+                    Console.WriteLine(
+                        $"Game {gameIndex + 1}: winner={winnerLabel}, turns={turns}, " +
+                        $"{gameStopwatch.Elapsed.TotalSeconds:F1}s");
+                }
+            }
+            catch (Exception ex)
             {
-                var winnerLabel = winnerSeat == 0
-                    ? "draw"
-                    : $"P{winnerSeat}({winnerAi})";
-                Console.WriteLine(
-                    $"Game {gameIndex + 1}: winner={winnerLabel}, turns={turns}, " +
-                    $"{gameStopwatch.Elapsed.TotalSeconds:F1}s");
+                failedGames.Add((gameIndex + 1, ex));
+                if (!_quiet)
+                {
+                    Console.Error.WriteLine(
+                        $"Game {gameIndex + 1}: FAILED — {ex.GetType().Name}: {ex.Message}");
+                }
             }
         });
 
         totalStopwatch.Stop();
 
+        if (!failedGames.IsEmpty && !_quiet)
+        {
+            Console.Error.WriteLine();
+            Console.Error.WriteLine($"WARNING: {failedGames.Count} game(s) failed and were excluded from results.");
+        }
+
+        var completedGames = gameResults.OrderBy(g => g.GameNumber).ToList();
+
         var stats = new BenchmarkStats
         {
-            Games = gameResults.OrderBy(g => g.GameNumber).ToList(),
-            TotalGames = (int)_options.NumberOfGames,
+            Games = completedGames,
+            TotalGames = completedGames.Count,
             TotalElapsed = totalStopwatch.Elapsed,
             PlayerAis = _options.Players,
         };
@@ -425,6 +452,16 @@ internal class BenchmarkRunner
         }
 
         _nnClient?.Dispose();
+
+        // Only fail the benchmark if more than half the games failed.
+        // A few sporadic failures (e.g. from edge-case states the NN server
+        // cannot tokenize) are tolerable — the partial results are still valid.
+        if (failedGames.Count > (int)_options.NumberOfGames / 2)
+        {
+            throw new InvalidOperationException(
+                $"{failedGames.Count}/{_options.NumberOfGames} game(s) failed. " +
+                $"First error: {failedGames.First().Error.Message}");
+        }
     }
 
     /// <summary>
