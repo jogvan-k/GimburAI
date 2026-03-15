@@ -372,6 +372,8 @@ type PriorStats =
     val mutable priorsRequested: int
     val mutable priorsApplied: int
     val mutable priorStatesEvaluated: int
+    /// Per-depth count of prior states evaluated (depth → state count).
+    val mutable priorStatesPerDepth: Dictionary<int, int>
   end
 
 /// Walk the selection path bottom-up, replacing actions with Terminal when
@@ -437,6 +439,7 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
         | None -> None
 
     let mutable priorStats = PriorStats()
+    priorStats.priorStatesPerDepth <- Dictionary<int, int>()
 
     /// Fire a prior request for the given node (non-blocking).
     let requestPrior (node: MCTSState) (depth: int) =
@@ -450,6 +453,11 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                     client.RequestPrior(node.NodeId, actionStates, int node.State.PlayerTurn + 1, depth)
                     priorStats.priorsRequested <- priorStats.priorsRequested + 1
                     priorStats.priorStatesEvaluated <- priorStats.priorStatesEvaluated + actionStates.Length
+                    let count =
+                        match priorStats.priorStatesPerDepth.TryGetValue(depth) with
+                        | true, v -> v
+                        | _ -> 0
+                    priorStats.priorStatesPerDepth.[depth] <- count + actionStates.Length
         | _ -> ()
 
     /// Collect completed prior responses and apply them to tree nodes.

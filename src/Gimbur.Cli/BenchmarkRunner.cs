@@ -139,6 +139,9 @@ internal sealed class MctsPlayer : IBenchmarkPlayer
     /// <summary>Total individual states evaluated by the NN server across all decisions.</summary>
     public int TotalPriorStatesEvaluated { get; private set; }
 
+    /// <summary>Per-depth count of prior states evaluated across all MCTS decisions.</summary>
+    public Dictionary<int, int>? TotalPriorStatesPerDepth { get; private set; }
+
     public MctsPlayer(MCTSConfig config)
     {
         _mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(config);
@@ -167,6 +170,15 @@ internal sealed class MctsPlayer : IBenchmarkPlayer
         TotalPriorsRequested += logInfo.priorsRequested;
         TotalPriorsApplied += logInfo.priorsApplied;
         TotalPriorStatesEvaluated += logInfo.priorStatesEvaluated;
+        if (logInfo.priorStatesPerDepth is { Count: > 0 })
+        {
+            TotalPriorStatesPerDepth ??= new Dictionary<int, int>();
+            foreach (var kv in logInfo.priorStatesPerDepth)
+            {
+                TotalPriorStatesPerDepth.TryGetValue(kv.Key, out var existing);
+                TotalPriorStatesPerDepth[kv.Key] = existing + kv.Value;
+            }
+        }
 
         if (!bestPath.IsEmpty && bestPath.Head < actions.Length)
         {
@@ -260,6 +272,12 @@ internal record BenchmarkGameResult
     /// Total individual states evaluated by the NN server across all decisions.
     /// </summary>
     public int PriorStatesEvaluated { get; init; }
+
+    /// <summary>
+    /// Per-depth count of prior states evaluated across all MCTS decisions in this game.
+    /// Null when no priors were used.
+    /// </summary>
+    public Dictionary<int, int>? PriorsCalculated { get; init; }
 }
 
 /// <summary>
@@ -353,7 +371,7 @@ internal class BenchmarkRunner
             }
 
             var gameStopwatch = Stopwatch.StartNew();
-            var (winnerSeat, turns, priorsRequested, priorsApplied, priorStatesEvaluated) = RunSingleGame(config, rng, seatAssignment);
+            var (winnerSeat, turns, priorsRequested, priorsApplied, priorStatesEvaluated, priorsCalculated) = RunSingleGame(config, rng, seatAssignment);
             gameStopwatch.Stop();
 
             AiKind? winnerAi = winnerSeat > 0 ? seatAssignment[winnerSeat - 1] : null;
@@ -370,6 +388,7 @@ internal class BenchmarkRunner
                 PriorsRequested = priorsRequested,
                 PriorsApplied = priorsApplied,
                 PriorStatesEvaluated = priorStatesEvaluated,
+                PriorsCalculated = priorsCalculated,
             };
 
             gameResults.Add(result);
@@ -430,7 +449,7 @@ internal class BenchmarkRunner
         };
     }
 
-    private (int WinnerSeat, int Turns, int PriorsRequested, int PriorsApplied, int PriorStatesEvaluated) RunSingleGame(GameConfig config, Random rng, AiKind[] seatAssignment)
+    private (int WinnerSeat, int Turns, int PriorsRequested, int PriorsApplied, int PriorStatesEvaluated, Dictionary<int, int>? PriorsCalculated) RunSingleGame(GameConfig config, Random rng, AiKind[] seatAssignment)
     {
         var playerCount = seatAssignment.Length;
         var state = new CatanState(config, playerCount, rng);
@@ -467,6 +486,7 @@ internal class BenchmarkRunner
         var priorsRequested = 0;
         var priorsApplied = 0;
         var priorStatesEvaluated = 0;
+        Dictionary<int, int>? priorsCalculated = null;
         foreach (var player in players)
         {
             if (player is MctsPlayer mctsPlayer)
@@ -474,10 +494,19 @@ internal class BenchmarkRunner
                 priorsRequested += mctsPlayer.TotalPriorsRequested;
                 priorsApplied += mctsPlayer.TotalPriorsApplied;
                 priorStatesEvaluated += mctsPlayer.TotalPriorStatesEvaluated;
+                if (mctsPlayer.TotalPriorStatesPerDepth is { Count: > 0 })
+                {
+                    priorsCalculated ??= new Dictionary<int, int>();
+                    foreach (var kv in mctsPlayer.TotalPriorStatesPerDepth)
+                    {
+                        priorsCalculated.TryGetValue(kv.Key, out var existing);
+                        priorsCalculated[kv.Key] = existing + kv.Value;
+                    }
+                }
             }
         }
 
-        return (state.WinnerPlayer, state.TurnNumber, priorsRequested, priorsApplied, priorStatesEvaluated);
+        return (state.WinnerPlayer, state.TurnNumber, priorsRequested, priorsApplied, priorStatesEvaluated, priorsCalculated);
     }
 
     private GameConfig ResolveGameConfig()
@@ -556,6 +585,24 @@ internal class BenchmarkRunner
                 Console.WriteLine($"  Avg requested/game: {(double)totalPriorsRequested / stats.TotalGames:F1}");
                 Console.WriteLine($"  Avg applied/game: {(double)totalPriorsApplied / stats.TotalGames:F1}");
             }
+
+            // Per-depth breakdown of prior states evaluated.
+            var aggregatedDepths = new SortedDictionary<int, int>();
+            foreach (var game in stats.Games)
+            {
+                if (game.PriorsCalculated is not { Count: > 0 }) continue;
+                foreach (var kv in game.PriorsCalculated)
+                {
+                    aggregatedDepths.TryGetValue(kv.Key, out var existing);
+                    aggregatedDepths[kv.Key] = existing + kv.Value;
+                }
+            }
+
+            if (aggregatedDepths.Count > 0)
+            {
+                var depthParts = aggregatedDepths.Select(kv => $"{kv.Key}:{kv.Value}");
+                Console.WriteLine($"  Prior states by depth: {string.Join(", ", depthParts)}");
+            }
         }
     }
 
@@ -597,6 +644,9 @@ internal class BenchmarkRunner
                 priorsRequested = g.PriorsRequested,
                 priorsApplied = g.PriorsApplied,
                 priorStatesEvaluated = g.PriorStatesEvaluated,
+                priorsCalculated = g.PriorsCalculated != null
+                    ? g.PriorsCalculated.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
+                    : null,
             }).ToArray(),
         };
 

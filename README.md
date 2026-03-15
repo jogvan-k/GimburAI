@@ -36,7 +36,7 @@ The goal is to train a neural network that evaluates board positions (state to w
 - [x] Extend `Player` enum to support 3-4 players
 - [x] Multiplayer backpropagation (per-player outcome vector, not just binary win/loss)
 - [x] Support stochastic rollout EV via weighted outcomes (`IStochasticCoreAction`)
-- [ ] Neural network leaf evaluator (replace rollouts with model inference)
+- [x] Neural network prior evaluator
 
 ### Phase 2: Catan Game Engine (Gimbur)
 
@@ -116,7 +116,7 @@ The goal is to train a neural network that evaluates board positions (state to w
 #### 3c: Self-Play Loop (AlphaZero-style)
 
 - [x] Generation 0: train model on greedy-rollout-labeled data
-- [ ] Inference integration: load model into Kjarni as leaf evaluator
+- [x] Inference integration: load model into Kjarni as leaf evaluator
 - [ ] Generation N: model-backed MCTS plays games, generate training data, retrain
 - [ ] Automated pipeline: generate, train, evaluate, promote best model, repeat
 - [ ] Elo tracking per generation (each generation vs. previous + vs. random and greedy baseline)

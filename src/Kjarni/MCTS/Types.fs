@@ -1,6 +1,7 @@
 module Kjarni.MCTS.Types
 
 open System
+open System.Collections.Generic
 open System.Threading
 open Kjarni
 
@@ -54,4 +55,6 @@ type LogInfo =
         val mutable priorsRequested: int
         val mutable priorsApplied: int
         val mutable priorStatesEvaluated: int
+        /// Per-depth count of prior states evaluated (depth → state count).
+        val mutable priorStatesPerDepth: Dictionary<int, int>
     end
