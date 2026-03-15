@@ -40,8 +40,8 @@ public sealed class NnClient : IDisposable
     public async Task<float[][]> PredictAsync(IReadOnlyList<string> compactStates)
     {
         var request = new PredictRequest { States = compactStates };
-        var response = await _http.PostAsJsonAsync("predict", request, JsonOptions);
-        response.EnsureSuccessStatusCode();
+        var response = await SendWithRetryAsync(
+            () => _http.PostAsJsonAsync("predict", request, JsonOptions));
         var result = await response.Content.ReadFromJsonAsync<PredictResponse>(JsonOptions);
         return result?.Probabilities ?? [];
     }
@@ -72,8 +72,8 @@ public sealed class NnClient : IDisposable
         IReadOnlyList<int> players)
     {
         var request = new PredictPlayerRequest { States = compactStates, Players = players };
-        var response = await _http.PostAsJsonAsync("predict-player", request, JsonOptions);
-        response.EnsureSuccessStatusCode();
+        var response = await SendWithRetryAsync(
+            () => _http.PostAsJsonAsync("predict-player", request, JsonOptions));
         var result = await response.Content.ReadFromJsonAsync<PredictPlayerResponse>(JsonOptions);
         return result?.WinProbabilities ?? [];
     }
@@ -102,6 +102,73 @@ public sealed class NnClient : IDisposable
         }
 
         return expected;
+    }
+
+    /// <summary>
+    /// Maximum number of retry attempts for transient HTTP failures.
+    /// </summary>
+    private const int MaxRetries = 3;
+
+    /// <summary>
+    /// Base delay between retries. Each subsequent retry doubles this delay.
+    /// </summary>
+    private static readonly TimeSpan RetryBaseDelay = TimeSpan.FromMilliseconds(200);
+
+    /// <summary>
+    /// Sends an HTTP request with retry logic and exponential backoff for
+    /// transient failures (5xx responses, timeouts, connection errors).
+    /// Client errors (4xx) are not retried since they indicate a request problem.
+    /// For non-2xx responses, the response body is included in the exception
+    /// message for diagnostics.
+    /// </summary>
+    private async Task<HttpResponseMessage> SendWithRetryAsync(
+        Func<Task<HttpResponseMessage>> sendFunc)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            HttpResponseMessage? response = null;
+            try
+            {
+                response = await sendFunc();
+                if (!response.IsSuccessStatusCode)
+                {
+                    var body = await response.Content.ReadAsStringAsync();
+                    var msg = $"NN server returned {(int)response.StatusCode} ({response.ReasonPhrase})";
+                    if (!string.IsNullOrWhiteSpace(body))
+                        msg += $": {body}";
+                    throw new HttpRequestException(msg, null, response.StatusCode);
+                }
+                return response;
+            }
+            catch (HttpRequestException ex) when (attempt < MaxRetries && IsTransient(response, ex))
+            {
+                response?.Dispose();
+                var delay = RetryBaseDelay * (1 << attempt); // 200ms, 400ms, 800ms
+                await Task.Delay(delay);
+            }
+            catch (TaskCanceledException) when (attempt < MaxRetries)
+            {
+                response?.Dispose();
+                var delay = RetryBaseDelay * (1 << attempt);
+                await Task.Delay(delay);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Returns true for transient failures that are worth retrying:
+    /// 5xx server errors, connection failures (no response), and timeouts.
+    /// Returns false for 4xx client errors.
+    /// </summary>
+    private static bool IsTransient(HttpResponseMessage? response, HttpRequestException ex)
+    {
+        // No response at all — connection failure.
+        if (response is null)
+            return true;
+
+        var code = (int)response.StatusCode;
+        // 5xx server errors are transient; 4xx client errors are not.
+        return code >= 500;
     }
 
     /// <summary>

@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import heapq
+import logging
 import threading
 from pathlib import Path
 
@@ -36,6 +37,8 @@ from .transformer_model import (
     MODEL_CONFIGS_BY_NAME,
     GimburTransformer,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class PredictRequest(BaseModel):
@@ -299,6 +302,11 @@ def create_app(
         try:
             token_ids = tokenize_batch(request.states).to(device)
         except (KeyError, ValueError) as exc:
+            logger.error(
+                "Tokenization failed in /predict: %s\n  First state (truncated): %.200s",
+                exc,
+                request.states[0] if request.states else "<empty>",
+            )
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         with torch.no_grad():
@@ -338,6 +346,13 @@ def create_app(
             ]
             token_ids = tokenize_batch(rotated).to(device)
         except (KeyError, ValueError) as exc:
+            logger.error(
+                "Tokenization failed in /predict-player: %s\n"
+                "  Players: %s\n  First state (truncated): %.200s",
+                exc,
+                request.players[:5],
+                request.states[0] if request.states else "<empty>",
+            )
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         with torch.no_grad():

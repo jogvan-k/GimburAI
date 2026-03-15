@@ -209,15 +209,19 @@ def _results_path(cfg: PipelineConfig, gen: int, name: str) -> Path:
 
 
 def _run(args: list[str], *, label: str, cwd: Path | None = None) -> None:
-    """Run a command, streaming output. Raises on non-zero exit."""
+    """Run a command, streaming stdout and capturing stderr. Raises on non-zero exit."""
     print(f"\n{'=' * 60}")
     print(f"  {label}")
     print(f"  $ {' '.join(args)}")
     print(f"{'=' * 60}\n", flush=True)
 
-    result = subprocess.run(args, cwd=cwd)
+    result = subprocess.run(args, cwd=cwd, stderr=subprocess.PIPE, text=True)
     if result.returncode != 0:
-        raise RuntimeError(f"{label} failed with exit code {result.returncode}")
+        stderr_msg = result.stderr.strip() if result.stderr else ""
+        detail = f"{label} failed with exit code {result.returncode}"
+        if stderr_msg:
+            detail += f"\nstderr:\n{stderr_msg}"
+        raise RuntimeError(detail)
 
 
 class _ServerProcess:
@@ -463,21 +467,50 @@ def _step_benchmark(
 
 
 def _print_generation_summary(gen: int, results: dict[str, Any]) -> None:
-    """Print a summary of benchmark results for a generation."""
+    """Print a summary of benchmark results for a generation.
+
+    Handles both the C# benchmark JSON format (``winRates`` as a list of
+    ``{"ai": "nn", "rate": 0.33, "wins": 1}`` objects) and the
+    normalised summary format (``winRates`` as ``{"nn": 0.33}``).
+    """
     print(f"\n{'=' * 60}")
     print(f"  Generation {gen} — Results Summary")
     print(f"{'=' * 60}")
 
     for name, data in results.items():
+        total = data.get("totalGames", 0)
         print(f"\n  {name}:")
-        for wr in data.get("winRates", []):
-            pct = wr["rate"] * 100
-            print(f"    {wr['ai']:>8s}: {pct:5.1f}% ({wr['wins']}/{data['totalGames']})")
+        raw = data.get("winRates", {})
+        if isinstance(raw, list):
+            for wr in raw:
+                pct = wr["rate"] * 100
+                print(f"    {wr['ai']:>8s}: {pct:5.1f}% ({wr['wins']}/{total})")
+        else:
+            # Flat dict format from summary.json: {"nn": 0.33, ...}
+            for ai, rate in raw.items():
+                pct = rate * 100
+                wins = round(rate * total) if total else 0
+                print(f"    {ai:>8s}: {pct:5.1f}% ({wins}/{total})")
         draws = data.get("draws", 0)
         if draws > 0:
-            print(f"    {'draws':>8s}: {draws}/{data['totalGames']}")
+            print(f"    {'draws':>8s}: {draws}/{total}")
 
     print()
+
+
+def _normalize_win_rates(data: dict[str, Any]) -> dict[str, float]:
+    """Extract win rates as ``{ai: rate}`` from either format.
+
+    The C# benchmark JSON emits ``winRates`` as a list of
+    ``{"ai": "nn", "rate": 0.33, "wins": 1}`` objects.  The summary
+    file stores them as a flat dict ``{"nn": 0.33}``.  This helper
+    accepts both.
+    """
+    raw = data.get("winRates", {})
+    if isinstance(raw, list):
+        return {wr["ai"]: wr["rate"] for wr in raw}
+    # Already a dict (loaded from summary.json).
+    return dict(raw)
 
 
 def _save_summary(cfg: PipelineConfig, all_results: dict[int, dict[str, Any]]) -> None:
@@ -489,9 +522,8 @@ def _save_summary(cfg: PipelineConfig, all_results: dict[int, dict[str, Any]]) -
     for gen, results in sorted(all_results.items()):
         entry: dict[str, Any] = {"generation": gen, "benchmarks": {}}
         for name, data in results.items():
-            win_rates = {wr["ai"]: wr["rate"] for wr in data.get("winRates", [])}
             entry["benchmarks"][name] = {
-                "winRates": win_rates,
+                "winRates": _normalize_win_rates(data),
                 "draws": data.get("draws", 0),
                 "totalGames": data.get("totalGames", 0),
             }
