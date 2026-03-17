@@ -413,16 +413,20 @@ internal static class Program
 
     private static CatanState ExecuteSettlementPlacement(CatanState state)
     {
-        var legal = GetCatanActions(state)
+        var actions = GetCatanActions(state)
             .Where(a => a is PlaceSettlementAction)
-            .Select(a => a.TargetIndex)
             .ToArray();
+
+        var legal = actions.Select(a => a.TargetIndex).ToArray();
 
         if (legal.Length == 0)
         {
             Pause("No legal settlement placements available.");
             return state;
         }
+
+        // Compute per-candidate NN win rates when the inference server is connected.
+        var candidateWinRates = ComputeCandidateWinRates(state, actions);
 
         var selected = SelectLocation(
             title: "Select settlement location",
@@ -433,7 +437,8 @@ internal static class Program
             legalCandidates: legal,
             pointProvider: BuildRenderLayout(state.Board.Topology).VertexPoints,
             neighborProvider: vertex => state.Board.Topology.VertexNeighbors[vertex],
-            mode: LocationSelectionMode.Vertex);
+            mode: LocationSelectionMode.Vertex,
+            candidateWinRates: candidateWinRates);
 
         if (selected is int vertex)
         {
@@ -446,16 +451,20 @@ internal static class Program
 
     private static CatanState ExecuteRobberPlacement(CatanState state)
     {
-        var legal = GetCatanActions(state)
+        var actions = GetCatanActions(state)
             .Where(a => a is ChooseRobberTileAction)
-            .Select(a => a.Arg1)
             .ToArray();
+
+        var legal = actions.Select(a => a.Arg1).ToArray();
 
         if (legal.Length == 0)
         {
             Pause("No legal robber placements available.");
             return state;
         }
+
+        // Compute per-candidate NN win rates when the inference server is connected.
+        var candidateWinRates = ComputeCandidateWinRates(state, actions);
 
         var selected = SelectLocation(
             title: "Select robber destination tile",
@@ -466,7 +475,8 @@ internal static class Program
             legalCandidates: legal,
             pointProvider: BuildRenderLayout(state.Board.Topology).TilePoints,
             neighborProvider: tile => state.Board.Topology.TileNeighbors[tile],
-            mode: LocationSelectionMode.Tile);
+            mode: LocationSelectionMode.Tile,
+            candidateWinRates: candidateWinRates);
 
         if (selected is int tile)
         {
@@ -506,7 +516,7 @@ internal static class Program
                 const int leftWidth = 48;
                 WriteTwoColumnBlock(leftCol, rightCol, leftWidth);
 
-                WriteFixedLine("Select player to rob (Up/Down + Enter):");
+                WriteFixedLine("Select player to rob (j/k or Up/Down + Enter):");
                 for (var i = 0; i < victimActions.Length; i++)
                 {
                     var prefix = i == selectedIndex ? ">" : " ";
@@ -515,13 +525,13 @@ internal static class Program
             });
 
             var key = Console.ReadKey(intercept: true).Key;
-            if (key == ConsoleKey.UpArrow)
+            if (key is ConsoleKey.UpArrow or ConsoleKey.K)
             {
                 selectedIndex = selectedIndex > 0 ? selectedIndex - 1 : victimActions.Length - 1;
                 continue;
             }
 
-            if (key == ConsoleKey.DownArrow)
+            if (key is ConsoleKey.DownArrow or ConsoleKey.J)
             {
                 selectedIndex = selectedIndex < victimActions.Length - 1 ? selectedIndex + 1 : 0;
                 continue;
@@ -619,6 +629,26 @@ internal static class Program
     }
 
     /// <summary>
+    /// Computes NN win rates for a set of spatial placement actions and returns
+    /// a dictionary mapping each candidate location index (vertex, edge, or tile)
+    /// to the predicted win probability. Returns null when the NN client is not connected.
+    /// </summary>
+    private static Dictionary<int, float>? ComputeCandidateWinRates(
+        CatanState state, CatanAction[] actions)
+    {
+        if (_nnClient is null || actions.Length == 0)
+            return null;
+
+        var winRates = ComputeActionWinRates(state, actions);
+        var result = new Dictionary<int, float>(winRates.Count);
+        foreach (var (action, rate) in winRates)
+        {
+            result[action.TargetIndex] = rate;
+        }
+        return result;
+    }
+
+    /// <summary>
     /// Annotates menu entry labels with NN win rate information.
     /// For direct actions the individual win rate is shown.
     /// For grouped entries (Place settlement, Trade, etc.) the best
@@ -712,7 +742,7 @@ internal static class Program
                 const int leftWidth = 48;
                 WriteTwoColumnBlock(leftCol, rightCol, leftWidth);
 
-                WriteFixedLine($"Legal actions - {ContextLabel(context)} (Up/Down + Enter):");
+                WriteFixedLine($"Legal actions - {ContextLabel(context)} (j/k or Up/Down + Enter):");
                 for (var i = 0; i < menuEntries.Count; i++)
                 {
                     var prefix = i == selectedIndex ? ">" : " ";
@@ -721,13 +751,13 @@ internal static class Program
             });
 
             var key = Console.ReadKey(intercept: true).Key;
-            if (key == ConsoleKey.UpArrow)
+            if (key is ConsoleKey.UpArrow or ConsoleKey.K)
             {
                 selectedIndex = selectedIndex > 0 ? selectedIndex - 1 : menuEntries.Count - 1;
                 continue;
             }
 
-            if (key == ConsoleKey.DownArrow)
+            if (key is ConsoleKey.DownArrow or ConsoleKey.J)
             {
                 selectedIndex = selectedIndex < menuEntries.Count - 1 ? selectedIndex + 1 : 0;
                 continue;
@@ -975,16 +1005,20 @@ internal static class Program
 
     private static CatanState ExecuteRoadPlacement(CatanState state)
     {
-        var legal = GetCatanActions(state)
+        var actions = GetCatanActions(state)
             .Where(a => a is PlaceRoadAction)
-            .Select(a => a.TargetIndex)
             .ToArray();
+
+        var legal = actions.Select(a => a.TargetIndex).ToArray();
 
         if (legal.Length == 0)
         {
             Pause("No legal road placements available.");
             return state;
         }
+
+        // Compute per-candidate NN win rates when the inference server is connected.
+        var candidateWinRates = ComputeCandidateWinRates(state, actions);
 
         var selected = SelectLocation(
             title: "Select road location",
@@ -995,7 +1029,8 @@ internal static class Program
             legalCandidates: legal,
             pointProvider: BuildRenderLayout(state.Board.Topology).EdgePoints,
             neighborProvider: BuildEdgeNeighborProvider(state.Board.Topology),
-            mode: LocationSelectionMode.Edge);
+            mode: LocationSelectionMode.Edge,
+            candidateWinRates: candidateWinRates);
 
         if (selected is int edge)
         {
@@ -1008,16 +1043,20 @@ internal static class Program
 
     private static CatanState ExecuteCityPlacement(CatanState state)
     {
-        var legal = GetCatanActions(state)
+        var actions = GetCatanActions(state)
             .Where(a => a is BuildCityAction)
-            .Select(a => a.Arg1)
             .ToArray();
+
+        var legal = actions.Select(a => a.Arg1).ToArray();
 
         if (legal.Length == 0)
         {
             Pause("No legal city placements available.");
             return state;
         }
+
+        // Compute per-candidate NN win rates when the inference server is connected.
+        var candidateWinRates = ComputeCandidateWinRates(state, actions);
 
         var selected = SelectLocation(
             title: "Select city location",
@@ -1028,7 +1067,8 @@ internal static class Program
             legalCandidates: legal,
             pointProvider: BuildRenderLayout(state.Board.Topology).VertexPoints,
             neighborProvider: vertex => state.Board.Topology.VertexNeighbors[vertex],
-            mode: LocationSelectionMode.Vertex);
+            mode: LocationSelectionMode.Vertex,
+            candidateWinRates: candidateWinRates);
 
         if (selected is int vertex)
         {
@@ -1048,13 +1088,23 @@ internal static class Program
         int[] legalCandidates,
         IReadOnlyList<(int X, int Y)> pointProvider,
         Func<int, IEnumerable<int>> neighborProvider,
-        LocationSelectionMode mode)
+        LocationSelectionMode mode,
+        Dictionary<int, float>? candidateWinRates = null)
     {
         var legalSet = legalCandidates.ToHashSet();
+
+        // Start at the NN-best candidate when win rates are available,
+        // otherwise default to the first legal candidate.
         var current = legalCandidates[0];
+        if (candidateWinRates is { Count: > 0 })
+        {
+            var best = candidateWinRates.MaxBy(kv => kv.Value);
+            current = best.Key;
+        }
 
         while (true)
         {
+            var displayCurrent = current;
             DrawFrame(() =>
             {
                 if (mode == LocationSelectionMode.Vertex)
@@ -1062,21 +1112,21 @@ internal static class Program
                     RenderBoard(
                         board,
                         highlightedVertices: legalCandidates,
-                        selectedVertex: current);
+                        selectedVertex: displayCurrent);
                 }
                 else if (mode == LocationSelectionMode.Edge)
                 {
                     RenderBoard(
                         board,
                         highlightedEdges: legalCandidates,
-                        selectedEdge: current);
+                        selectedEdge: displayCurrent);
                 }
                 else
                 {
                     RenderBoard(
                         board,
                         highlightedTiles: legalCandidates,
-                        selectedTile: current);
+                        selectedTile: displayCurrent);
                 }
 
                 var leftCol = new List<string>
@@ -1084,7 +1134,17 @@ internal static class Program
                     $"Player {currentPlayer} | Stage: {stageLabel}",
                 };
                 leftCol.AddRange(playerLines);
-                leftCol.Add($"{title}: arrows, Enter, Esc");
+
+                if (candidateWinRates is not null
+                    && candidateWinRates.TryGetValue(displayCurrent, out var winRate))
+                {
+                    leftCol.Add($"{title}: {FgCyan}NN win: {winRate:P1}{Reset}");
+                }
+                else
+                {
+                    leftCol.Add($"{title}:");
+                }
+                leftCol.Add("h/j/k/l or arrows, Enter, Esc");
 
                 var rightCol = new List<string> { "Action log:" };
                 rightCol.AddRange(ActionLogLinesForPlayer(currentPlayer));
@@ -1106,10 +1166,10 @@ internal static class Program
 
             current = key switch
             {
-                ConsoleKey.LeftArrow => MoveSelection(current, legalCandidates, legalSet, pointProvider, neighborProvider, -1, 0),
-                ConsoleKey.RightArrow => MoveSelection(current, legalCandidates, legalSet, pointProvider, neighborProvider, 1, 0),
-                ConsoleKey.UpArrow => MoveSelection(current, legalCandidates, legalSet, pointProvider, neighborProvider, 0, -1),
-                ConsoleKey.DownArrow => MoveSelection(current, legalCandidates, legalSet, pointProvider, neighborProvider, 0, 1),
+                ConsoleKey.LeftArrow or ConsoleKey.H => MoveSelection(current, legalCandidates, legalSet, pointProvider, neighborProvider, -1, 0),
+                ConsoleKey.RightArrow or ConsoleKey.L => MoveSelection(current, legalCandidates, legalSet, pointProvider, neighborProvider, 1, 0),
+                ConsoleKey.UpArrow or ConsoleKey.K => MoveSelection(current, legalCandidates, legalSet, pointProvider, neighborProvider, 0, -1),
+                ConsoleKey.DownArrow or ConsoleKey.J => MoveSelection(current, legalCandidates, legalSet, pointProvider, neighborProvider, 0, 1),
                 _ => current,
             };
         }
