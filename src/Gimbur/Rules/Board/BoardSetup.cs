@@ -62,13 +62,17 @@ public sealed class BoardSetup
         // Shuffle tile resources.
         var resources = config.TileResources.ToArray();
 
-        // Number tokens are consumed in declared order and assigned by spiral position.
-        var numberPool = config.NumberTokens.ToArray();
-        var spiral = BuildSpiralTileOrder(topology);
-
-        // Shuffle port types.
+        // Shuffle port types — done first so that the spiral rotation (below)
+        // does not shift the resource-shuffle RNG sequence.
         var ports = config.PortTypes.ToArray();
         Shuffle(ports, rng);
+
+        // Number tokens are consumed in declared order and assigned by spiral position.
+        // The outermost ring's starting position is randomized using the main RNG.
+        // This call consumes from rng *after* ports are shuffled, keeping the
+        // resource shuffle sequence close to the pre-randomization behavior.
+        var numberPool = config.NumberTokens.ToArray();
+        var spiral = BuildSpiralTileOrder(topology, rng);
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
@@ -137,7 +141,7 @@ public sealed class BoardSetup
         }
     }
 
-    private static int[] BuildSpiralTileOrder(BoardTopology topology)
+    private static int[] BuildSpiralTileOrder(BoardTopology topology, Random rng)
     {
         var byCoord = new Dictionary<HexCoord, int>(topology.TileCount);
         for (var ti = 0; ti < topology.TileCount; ti++)
@@ -145,8 +149,11 @@ public sealed class BoardSetup
 
         var remaining = new HashSet<HexCoord>(topology.Tiles);
         var order = new List<int>(topology.TileCount);
+        HexCoord? previousRingLastTile = null;
 
-        // Peel rings from outside in, walking each boundary ring clockwise.
+        // Peel rings from outside in, walking each boundary ring counter-clockwise.
+        // The outermost ring starts from a random position; subsequent rings continue
+        // the spiral by starting from the inner neighbor of the previous ring's last tile.
         while (remaining.Count > 0)
         {
             // Find boundary tiles: tiles with at least one neighbor missing from remaining.
@@ -168,8 +175,19 @@ public sealed class BoardSetup
             if (boundary.Count == 0)
                 boundary = new HashSet<HexCoord>(remaining);
 
-            // Walk the boundary ring clockwise starting from the topmost-leftmost tile.
-            var ring = WalkBoundaryRingClockwise(boundary);
+            // Walk the boundary ring counter-clockwise from a canonical start.
+            var ring = WalkBoundaryRingCounterClockwise(boundary);
+
+            // Rotate the ring to determine the starting tile:
+            // - For the outermost ring, pick a random starting position.
+            // - For inner rings, start from the tile nearest to the previous ring's
+            //   last tile (continuous spiral).
+            ring = previousRingLastTile.HasValue
+                ? RotateRingToStartNear(ring, previousRingLastTile.Value)
+                : RotateRing(ring, rng.Next(ring.Count));
+
+            previousRingLastTile = ring[^1];
+
             foreach (var coord in ring)
             {
                 order.Add(byCoord[coord]);
@@ -185,15 +203,60 @@ public sealed class BoardSetup
     }
 
     /// <summary>
-    /// Walks a set of boundary hex coordinates in clockwise order,
+    /// Rotates a ring so that it starts from the tile that is closest (by hex distance)
+    /// to <paramref name="target"/>. This creates a continuous spiral where the inner
+    /// ring picks up from where the outer ring left off.
+    /// </summary>
+    private static List<HexCoord> RotateRingToStartNear(List<HexCoord> ring, HexCoord target)
+    {
+        if (ring.Count <= 1)
+            return ring;
+
+        // Find the ring tile that is a direct neighbor of the target.
+        // If multiple are neighbors, pick the first one in ring order.
+        var bestIndex = 0;
+        var bestDist = int.MaxValue;
+        for (var i = 0; i < ring.Count; i++)
+        {
+            var dist = HexDistance(ring[i], target);
+            if (dist < bestDist)
+            {
+                bestDist = dist;
+                bestIndex = i;
+            }
+        }
+
+        return RotateRing(ring, bestIndex);
+    }
+
+    private static int HexDistance(HexCoord a, HexCoord b)
+    {
+        var dq = a.Q - b.Q;
+        var dr = a.R - b.R;
+        return (Math.Abs(dq) + Math.Abs(dr) + Math.Abs(dq + dr)) / 2;
+    }
+
+    private static List<HexCoord> RotateRing(List<HexCoord> ring, int offset)
+    {
+        if (ring.Count <= 1 || offset == 0)
+            return ring;
+
+        var rotated = new List<HexCoord>(ring.Count);
+        for (var i = 0; i < ring.Count; i++)
+            rotated.Add(ring[(i + offset) % ring.Count]);
+        return rotated;
+    }
+
+    /// <summary>
+    /// Walks a set of boundary hex coordinates in counter-clockwise order,
     /// starting from the topmost (then leftmost by screen position) tile.
     /// </summary>
-    private static List<HexCoord> WalkBoundaryRingClockwise(HashSet<HexCoord> boundary)
+    private static List<HexCoord> WalkBoundaryRingCounterClockwise(HashSet<HexCoord> boundary)
     {
         if (boundary.Count <= 1)
             return [.. boundary];
 
-        // Sort by screen position to find the start tile (topmost-leftmost).
+        // Sort by screen position to find a canonical start tile (topmost-leftmost).
         var sorted = boundary.OrderBy(c =>
         {
             var (x, y) = BoardTopology.AxialToPixel(c);
@@ -205,27 +268,19 @@ public sealed class BoardSetup
         var visited = new HashSet<HexCoord> { start };
         var current = start;
 
-        // Direction order for clockwise traversal: SW, W, NW, NE, E, SE
-        // This is dirs[2], dirs[3], dirs[4], dirs[5], dirs[0], dirs[1]
-        // Starting from the top, we want to go right first, then spiral clockwise.
-        // Use direction priority: E, SE, SW, W, NW, NE (clockwise from east).
-        var cwDirs = new[] { HexCoord.Directions[0], HexCoord.Directions[1],
-                             HexCoord.Directions[2], HexCoord.Directions[3],
-                             HexCoord.Directions[4], HexCoord.Directions[5] };
-
-        // For each step, try to go to the next clockwise unvisited neighbor in the boundary.
+        // For each step, try to go to the next counter-clockwise unvisited neighbor in the boundary.
         // Use the direction we came from to determine the preferred search order.
-        var prevDir = 2; // Assume we "came from" the SW direction (so we prefer going right/E first)
+        var prevDir = 5; // Assume we "came from" the NE direction (so we prefer going left/W first)
 
         while (result.Count < boundary.Count)
         {
             var found = false;
-            // Try directions starting from the one 120 degrees CW from the incoming direction
-            // (turn back and sweep clockwise). This ensures clockwise traversal.
+            // Try directions starting from the one 120 degrees CCW from the incoming direction
+            // (turn back and sweep counter-clockwise). This ensures counter-clockwise traversal.
             for (var d = 0; d < 6; d++)
             {
-                // Start searching from the direction opposite to prevDir, rotated CW by 2
-                var dirIdx = (prevDir + 4 + d) % 6;
+                // Start searching from the direction opposite to prevDir, rotated CCW by 2
+                var dirIdx = (prevDir + 4 - d + 6) % 6;
                 var neighbor = current + HexCoord.Directions[dirIdx];
                 if (boundary.Contains(neighbor) && !visited.Contains(neighbor))
                 {
