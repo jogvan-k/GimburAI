@@ -103,13 +103,13 @@ public class BoardSetupTests
     {
         var setup = BoardSetup.Generate(MapConfig.Standard, new Random(42));
 
-        var spiralTileOrder = new[] { 0, 1, 2, 6, 11, 15, 18, 17, 16, 12, 7, 3, 4, 5, 10, 14, 13, 8, 9 };
-        var assigned = spiralTileOrder
-            .Where(ti => setup.TileResources[ti] != ResourceType.Desert)
-            .Select(ti => setup.TileNumbers[ti])
-            .ToArray();
+        // The canonical CCW spiral tile rings (before random rotation per ring).
+        var outerRing = new[] { 0, 3, 7, 12, 16, 17, 18, 15, 11, 6, 2, 1 };
+        var innerRing = new[] { 4, 8, 13, 14, 10, 5 };
+        var center = new[] { 9 };
+        var tokens = MapConfig.Standard.NumberTokens.ToArray();
 
-        Assert.That(assigned, Is.EqualTo(MapConfig.Standard.NumberTokens.ToArray()));
+        AssertRingsAreRotatedSubsequencesOfTokenPool(setup, [outerRing, innerRing, center], tokens);
     }
 
     [Test]
@@ -207,13 +207,11 @@ public class BoardSetupTests
     {
         var setup = BoardSetup.Generate(MapConfig.Mini, new Random(42));
 
-        var spiralTileOrder = new[] { 0, 1, 4, 6, 5, 2, 3 };
-        var assigned = spiralTileOrder
-            .Where(ti => setup.TileResources[ti] != ResourceType.Desert)
-            .Select(ti => setup.TileNumbers[ti])
-            .ToArray();
+        var outerRing = new[] { 0, 2, 5, 6, 4, 1 };
+        var center = new[] { 3 };
+        var tokens = MapConfig.Mini.NumberTokens.ToArray();
 
-        Assert.That(assigned, Is.EqualTo(MapConfig.Mini.NumberTokens.ToArray()));
+        AssertRingsAreRotatedSubsequencesOfTokenPool(setup, [outerRing, center], tokens);
     }
 
     // ── Small map ───────────────────────────────────────────────────
@@ -314,13 +312,11 @@ public class BoardSetupTests
     {
         var setup = BoardSetup.Generate(MapConfig.Small, new Random(42));
 
-        var spiralTileOrder = new[] { 0, 1, 2, 6, 9, 8, 7, 3, 4, 5 };
-        var assigned = spiralTileOrder
-            .Where(ti => setup.TileResources[ti] != ResourceType.Desert)
-            .Select(ti => setup.TileNumbers[ti])
-            .ToArray();
+        var outerRing = new[] { 0, 3, 7, 8, 9, 6, 2, 1 };
+        var innerRing = new[] { 4, 5 };
+        var tokens = MapConfig.Small.NumberTokens.ToArray();
 
-        Assert.That(assigned, Is.EqualTo(MapConfig.Small.NumberTokens.ToArray()));
+        AssertRingsAreRotatedSubsequencesOfTokenPool(setup, [outerRing, innerRing], tokens);
     }
 
     [Test]
@@ -371,5 +367,90 @@ public class BoardSetupTests
         }
         Assert.That(anyDifference, Is.True,
             "Two different seeds should produce different board layouts");
+    }
+
+    [Test]
+    public void Standard_DifferentSeedsCanProduceDifferentSpiralStartCorners()
+    {
+        // Generate many boards and collect the number assigned to the first tile
+        // in the canonical spiral order. With a randomized starting corner, the
+        // first token in canonical order should vary across seeds.
+        var canonicalFirst = new HashSet<int>();
+        for (var seed = 0; seed < 100; seed++)
+        {
+            var setup = BoardSetup.Generate(MapConfig.Standard, new Random(seed),
+                noAdjacentRedNumbers: false);
+
+            // Find the number on the canonical first non-desert spiral tile.
+            var canonicalSpiral = new[] { 0, 3, 7, 12, 16, 17, 18, 15, 11, 6, 2, 1 };
+            foreach (var ti in canonicalSpiral)
+            {
+                if (setup.TileResources[ti] != ResourceType.Desert)
+                {
+                    canonicalFirst.Add(setup.TileNumbers[ti]);
+                    break;
+                }
+            }
+        }
+
+        Assert.That(canonicalFirst.Count, Is.GreaterThan(1),
+            "With randomized starting corners, the first canonical spiral tile " +
+            "should receive different numbers across seeds");
+    }
+
+    /// <summary>
+    /// Verifies that the numbers assigned to tiles follow the spiral pattern: each ring's
+    /// non-desert numbers, read in CCW order from a random starting position, form a
+    /// contiguous subsequence of the token pool in the correct relative order.
+    /// </summary>
+    private static void AssertRingsAreRotatedSubsequencesOfTokenPool(
+        BoardSetup setup, int[][] rings, int[] tokens)
+    {
+        var poolIndex = 0;
+
+        foreach (var ring in rings)
+        {
+            // Extract non-desert numbers from this ring in canonical CCW order.
+            var ringNumbers = ring
+                .Where(ti => setup.TileResources[ti] != ResourceType.Desert)
+                .Select(ti => setup.TileNumbers[ti])
+                .ToArray();
+
+            if (ringNumbers.Length == 0)
+                continue;
+
+            // The expected tokens for this ring segment.
+            var expected = tokens[poolIndex..(poolIndex + ringNumbers.Length)];
+            poolIndex += ringNumbers.Length;
+
+            // ringNumbers should be a rotation of expected.
+            var doubled = ringNumbers.Concat(ringNumbers).ToArray();
+            var found = false;
+            for (var offset = 0; offset < ringNumbers.Length; offset++)
+            {
+                var match = true;
+                for (var i = 0; i < expected.Length; i++)
+                {
+                    if (doubled[offset + i] != expected[i])
+                    {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match)
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            Assert.That(found, Is.True,
+                $"Ring numbers should be a rotation of the expected token subsequence.\n" +
+                $"  Expected tokens: [{string.Join(", ", expected)}]\n" +
+                $"  Ring numbers: [{string.Join(", ", ringNumbers)}]");
+        }
+
+        Assert.That(poolIndex, Is.EqualTo(tokens.Length),
+            "All tokens should be consumed by the rings");
     }
 }
