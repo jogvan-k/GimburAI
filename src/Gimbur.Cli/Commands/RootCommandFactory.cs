@@ -112,7 +112,13 @@ internal static class RootCommandFactory
 
         var exportOption = new Option<FileInfo?>("--export")
         {
-            Description = "Path to export training data as JSONL (one JSON object per game)",
+            Description = "Path for training data export (file for jsonl, directory for json)",
+        };
+
+        var exportFormatOption = new Option<ExportFormat>("--export-format")
+        {
+            Description = "Export format: none, jsonl (single file), or json (one file per game)",
+            DefaultValueFactory = _ => ExportFormat.Jsonl,
         };
 
         var searchTimeOption = new Option<int>("--search-time")
@@ -160,6 +166,7 @@ internal static class RootCommandFactory
           noOfGamesOption,
           noOfPlayersOption,
           exportOption,
+          exportFormatOption,
           searchTimeOption,
           maxSimulationsOption,
           maxRolloutDepthOption,
@@ -177,6 +184,7 @@ internal static class RootCommandFactory
             string? mapConfig = parseResult.GetValue(globals.MapConfiguration);
             string? verbosity = ParseVerbosity(parseResult, globals);
             FileInfo? export = parseResult.GetValue(exportOption);
+            ExportFormat exportFormat = parseResult.GetValue(exportFormatOption);
             int searchTimeMs = parseResult.GetValue(searchTimeOption);
             int maxSimulations = parseResult.GetValue(maxSimulationsOption);
             int maxRolloutDepth = parseResult.GetValue(maxRolloutDepthOption);
@@ -196,6 +204,7 @@ internal static class RootCommandFactory
                 NumberOfPlayers = noOfPlayers,
                 MapConfig = mapConfig,
                 ExportPath = export,
+                ExportFormat = exportFormat,
                 Verbosity = verbosity ?? "normal",
                 SearchTimeMs = searchTimeMs,
                 MaxSimulations = maxSimulations,

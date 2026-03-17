@@ -1,10 +1,14 @@
 """
 Training loop for GimburTransformer.
 
-Reads JSONL data exported by ``gimbur simulate --export``, expands
-states via symmetry permutations and player rotation, and trains the
-model to predict a win-probability bucket distribution via
-cross-entropy loss.
+Reads data exported by ``gimbur simulate --export``, expands states via
+symmetry permutations and player rotation, and trains the model to predict
+a win-probability bucket distribution via cross-entropy loss.
+
+``--data`` may point to a single ``.jsonl`` file, a single ``.json``
+file, **or** a directory containing any mix of ``.jsonl`` and ``.json``
+files.  The pipeline's default export format writes one ``.json`` file
+per game into a directory.
 
 Usage::
 
@@ -23,9 +27,6 @@ Usage::
         --out model.pt \
         --epochs 20 \
         --patience 10
-
-``--data`` may point to a single ``.jsonl`` file **or** a directory
-containing one or more ``.jsonl`` files.
 """
 
 from __future__ import annotations
@@ -52,7 +53,7 @@ def parse_args() -> argparse.Namespace:
         "--data",
         type=Path,
         required=True,
-        help="Path to a JSONL file or a directory of JSONL files.",
+        help="Path to a JSONL file, a JSON file, or a directory of JSONL/JSON files.",
     )
     parser.add_argument(
         "--game-config",

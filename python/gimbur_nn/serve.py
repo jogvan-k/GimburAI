@@ -222,6 +222,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--port", type=int, default=8000, help="HTTP port.")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Bind address.")
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="info",
+        choices=["debug", "info", "warning", "error", "critical"],
+        help="Uvicorn log level. Use 'warning' to suppress HTTP 200/202 access logs.",
+    )
     return parser.parse_args()
 
 
@@ -419,7 +426,13 @@ def main() -> None:
     )
 
     app = create_app(model, device, game_cfg)
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level=args.log_level,
+        access_log=args.log_level in ("debug", "info"),
+    )
 
 
 if __name__ == "__main__":

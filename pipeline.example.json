@@ -25,7 +25,11 @@
     "maxRolloutDepth": 500,
     // "actionRolloutLimit": 50,  // uncomment to cap per-action rollouts
     "symmetries": true,
-    "verbosity": "quiet"
+    "verbosity": "quiet",
+    // Request oversample*games from the CLI and stop early once "games"
+    // files have been written.  Avoids waiting for long-tail slow games.
+    // 1.0 = no oversampling (default), 1.1 = request 10% extra.
+    "oversample": 1.1
   },
 
   // Model training parameters (python -m gimbur_nn.train).
@@ -42,7 +46,10 @@
   // Inference server parameters (python -m gimbur_nn.serve).
   "serve": {
     "port": 8000,
-    "host": "127.0.0.1"
+    "host": "127.0.0.1",
+    // Log level for uvicorn. Use "warning" to suppress HTTP 200/202 access
+    // logs while still showing errors. Options: debug, info, warning, error.
+    "logLevel": "warning"
   },
 
   // Benchmark configurations. Each entry runs independently after training.
