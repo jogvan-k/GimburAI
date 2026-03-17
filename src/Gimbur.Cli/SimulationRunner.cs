@@ -11,6 +11,25 @@ using static Kjarni.MCTS.Algorithm;
 namespace Gimbur.Cli;
 
 /// <summary>
+/// Specifies the format for exported training data.
+/// </summary>
+internal enum ExportFormat
+{
+    /// <summary>No export.</summary>
+    None,
+    /// <summary>
+    /// All games appended to a single JSONL file (one JSON object per line).
+    /// The <see cref="SimulationOptions.ExportPath"/> is the file path.
+    /// </summary>
+    Jsonl,
+    /// <summary>
+    /// Each game written to its own JSON file with a random GUID filename
+    /// inside the directory specified by <see cref="SimulationOptions.ExportPath"/>.
+    /// </summary>
+    Json,
+}
+
+/// <summary>
 /// Configuration options for running game simulations.
 /// </summary>
 internal record SimulationOptions
@@ -20,6 +39,7 @@ internal record SimulationOptions
     public int NumberOfPlayers { get; init; }
     public string? MapConfig { get; init; }
     public FileInfo? ExportPath { get; init; }
+    public ExportFormat ExportFormat { get; init; } = ExportFormat.Jsonl;
     public string Verbosity { get; init; } = "normal";
 
     /// <summary>
@@ -205,9 +225,9 @@ internal class SimulationRunner
             if (_options.Prior)
                 Console.WriteLine($"  NN server: {_options.NnUrl}");
             Console.WriteLine($"  Parallelism: {Environment.ProcessorCount} cores");
-            if (_options.ExportPath is not null)
+            if (_options.ExportPath is not null && _options.ExportFormat != ExportFormat.None)
             {
-                Console.WriteLine($"  Export: {_options.ExportPath.FullName}");
+                Console.WriteLine($"  Export: {_options.ExportPath.FullName} ({_options.ExportFormat.ToString().ToLowerInvariant()})");
                 if (_options.Symmetries)
                 {
                     Console.WriteLine($"  Symmetries: {symmetryPerms.Length} permutation(s)");
@@ -227,14 +247,22 @@ internal class SimulationRunner
 
         var gameResults = new ConcurrentBag<(int GameNumber, GameResult Result, TimeSpan Elapsed)>();
 
-        // Prepare JSONL export: open the file before the parallel loop so each
-        // game result can be written immediately after completion. This avoids
-        // losing all data if the process is interrupted mid-run.
-        var exportWriter = _options.ExportPath is not null
-            ? CreateExportWriter(_options.ExportPath)
-            : null;
+        // Prepare export: for JSONL, open a StreamWriter; for JSON, ensure the directory exists.
+        var exportFormat = _options.ExportPath is not null ? _options.ExportFormat : ExportFormat.None;
+        StreamWriter? exportWriter = null;
+        string? exportDir = null;
         var exportLock = new object();
         var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+        if (exportFormat == ExportFormat.Jsonl && _options.ExportPath is not null)
+        {
+            exportWriter = CreateExportWriter(_options.ExportPath);
+        }
+        else if (exportFormat == ExportFormat.Json && _options.ExportPath is not null)
+        {
+            exportDir = _options.ExportPath.FullName;
+            Directory.CreateDirectory(exportDir);
+        }
 
         var totalStopwatch = Stopwatch.StartNew();
 
@@ -262,8 +290,8 @@ internal class SimulationRunner
 
                 gameResults.Add((gameIndex + 1, result, gameStopwatch.Elapsed));
 
-                // Write this game's JSONL line immediately (thread-safe via lock).
-                if (exportWriter is not null)
+                // Export this game immediately (thread-safe).
+                if (exportFormat == ExportFormat.Jsonl && exportWriter is not null)
                 {
                     var line = SerializeGameJsonl(result, symmetryPerms, jsonOptions);
                     lock (exportLock)
@@ -271,6 +299,12 @@ internal class SimulationRunner
                         exportWriter.WriteLine(line);
                         exportWriter.Flush();
                     }
+                }
+                else if (exportFormat == ExportFormat.Json && exportDir is not null)
+                {
+                    var json = SerializeGameJson(result, symmetryPerms, jsonOptions);
+                    var path = Path.Combine(exportDir, $"{Guid.NewGuid()}.json");
+                    File.WriteAllText(path, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
                 }
 
                 if (!_quiet)
@@ -308,7 +342,7 @@ internal class SimulationRunner
             PrintSummary(stats);
         }
 
-        if (_options.ExportPath is not null)
+        if (_options.ExportPath is not null && exportFormat != ExportFormat.None)
         {
             var totalStates = allGames.Sum(g => g.States.Count);
             Console.WriteLine($"Exported {allGames.Count} game(s) ({totalStates} states) to {_options.ExportPath.FullName}");
@@ -720,7 +754,7 @@ internal class SimulationRunner
     }
 
     /// <summary>
-    /// Serializes a single game result to a JSON string for JSONL output.
+    /// Serializes a single game result to a compact JSON string for JSONL output.
     /// Thread-safe (no shared mutable state).
     /// </summary>
     private static string SerializeGameJsonl(
@@ -728,11 +762,40 @@ internal class SimulationRunner
         ImmutableArray<SymmetryPermutation> symmetryPerms,
         JsonSerializerOptions jsonOptions)
     {
+        var jsonObj = BuildGameJsonObject(game, symmetryPerms);
+        return JsonSerializer.Serialize(jsonObj, jsonOptions);
+    }
+
+    /// <summary>
+    /// Serializes a single game result to a pretty-printed JSON string for
+    /// per-game file export. Same structure as <see cref="SerializeGameJsonl"/>
+    /// but with indentation for readability.
+    /// </summary>
+    private static string SerializeGameJson(
+        GameResult game,
+        ImmutableArray<SymmetryPermutation> symmetryPerms,
+        JsonSerializerOptions baseOptions)
+    {
+        var prettyOptions = new JsonSerializerOptions(baseOptions) { WriteIndented = true };
+        // Reuse the same serialization logic — SerializeGameJsonl produces the
+        // object, we just need to re-serialize with indentation.
+        var jsonObj = BuildGameJsonObject(game, symmetryPerms);
+        return JsonSerializer.Serialize(jsonObj, prettyOptions);
+    }
+
+    /// <summary>
+    /// Builds the anonymous object representing a game result for JSON serialization.
+    /// Shared between JSONL (compact) and JSON (pretty) export formats.
+    /// </summary>
+    private static object BuildGameJsonObject(
+        GameResult game,
+        ImmutableArray<SymmetryPermutation> symmetryPerms)
+    {
         var boardPermutations = symmetryPerms.Length > 0
             ? symmetryPerms.Select(p => BoardSymmetry.PermuteBoard(game.BoardSerialized, p)).ToArray()
             : Array.Empty<string>();
 
-        var jsonObj = new
+        return new
         {
             version = 1,
             game.Seed,
@@ -775,7 +838,5 @@ internal class SimulationRunner
                 ? game.PriorsCalculated.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
                 : null,
         };
-
-        return JsonSerializer.Serialize(jsonObj, jsonOptions);
     }
 }

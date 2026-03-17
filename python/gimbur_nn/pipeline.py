@@ -6,15 +6,20 @@ Each iteration is called a "generation". Generation 0 uses greedy rollouts
 (no NN prior); subsequent generations use the previous generation's model
 as the MCTS prior evaluator.
 
+The pipeline supports **resume-on-interrupt**: if the process is stopped
+mid-run, restarting it will automatically detect which generation and step
+to resume from by scanning artifact directories.
+
 Usage:
     python -m gimbur_nn.pipeline --config pipeline.json
-    python -m gimbur_nn.pipeline --config pipeline.json --start-gen 3  # resume
+    python -m gimbur_nn.pipeline --config pipeline.json --start-gen 3
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import signal
 import subprocess
 import sys
@@ -40,6 +45,7 @@ class SimulateConfig:
     action_rollout_limit: int | None = None
     symmetries: bool = True
     verbosity: str = "quiet"
+    oversample: float = 1.0
 
 
 @dataclass
@@ -61,6 +67,7 @@ class ServeConfig:
 
     port: int = 8000
     host: str = "127.0.0.1"
+    log_level: str = "warning"
 
 
 @dataclass
@@ -192,7 +199,7 @@ def _load_section(cls: type, data: dict[str, Any]) -> Any:
 
 
 def _data_path(cfg: PipelineConfig, gen: int) -> Path:
-    return Path(cfg.data_dir) / f"gen{gen}.jsonl"
+    return Path(cfg.data_dir) / f"gen{gen}"
 
 
 def _model_path(cfg: PipelineConfig, gen: int) -> Path:
@@ -201,6 +208,51 @@ def _model_path(cfg: PipelineConfig, gen: int) -> Path:
 
 def _results_path(cfg: PipelineConfig, gen: int, name: str) -> Path:
     return Path(cfg.results_dir) / f"gen{gen}" / f"{name}.json"
+
+
+# ---------------------------------------------------------------------------
+# Resume detection
+# ---------------------------------------------------------------------------
+
+
+def _simulation_complete(cfg: PipelineConfig, gen: int) -> bool:
+    """True if the generation's data directory has enough game files."""
+    data_dir = _data_path(cfg, gen)
+    if not data_dir.is_dir():
+        return False
+    return _count_json_files(data_dir) >= cfg.simulate.games
+
+
+def _training_complete(cfg: PipelineConfig, gen: int) -> bool:
+    """True if the generation's model checkpoint exists."""
+    return _model_path(cfg, gen).is_file()
+
+
+def _benchmark_complete(cfg: PipelineConfig, gen: int) -> bool:
+    """True if all configured benchmark result files exist."""
+    return all(_results_path(cfg, gen, bench.name).is_file() for bench in cfg.benchmarks)
+
+
+def _generation_complete(cfg: PipelineConfig, gen: int) -> bool:
+    """True if simulate, train, and benchmark are all done for a generation."""
+    return (
+        _simulation_complete(cfg, gen)
+        and _training_complete(cfg, gen)
+        and _benchmark_complete(cfg, gen)
+    )
+
+
+def _detect_resume_gen(cfg: PipelineConfig) -> int:
+    """Scan artifacts to find the first incomplete generation.
+
+    Returns the generation number to resume from.  If all configured
+    generations are complete, returns ``cfg.generations`` (i.e. nothing
+    left to do).
+    """
+    for gen in range(cfg.generations):
+        if not _generation_complete(cfg, gen):
+            return gen
+    return cfg.generations
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +312,8 @@ class _ServerProcess:
             str(serve_cfg.port),
             "--host",
             serve_cfg.host,
+            "--log-level",
+            serve_cfg.log_level,
         ]
 
         print(f"\n--- Starting inference server: {' '.join(args)}")
@@ -325,11 +379,31 @@ class _ServerProcess:
 
 
 def _step_simulate(cfg: PipelineConfig, gen: int, project_root: Path, nn_url: str | None) -> None:
-    """Run self-play simulation for a generation."""
-    out_path = _data_path(cfg, gen)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    """Run self-play simulation for a generation.
+
+    Uses ``--export-format json`` so each game is written to its own
+    ``.json`` file in the generation data directory.  When
+    ``oversample > 1.0``, requests more games than needed and monitors
+    the output folder, terminating the CLI once the target game count
+    is reached.  This avoids blocking on long-tail slow games.
+
+    On resume, counts existing ``.json`` files and only requests the
+    remaining games needed to reach the target.
+    """
+    out_dir = _data_path(cfg, gen)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     sim = cfg.simulate
+    target_games = sim.games
+    existing = _count_json_files(out_dir)
+
+    if existing >= target_games:
+        print(f"  Simulate: {existing}/{target_games} games already exist, skipping.")
+        return
+
+    remaining = target_games - existing
+    requested_games = math.ceil(remaining * max(sim.oversample, 1.0))
+
     args = [
         "dotnet",
         "run",
@@ -338,13 +412,15 @@ def _step_simulate(cfg: PipelineConfig, gen: int, project_root: Path, nn_url: st
         "--",
         "simulate",
         "--games",
-        str(sim.games),
+        str(requested_games),
         "--players",
         str(sim.players),
         "--map-config",
         cfg.map_config,
         "--export",
-        str(out_path),
+        str(out_dir),
+        "--export-format",
+        "json",
         "--search-time",
         str(sim.search_time_ms),
         "--max-simulations",
@@ -368,13 +444,86 @@ def _step_simulate(cfg: PipelineConfig, gen: int, project_root: Path, nn_url: st
     if nn_url is not None:
         args.extend(["--prior", "--nn-url", nn_url])
 
-    _run(args, label=f"Gen {gen}: Simulate ({sim.games} games)", cwd=project_root)
+    label = f"Gen {gen}: Simulate ({remaining} remaining of {target_games} games"
+    if existing > 0:
+        label += f", {existing} already done"
+    if requested_games > remaining:
+        label += f", requesting {requested_games} with oversample={sim.oversample}"
+    label += ")"
+
+    print(f"\n{'=' * 60}")
+    print(f"  {label}")
+    print(f"  $ {' '.join(args)}")
+    print(f"{'=' * 60}\n", flush=True)
+
+    if requested_games <= remaining:
+        # No oversampling — just run and wait.
+        result = subprocess.run(args, cwd=project_root, stderr=subprocess.PIPE, text=True)
+        if result.returncode != 0:
+            stderr_msg = result.stderr.strip() if result.stderr else ""
+            detail = f"{label} failed with exit code {result.returncode}"
+            if stderr_msg:
+                detail += f"\nstderr:\n{stderr_msg}"
+            raise RuntimeError(detail)
+        return
+
+    # Oversample mode: launch as a background process and monitor the folder.
+    proc = subprocess.Popen(args, cwd=project_root, stderr=subprocess.PIPE)
+    try:
+        while proc.poll() is None:
+            count = _count_json_files(out_dir)
+            if count >= target_games:
+                print(
+                    f"  Target reached: {count}/{target_games} games. Terminating simulation early."
+                )
+                proc.send_signal(signal.SIGINT)
+                try:
+                    proc.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+                return
+            time.sleep(1.0)
+
+        # Process exited on its own — check exit code.
+        if proc.returncode != 0:
+            stderr_msg = ""
+            if proc.stderr is not None:
+                stderr_bytes = proc.stderr.read()
+                if isinstance(stderr_bytes, bytes):
+                    stderr_msg = stderr_bytes.decode(errors="replace").strip()
+                else:
+                    stderr_msg = stderr_bytes.strip()
+            detail = f"{label} failed with exit code {proc.returncode}"
+            if stderr_msg:
+                detail += f"\nstderr:\n{stderr_msg}"
+            raise RuntimeError(detail)
+
+        # Verify we got enough games even though process exited normally.
+        count = _count_json_files(out_dir)
+        if count < target_games:
+            print(f"  WARNING: Simulation finished but only produced {count}/{target_games} games.")
+    except BaseException:
+        # Ensure subprocess is cleaned up on any error (including KeyboardInterrupt).
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        raise
+
+
+def _count_json_files(directory: Path) -> int:
+    """Count ``.json`` files in *directory* (non-recursive)."""
+    return sum(1 for _ in directory.glob("*.json"))
 
 
 def _step_train(cfg: PipelineConfig, gen: int, project_root: Path) -> None:
-    """Train the model for a generation."""
-    data_path = _data_path(cfg, gen)
+    """Train the model for a generation. Skips if the checkpoint already exists."""
     out_path = _model_path(cfg, gen)
+    if out_path.is_file():
+        print(f"  Train: Model already exists at {out_path}, skipping.")
+        return
+
+    data_path = _data_path(cfg, gen)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     tr = cfg.train
@@ -418,12 +567,21 @@ def _step_train(cfg: PipelineConfig, gen: int, project_root: Path) -> None:
 def _step_benchmark(
     cfg: PipelineConfig, gen: int, project_root: Path, nn_url: str
 ) -> dict[str, Any]:
-    """Run all configured benchmarks for a generation. Returns aggregated results."""
+    """Run all configured benchmarks for a generation. Returns aggregated results.
+
+    Skips individual benchmarks whose result files already exist (resume).
+    """
     gen_results: dict[str, Any] = {}
 
     for bench in cfg.benchmarks:
         out_path = _results_path(cfg, gen, bench.name)
         out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # If results already exist, load and skip.
+        if out_path.is_file():
+            print(f"  Benchmark '{bench.name}': results already exist, skipping.")
+            gen_results[bench.name] = json.loads(out_path.read_text())
+            continue
 
         args = [
             "dotnet",
@@ -539,7 +697,11 @@ def _save_summary(cfg: PipelineConfig, all_results: dict[int, dict[str, Any]]) -
 
 
 def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> None:
-    """Execute the full self-play training pipeline."""
+    """Execute the full self-play training pipeline.
+
+    Supports step-level resume: each step (simulate, train, benchmark)
+    checks whether its artifacts already exist and skips if so.
+    """
     server = _ServerProcess()
     nn_url = f"http://{cfg.serve.host}:{cfg.serve.port}"
     all_results: dict[int, dict[str, Any]] = {}
@@ -552,6 +714,20 @@ def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> Non
 
     try:
         for gen in range(start_gen, cfg.generations):
+            # Check if entire generation is already done.
+            if _generation_complete(cfg, gen):
+                print(f"\n--- Generation {gen} already complete, skipping.")
+                # Ensure results are loaded for summary tracking.
+                if gen not in all_results:
+                    gen_results: dict[str, Any] = {}
+                    for bench in cfg.benchmarks:
+                        rp = _results_path(cfg, gen, bench.name)
+                        if rp.is_file():
+                            gen_results[bench.name] = json.loads(rp.read_text())
+                    if gen_results:
+                        all_results[gen] = gen_results
+                continue
+
             print(f"\n{'#' * 60}")
             print(f"  GENERATION {gen}")
             print(f"{'#' * 60}\n")
@@ -559,8 +735,9 @@ def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> Non
             # --- Simulate ---
             # Gen 0: no NN prior (greedy rollouts only).
             # Gen N>0: start server with gen N-1 model for prior evaluation.
+            sim_already_done = _simulation_complete(cfg, gen)
             gen_nn_url: str | None = None
-            if gen > 0:
+            if gen > 0 and not sim_already_done:
                 prev_model = _model_path(cfg, gen - 1)
                 if not prev_model.exists():
                     raise FileNotFoundError(
@@ -580,30 +757,34 @@ def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> Non
             _step_simulate(cfg, gen, project_root, gen_nn_url)
 
             # Stop server after simulation (not needed for training).
-            server.stop()
+            if not sim_already_done:
+                server.stop()
 
             # --- Train ---
             _step_train(cfg, gen, project_root)
 
             # --- Benchmark ---
-            # Start server with this generation's model.
+            # Start server with this generation's model (only if needed).
+            bench_already_done = _benchmark_complete(cfg, gen)
             model_path = _model_path(cfg, gen)
             if not model_path.exists():
                 print(f"WARNING: Model not found at {model_path}, skipping benchmarks.")
                 continue
 
-            server.start(
-                model_path=model_path,
-                game_config=cfg.game_config,
-                model_config=cfg.model_config,
-                serve_cfg=cfg.serve,
-                python_module=cfg.python_module,
-                cwd=project_root,
-            )
+            if not bench_already_done:
+                server.start(
+                    model_path=model_path,
+                    game_config=cfg.game_config,
+                    model_config=cfg.model_config,
+                    serve_cfg=cfg.serve,
+                    python_module=cfg.python_module,
+                    cwd=project_root,
+                )
 
             gen_results = _step_benchmark(cfg, gen, project_root, nn_url)
 
-            server.stop()
+            if not bench_already_done:
+                server.stop()
 
             # --- Report ---
             if gen_results:
@@ -638,8 +819,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--start-gen",
         type=int,
-        default=0,
-        help="Generation to start from (for resuming). Default: 0.",
+        default=None,
+        help=(
+            "Generation to start from. Default: auto-detect from existing "
+            "artifacts (resumes where the previous run left off)."
+        ),
     )
     parser.add_argument(
         "--project-root",
@@ -666,13 +850,24 @@ def main() -> None:
         # Assume config is somewhere accessible; use the repo root.
         project_root = Path(__file__).resolve().parent.parent.parent
 
+    # Auto-detect resume generation if not explicitly provided.
+    if args.start_gen is not None:
+        start_gen = args.start_gen
+    else:
+        start_gen = _detect_resume_gen(cfg)
+        if start_gen > 0:
+            print(f"Auto-detected resume point: generation {start_gen}")
+        if start_gen >= cfg.generations:
+            print(f"All {cfg.generations} generations are already complete.")
+            return
+
     print(f"Project root: {project_root}")
-    print(f"Generations:  {args.start_gen} .. {cfg.generations - 1}")
+    print(f"Generations:  {start_gen} .. {cfg.generations - 1}")
     print(f"Data dir:     {cfg.data_dir}")
     print(f"Model dir:    {cfg.model_dir}")
     print(f"Results dir:  {cfg.results_dir}")
 
-    run_pipeline(cfg, args.start_gen, project_root)
+    run_pipeline(cfg, start_gen, project_root)
 
 
 if __name__ == "__main__":

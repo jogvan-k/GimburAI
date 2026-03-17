@@ -74,29 +74,49 @@ def _prob_to_bucket(prob: float, n_buckets: int) -> int:
 
 
 def load_games(path: str | Path) -> list[dict]:
-    """Load game records from a JSONL file or directory of JSONL files.
+    """Load game records from a JSONL file, JSON file, or a directory.
+
+    Supported inputs:
+
+    - A single ``.jsonl`` file — each line is one game JSON object.
+    - A single ``.json`` file — the file contains one game JSON object.
+    - A directory containing ``.jsonl`` and/or ``.json`` files.
 
     Args:
-        path: A single ``.jsonl`` file or a directory containing one or
-            more ``.jsonl`` files.
+        path: A ``.jsonl`` file, a ``.json`` file, or a directory
+            containing one or more of either.
 
     Returns:
-        A list of parsed game dicts (one per JSONL line).
+        A list of parsed game dicts.
     """
     p = Path(path)
     if p.is_dir():
-        files = sorted(p.glob("*.jsonl"))
+        jsonl_files = sorted(p.glob("*.jsonl"))
+        json_files = sorted(p.glob("*.json"))
+    elif p.suffix == ".json":
+        jsonl_files = []
+        json_files = [p]
     else:
-        files = [p]
+        # Assume JSONL (covers .jsonl and any other extension).
+        jsonl_files = [p]
+        json_files = []
 
     games: list[dict] = []
-    for f in files:
+
+    # Load JSONL files (one game per line).
+    for f in jsonl_files:
         with f.open() as fh:
             for line in fh:
                 line = line.strip()
                 if not line:
                     continue
                 games.append(json.loads(line))
+
+    # Load per-game JSON files (one game per file).
+    for f in json_files:
+        with f.open() as fh:
+            games.append(json.load(fh))
+
     return games
 
 
