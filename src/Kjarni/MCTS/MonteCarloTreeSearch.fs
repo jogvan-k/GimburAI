@@ -21,7 +21,8 @@ type MonteCarloTreeSearch(config: MCTSConfig) =
                 config.MaxRolloutDepth,
                 config.ExplorationConstant,
                 config.ActionRolloutLimit,
-                config.PriorClient
+                config.PriorClient,
+                config.ExpansionGuard
             )
 
         // Flush the prior queue after search completes
@@ -37,6 +38,7 @@ type MonteCarloTreeSearch(config: MCTSConfig) =
         logInfo.priorsApplied <- priorStats.priorsApplied
         logInfo.priorStatesEvaluated <- priorStats.priorStatesEvaluated
         logInfo.priorStatesPerDepth <- priorStats.priorStatesPerDepth
+        logInfo.horizonSkips <- priorStats.horizonSkips
 
         _logInfos <- logInfo :: _logInfos
 

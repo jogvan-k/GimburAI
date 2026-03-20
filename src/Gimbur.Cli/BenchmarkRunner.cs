@@ -216,6 +216,9 @@ internal sealed class MctsPlayer : IBenchmarkPlayer
         if (action.IsDeterministicAction)
             return ((Kjarni.MCTS.Types.Action.DeterministicAction)action).Item;
 
+        if (action.IsHorizonAction)
+            return ((Kjarni.MCTS.Types.Action.HorizonAction)action).Item;
+
         if (action.IsStochasticAction)
         {
             var outcomes = ((Kjarni.MCTS.Types.Action.StochasticAction)action).Item;
@@ -480,6 +483,7 @@ internal class BenchmarkRunner
                 _options.MaxRolloutDepth,
                 System.Math.Sqrt(2.0),
                 int.MaxValue,
+                null,
                 null)),
             AiKind.Nn => new NnPlayer(_nnClient!),
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, $"Unknown AI kind: {kind}"),
