@@ -32,7 +32,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .game_config import CONFIGS_BY_NAME, GameConfig
-from .tokenizer import rotate_player_state, tokenize_batch
+from .state_tokenizer import StateTokenizer
 from .transformer_model import (
     MODEL_CONFIGS_BY_NAME,
     GimburTransformer,
@@ -238,6 +238,7 @@ def create_app(
     game_cfg: GameConfig,
 ) -> FastAPI:
     """Build the FastAPI application with the model captured in closure."""
+    tokenizer = StateTokenizer(game_cfg)
     app = FastAPI(title="GimburNet Inference")
     prior_queue = PriorQueue()
 
@@ -256,8 +257,8 @@ def create_app(
                 results.append(PriorResponseItem(id=req.id, win_probabilities=[]))
                 continue
             try:
-                rotated = [rotate_player_state(s, req.player, game_cfg) for s in req.states]
-                token_ids = tokenize_batch(rotated).to(device)
+                rotated = [tokenizer.rotate_player_state(s, req.player) for s in req.states]
+                token_ids = tokenizer.tokenize_batch(rotated).to(device)
             except (KeyError, ValueError):
                 # Bad state — return zeros so the MCTS falls back to uniform.
                 results.append(
@@ -307,7 +308,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="states list must not be empty")
 
         try:
-            token_ids = tokenize_batch(request.states).to(device)
+            token_ids = tokenizer.tokenize_batch(request.states).to(device)
         except (KeyError, ValueError) as exc:
             logger.error(
                 "Tokenization failed in /predict: %s\n  First state (truncated): %.200s",
@@ -349,9 +350,9 @@ def create_app(
 
         try:
             rotated = [
-                rotate_player_state(s, p, game_cfg) for s, p in zip(request.states, request.players)
+                tokenizer.rotate_player_state(s, p) for s, p in zip(request.states, request.players)
             ]
-            token_ids = tokenize_batch(rotated).to(device)
+            token_ids = tokenizer.tokenize_batch(rotated).to(device)
         except (KeyError, ValueError) as exc:
             logger.error(
                 "Tokenization failed in /predict-player: %s\n"

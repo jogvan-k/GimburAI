@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING
 import torch
 from torch.utils.data import Dataset
 
-from .tokenizer import rotate_player_state, tokenize
+from .state_tokenizer import StateTokenizer
 
 if TYPE_CHECKING:
     from .game_config import GameConfig
@@ -174,6 +174,7 @@ def expand_games(
     cfg: GameConfig,
     *,
     n_buckets: int = 128,
+    tokenizer: StateTokenizer | None = None,
 ) -> list[tuple[torch.Tensor, int]]:
     """Expand a list of game dicts into ``(token_ids, bucket)`` samples.
 
@@ -188,10 +189,12 @@ def expand_games(
     Returns:
         A flat list of ``(token_ids, target_bucket)`` pairs.
     """
+    if tokenizer is None:
+        tokenizer = StateTokenizer(cfg)
     samples: list[tuple[torch.Tensor, int]] = []
     n_players = cfg.player_count
     for game in games:
-        _process_game(game, cfg, n_players, n_buckets, samples)
+        _process_game(game, cfg, n_players, n_buckets, samples, tokenizer)
     return samples
 
 
@@ -201,6 +204,7 @@ def _process_game(
     n_players: int,
     n_buckets: int,
     samples: list[tuple[torch.Tensor, int]],
+    tokenizer: StateTokenizer,
 ) -> None:
     """Expand one game record into training samples."""
     board_serialized: str = game["board"]["serialized"]
@@ -221,8 +225,8 @@ def _process_game(
             compact = _compact(full_hr)
 
             for player in range(1, n_players + 1):
-                rotated = rotate_player_state(compact, player, cfg)
-                token_ids = tokenize(rotated)
+                rotated = tokenizer.rotate_player_state(compact, player)
+                token_ids = tokenizer.tokenize(rotated)
                 prob = _win_probability(best_action_wins, player)
                 bucket = _prob_to_bucket(prob, n_buckets)
                 samples.append((token_ids, bucket))
@@ -241,7 +245,8 @@ def load_samples(
 
     Convenience wrapper: ``load_games(path)`` → ``expand_games(…)``.
     """
-    return expand_games(load_games(path), cfg, n_buckets=n_buckets)
+    tok = StateTokenizer(cfg)
+    return expand_games(load_games(path), cfg, n_buckets=n_buckets, tokenizer=tok)
 
 
 # ── Dataset ──────────────────────────────────────────────────────────
@@ -268,7 +273,8 @@ class SimulationDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         *,
         n_buckets: int = 128,
     ) -> None:
-        raw = expand_games(games, cfg, n_buckets=n_buckets)
+        tok = StateTokenizer(cfg)
+        raw = expand_games(games, cfg, n_buckets=n_buckets, tokenizer=tok)
         self._tokens = [t for t, _ in raw]
         self._targets = torch.tensor([b for _, b in raw], dtype=torch.long)
 

@@ -99,7 +99,7 @@ def _simple_game(wins: list[float] | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Mini 2p example strings (from docs/state-serialization.md)
+# Mini 2p example strings (from docs/state-action-serialization.md)
 # ---------------------------------------------------------------------------
 
 MINI_BOARD = "w5lb3ls4lW3hd0nW4ho2l|gsgbgw"
