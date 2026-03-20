@@ -83,6 +83,14 @@ internal record SimulationOptions
     /// Defaults to http://localhost:8000.
     /// </summary>
     public string NnUrl { get; init; } = "http://localhost:8000";
+
+    /// <summary>
+    /// When true, stops the MCTS tree expansion at the placement/main-game boundary.
+    /// The expansion guard blocks any action whose underlying CoreAction is a
+    /// Stochastic action wrapping a RollDiceAction. The game simulation loop also
+    /// stops when the best MCTS action is a HorizonAction.
+    /// </summary>
+    public bool PlacementOnly { get; init; }
 }
 
 /// <summary>
@@ -224,6 +232,8 @@ internal class SimulationRunner
             Console.WriteLine($"  Prior: {(_options.Prior ? "enabled" : "disabled")}");
             if (_options.Prior)
                 Console.WriteLine($"  NN server: {_options.NnUrl}");
+            if (_options.PlacementOnly)
+                Console.WriteLine("  Mode: placement-only (expansion guard active)");
             Console.WriteLine($"  Parallelism: {Environment.ProcessorCount} cores");
             if (_options.ExportPath is not null && _options.ExportFormat != ExportFormat.None)
             {
@@ -389,6 +399,8 @@ internal class SimulationRunner
             }
         }
 
+        if (action.IsHorizonAction)
+            return ((Kjarni.MCTS.Types.Action.HorizonAction)action).Item;
         return null;
     }
 
@@ -459,6 +471,18 @@ internal class SimulationRunner
             return (aggregated, rate, totalRollouts);
         }
 
+        if (childAction.IsHorizonAction)
+        {
+            var child = ((Kjarni.MCTS.Types.Action.HorizonAction)childAction).Item;
+            var wins = child.WinCounts is { Length: > 0 }
+                ? (double[])child.WinCounts.Clone()
+                : Array.Empty<double>();
+            var wr = child.Rollouts > 0 && playerIndex < wins.Length
+                ? wins[playerIndex] / child.Rollouts
+                : 0.0;
+            return (wins, wr, child.Rollouts);
+        }
+
         return (Array.Empty<double>(), 0.0, 0);
     }
 
@@ -471,13 +495,21 @@ internal class SimulationRunner
         PriorClient? priorClient)
     {
         var state = new CatanState(config, playerCount, rng);
+        // Build the expansion guard when placement-only mode is active.
+        var expansionGuard = _options.PlacementOnly
+            ? Microsoft.FSharp.Core.FSharpOption<Microsoft.FSharp.Core.FSharpFunc<Kjarni.ICoreState, Microsoft.FSharp.Core.FSharpFunc<Kjarni.CoreAction, bool>>>.Some(
+                Microsoft.FSharp.Core.FuncConvert.FromFunc<Kjarni.ICoreState, Kjarni.CoreAction, bool>(
+                    (state, action) => action.IsStochastic && ((Kjarni.CoreAction.Stochastic)action).Item is RollDiceAction))
+            : null;
+
         var mctsConfig = new Kjarni.MCTSConfig(
             searchTime.NewMilliSeconds(_options.SearchTimeMs),
             _options.MaxSimulations,
             _options.MaxRolloutDepth,
             System.Math.Sqrt(2.0),
             _options.ActionRolloutLimit,
-            priorClient);
+            priorClient,
+            expansionGuard);
         var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(mctsConfig);
         var states = new List<StateRecord>();
 
@@ -573,6 +605,11 @@ internal class SimulationRunner
                 // Apply the best action from MCTS and advance the tree.
                 if (!bestPath.IsEmpty && bestPath.Head < actions.Length)
                 {
+                    // When the best action is a HorizonAction, the search has reached
+                    // the expansion boundary — stop the game loop.
+                    if (mctsRoot.Actions[bestPath.Head].IsHorizonAction)
+                        break;
+
                     state = (CatanState)UnwrapCoreAction(actions[bestPath.Head]).DoCoreAction();
                     mctsRoot = AdvanceMctsRoot(mctsRoot, bestPath.Head, (ICoreState)state);
                 }

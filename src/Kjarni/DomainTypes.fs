@@ -88,7 +88,8 @@ type MCTSConfig =
       MaxRolloutDepth: int
       ExplorationConstant: float
       ActionRolloutLimit: int
-      PriorClient: IPriorClient option }
+      PriorClient: IPriorClient option
+      ExpansionGuard: (ICoreState -> CoreAction -> bool) option }
 
     static member Default =
         { SearchTime = Unlimited
@@ -96,4 +97,5 @@ type MCTSConfig =
           MaxRolloutDepth = 500
           ExplorationConstant = sqrt 2.
           ActionRolloutLimit = System.Int32.MaxValue
-          PriorClient = None }
+          PriorClient = None
+          ExpansionGuard = None }

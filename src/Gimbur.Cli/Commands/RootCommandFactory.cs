@@ -161,6 +161,12 @@ internal static class RootCommandFactory
             DefaultValueFactory = _ => "http://localhost:8000",
         };
 
+        var placementOnlyOption = new Option<bool>("--placement-only")
+        {
+            Description = "Stop MCTS expansion at the placement/main-game boundary (RollDiceAction). " +
+                          "The game loop ends when the best action is a HorizonAction.",
+        };
+
         var command = new Command("simulate", "Run Settlers of Catan AI self-play simulations.")
         {
           noOfGamesOption,
@@ -174,6 +180,7 @@ internal static class RootCommandFactory
           noSymmetriesOption,
           priorOption,
           nnUrlOption,
+          placementOnlyOption,
         };
 
         command.SetAction(parseResult =>
@@ -192,6 +199,7 @@ internal static class RootCommandFactory
             bool noSymmetries = parseResult.GetValue(noSymmetriesOption);
             bool prior = parseResult.GetValue(priorOption);
             string nnUrl = parseResult.GetValue(nnUrlOption)!;
+            bool placementOnly = parseResult.GetValue(placementOnlyOption);
 
             // Auto-enable prior when --nn-url is explicitly provided.
             if (!prior && parseResult.Tokens.Any(t => t.Value == "--nn-url"))
@@ -213,6 +221,7 @@ internal static class RootCommandFactory
                 Symmetries = !noSymmetries,
                 Prior = prior,
                 NnUrl = nnUrl,
+                PlacementOnly = placementOnly,
             };
 
             var runner = new SimulationRunner(options);
