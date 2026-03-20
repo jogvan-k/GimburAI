@@ -15,6 +15,11 @@ public sealed class CatanState : ICoreState
     private readonly int[] _newDevCardsThisTurn;
     private readonly int[] _pendingRoadBuildingPlacements;
     internal TurnStage? _postDevCardStage;
+    /// <summary>
+    /// Per-vertex placement round: 0 = empty, 1 = placed during first round,
+    /// 2 = placed during second round. Used by placement phase serialization.
+    /// </summary>
+    internal readonly byte[] _vertexPlacementRound;
     private static readonly object RngLock = new();
     private static readonly Random SharedRng = new();
     private static readonly Dictionary<int, int> DiceRollCounts = new()
@@ -64,6 +69,7 @@ public sealed class CatanState : ICoreState
         _newDevCardsThisTurn = new int[DevCardCount];
         _pendingRoadBuildingPlacements = new int[playerCount + 1];
         _postDevCardStage = null;
+        _vertexPlacementRound = new byte[config.Map.Topology.VertexCount];
         foreach (var pair in config.DevCardCounts)
         {
             _devDeckRemaining[(int)pair.Key] = pair.Value;
@@ -87,7 +93,8 @@ public sealed class CatanState : ICoreState
         int[] devDeckRemaining,
         int[] newDevCardsThisTurn,
         int[] pendingRoadBuildingPlacements,
-        TurnStage? postDevCardStage)
+        TurnStage? postDevCardStage,
+        byte[] vertexPlacementRound)
     {
         Config = config;
         Board = board;
@@ -106,6 +113,7 @@ public sealed class CatanState : ICoreState
         _newDevCardsThisTurn = newDevCardsThisTurn;
         _pendingRoadBuildingPlacements = pendingRoadBuildingPlacements;
         _postDevCardStage = postDevCardStage;
+        _vertexPlacementRound = vertexPlacementRound;
     }
 
     public GameConfig Config { get; }
@@ -479,6 +487,17 @@ public sealed class CatanState : ICoreState
         int playerCount,
         string compact) => CatanStateSerializer.DeserializeCompact(config, playerCount, compact);
 
+    /// <summary>
+    /// Serializes the placement phase state in human-readable form.
+    /// Format: tiles|ports|placementVertices|edges
+    /// </summary>
+    public string SerializePlacementPhase() => CatanStateSerializer.SerializePlacementPhase(this);
+
+    /// <summary>
+    /// Produces the compact form of the placement phase state: strips all pipe separators.
+    /// </summary>
+    public string SerializePlacementPhaseCompact() => CatanStateSerializer.SerializePlacementPhaseCompact(this);
+
     public override string ToString() => SerializeHumanReadable();
 
     public override bool Equals(object? obj)
@@ -669,6 +688,7 @@ public sealed class CatanState : ICoreState
 
         var next = Clone();
         next.Board.VertexOccupancy[vertexIndex] = new VertexOccupancy(BuildingType.Settlement, CurrentPlayer);
+        next._vertexPlacementRound[vertexIndex] = (byte)(Stage == TurnStage.PlaceFirstSettlement ? 1 : 2);
         if (Stage == TurnStage.PlaceSecondSettlement)
         {
             next.GrantSecondPlacementResources(vertexIndex);
@@ -1616,7 +1636,8 @@ public sealed class CatanState : ICoreState
             (int[])_devDeckRemaining.Clone(),
             (int[])_newDevCardsThisTurn.Clone(),
             (int[])_pendingRoadBuildingPlacements.Clone(),
-            _postDevCardStage);
+            _postDevCardStage,
+            (byte[])_vertexPlacementRound.Clone());
     }
 
     private int GetPlayableDevCardCount(DevCardType cardType)

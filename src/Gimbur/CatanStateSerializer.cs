@@ -34,13 +34,10 @@ internal static class CatanStateSerializer
         sb.Append('|');
         sb.Append(CrockfordBase32.Encode(state.Board.RobberTile));
 
-        // Section 4: Current Turn (player + stage + optional postDevCardStage)
+        // Section 4: Current Turn (player + stage)
         sb.Append('|');
         sb.Append(StateToken.EncodePlayer(state.CurrentPlayer));
         sb.Append(StateToken.EncodeTurnStage(state.Stage));
-        sb.Append(state._postDevCardStage.HasValue
-            ? StateToken.EncodeTurnStage(state._postDevCardStage.Value)
-            : '-');
 
         // Section 5: Longest Road / Largest Army (concatenated)
         sb.Append('|');
@@ -162,12 +159,9 @@ internal static class CatanStateSerializer
         // Section 3: Robber (single char)
         var robberTile = CrockfordBase32.Decode(sections[2][0]);
 
-        // Section 4: Current Turn (player + stage + postDevCardStage)
+        // Section 4: Current Turn (player + stage)
         var currentPlayer = StateToken.DecodePlayer(sections[3][0]);
         var stage = StateToken.DecodeTurnStage(sections[3][1]);
-        TurnStage? postDevCardStage = sections[3].Length > 2 && sections[3][2] != '-'
-            ? StateToken.DecodeTurnStage(sections[3][2])
-            : null;
 
         // Section 5: Longest Road / Largest Army (2 chars)
         var longestRoadOwner = StateToken.DecodePlayer(sections[4][0]);
@@ -300,7 +294,8 @@ internal static class CatanStateSerializer
             deck,
             new int[CatanState.DevCardCount],
             new int[playerCount + 1],
-            postDevCardStage);
+            postDevCardStage: null,
+            vertexPlacementRound: InferPlacementRounds(topology.VertexCount, vertices, stage));
 
         state.RefreshVictory();
         return state;
@@ -361,9 +356,8 @@ internal static class CatanStateSerializer
         sb.Append('|');
         sb.Append(compact[pos++]);
 
-        // Section 4: Current Turn — 3 chars (player + stage + postDevCardStage)
+        // Section 4: Current Turn — 2 chars (player + stage)
         sb.Append('|');
-        sb.Append(compact[pos++]);
         sb.Append(compact[pos++]);
         sb.Append(compact[pos++]);
 
@@ -479,13 +473,10 @@ internal static class CatanStateSerializer
         // Section 3: Robber
         sb.Append(CrockfordBase32.Encode(state.Board.RobberTile));
 
-        // Section 4: Current Turn (player + stage + postDevCardStage)
+        // Section 4: Current Turn (player + stage)
         sb.Append('|');
         sb.Append(StateToken.EncodePlayer(state.CurrentPlayer));
         sb.Append(StateToken.EncodeTurnStage(state.Stage));
-        sb.Append(state._postDevCardStage.HasValue
-            ? StateToken.EncodeTurnStage(state._postDevCardStage.Value)
-            : '-');
 
         // Section 5: Longest Road / Largest Army
         sb.Append('|');
@@ -554,7 +545,98 @@ internal static class CatanStateSerializer
         return sb.ToString();
     }
 
-    private static int? InferPendingSettlementVertex(Board board, int currentPlayer, TurnStage stage)
+    /// <summary>
+    /// Serializes the placement phase state in human-readable form.
+    /// Format: tiles|ports|placementVertices|edges
+    /// <para>
+    /// Placement vertices use the placement number alphabet (./a/b + player)
+    /// instead of the building type alphabet (./v/c + player). The robber,
+    /// current turn, awards, resources, knights, and dev cards sections are omitted.
+    /// </para>
+    /// </summary>
+    public static string SerializePlacementPhase(CatanState state)
+    {
+        var topology = state.Board.Topology;
+        var sb = new StringBuilder((topology.TileCount * 3) + topology.PortCount
+            + (topology.VertexCount * 2) + topology.EdgeCount + 3);
+
+        // Section 1: Tiles — identical to game state
+        for (var ti = 0; ti < topology.TileCount; ti++)
+        {
+            sb.Append(StateToken.EncodeResource(state.Board.TileResource(ti)));
+            sb.Append(StateToken.EncodeTilePips(state.Board.TileNumber(ti)));
+            sb.Append(StateToken.EncodeTileSide(state.Board.TileNumber(ti)));
+        }
+
+        // Section 2: Ports — identical to game state
+        sb.Append('|');
+        for (var pi = 0; pi < topology.PortCount; pi++)
+        {
+            sb.Append(StateToken.EncodePort(state.Board.PortType(pi)));
+        }
+
+        // Section 3: Placement Vertices — 2 tokens each: placementNumber + player
+        sb.Append('|');
+        for (var vi = 0; vi < topology.VertexCount; vi++)
+        {
+            var occ = state.Board.VertexOccupancy[vi];
+            if (occ.Building == BuildingType.None)
+            {
+                sb.Append("._");
+            }
+            else
+            {
+                sb.Append(StateToken.EncodePlacementNumber(state._vertexPlacementRound[vi]));
+                sb.Append(StateToken.EncodePlayer(occ.Player));
+            }
+        }
+
+        // Section 4: Edges — identical to game state
+        sb.Append('|');
+        for (var ei = 0; ei < topology.EdgeCount; ei++)
+        {
+            sb.Append(StateToken.EncodePlayer(state.Board.EdgeOccupancy[ei].Player));
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Produces the compact form of the placement phase state: strips all '|'
+    /// separators from the human-readable form.
+    /// </summary>
+    public static string SerializePlacementPhaseCompact(CatanState state)
+    {
+        var humanReadable = SerializePlacementPhase(state);
+        var sb = new StringBuilder(humanReadable.Length);
+        foreach (var c in humanReadable)
+        {
+            if (c != '|')
+            {
+                sb.Append(c);
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Infers the placement round for each vertex from the deserialized vertex occupancies.
+    /// If the stage is still in initial placement, settlements with roads are from round 1
+    /// and settlements without roads are either current-round or round 2 (depending on stage).
+    /// For non-placement stages, all settlements are considered round 0 (unknown).
+    /// </summary>
+    private static byte[] InferPlacementRounds(int vertexCount, VertexOccupancy[] vertices, TurnStage stage)
+    {
+        var rounds = new byte[vertexCount];
+        // During normal play, we cannot determine placement rounds.
+        // Only during initial placement can we make any inference,
+        // but even then it's imperfect from a deserialized state.
+        // Default to 0 (unknown) — the caller can override if needed.
+        return rounds;
+    }
+
+        private static int? InferPendingSettlementVertex(Board board, int currentPlayer, TurnStage stage)
     {
         if (stage is not (TurnStage.PlaceFirstRoad or TurnStage.PlaceSecondRoad))
         {

@@ -355,6 +355,87 @@ public static class BoardSymmetry
         return sb.ToString();
     }
 
+
+    /// <summary>
+    /// Applies a symmetry permutation to a serialized placement-phase state string.
+    /// Placement format: tiles|ports|placementVertices|edges (4 sections).
+    /// <para>
+    /// Tiles (section 0, 3 chars each), ports (section 1, 1 char each), vertices
+    /// (section 2, 2 chars each: placementNumber + player), and edges (section 3,
+    /// 1 char each) are all position-dependent and need permutation.
+    /// </para>
+    /// </summary>
+    public static string PermutePlacementState(string placementSerialized, SymmetryPermutation perm)
+    {
+        var sections = placementSerialized.Split('|');
+        if (sections.Length != 4)
+            throw new ArgumentException(
+                $"Placement string has {sections.Length} sections, expected 4.",
+                nameof(placementSerialized));
+
+        var tileCount = perm.Tiles.Length;
+        var portCount = perm.Ports.Length;
+        var vertexCount = perm.Vertices.Length;
+        var edgeCount = perm.Edges.Length;
+
+        if (sections[0].Length != tileCount * 3)
+            throw new ArgumentException(
+                $"Tile section has {sections[0].Length} chars, expected {tileCount * 3}.");
+        if (sections[1].Length != portCount)
+            throw new ArgumentException(
+                $"Port section has {sections[1].Length} chars, expected {portCount}.");
+        if (sections[2].Length != vertexCount * 2)
+            throw new ArgumentException(
+                $"Vertex section has {sections[2].Length} chars, expected {vertexCount * 2}.");
+        if (sections[3].Length != edgeCount)
+            throw new ArgumentException(
+                $"Edge section has {sections[3].Length} chars, expected {edgeCount}.");
+
+        var tileInv = InvertPermutation(perm.Tiles);
+        var portInv = InvertPermutation(perm.Ports);
+        var vertexInv = InvertPermutation(perm.Vertices);
+        var edgeInv = InvertPermutation(perm.Edges);
+
+        var sb = new StringBuilder(placementSerialized.Length);
+
+        // Section 0: Tiles (3 chars each: resource + pips + side)
+        for (var ti = 0; ti < tileCount; ti++)
+        {
+            var src = tileInv[ti];
+            sb.Append(sections[0][src * 3]);
+            sb.Append(sections[0][src * 3 + 1]);
+            sb.Append(sections[0][src * 3 + 2]);
+        }
+
+        sb.Append('|');
+
+        // Section 1: Ports (1 char each)
+        for (var pi = 0; pi < portCount; pi++)
+        {
+            sb.Append(sections[1][portInv[pi]]);
+        }
+
+        sb.Append('|');
+
+        // Section 2: Placement vertices (2 chars each: placementNumber + player)
+        for (var vi = 0; vi < vertexCount; vi++)
+        {
+            var src = vertexInv[vi];
+            sb.Append(sections[2][src * 2]);
+            sb.Append(sections[2][src * 2 + 1]);
+        }
+
+        sb.Append('|');
+
+        // Section 3: Edges (1 char each: player ID)
+        for (var ei = 0; ei < edgeCount; ei++)
+        {
+            sb.Append(sections[3][edgeInv[ei]]);
+        }
+
+        return sb.ToString();
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
 
     /// <summary>

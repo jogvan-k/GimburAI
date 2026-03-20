@@ -23,7 +23,7 @@ MINI_STATE = (
     "w5lb3ls4lW3hd0nW4ho2l"
     "|gsgbgw"
     "|4"
-    "|-t-"
+    "|-t"
     "|__"
     "|._._._._._._v-._._._._._._._v+._._._._._._._._._"
     "|_____-_______+________________"
@@ -36,7 +36,7 @@ SMALL_STATE = (
     "W2lb3ls4lw3hb2hw1ho5lW4hs5hd0n"
     "|gwWgsb"
     "|9"
-    "|+r-"
+    "|+r"
     "|__"
     "|v-v+v+._._._._v-._._._._._._._._._._._._._._._._._._._._._._._._"
     "|-_+_+_-__________________________________"
@@ -49,7 +49,7 @@ STANDARD_STATE = (
     "w4lo1lb5lW2lw5hs3hW4ho1hs2hw3lb5hs3hW4ho3ls4lb5lw2lW2hd0n"
     "|ggwgbsWog"
     "|5"
-    "|+t-"
+    "|+t"
     "|_-"
     "|._._._._._._._._v-._._._._._._._._._c+._._._._._v*._._._._._._v*._._._v-._._._._._._._._v+._._._._._._._._._"
     "|______-_________-________+______+_**_____-*_____*-_____+_____+__________"
@@ -67,7 +67,7 @@ MINI_EXPECTED = [
     1, 12, 13, 2, 10, 13, 3, 11, 13, 4, 10, 14, 0, 7, 15, 4, 11, 14, 5, 9, 13,
     6, 3, 6, 2, 6, 1,
     11,
-    20, 31, 20,
+    20, 31,
     19, 19,
     16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 17, 20, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 17, 21, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19,
     19, 19, 19, 19, 19, 20, 19, 19, 19, 19, 19, 19, 19, 21, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19,
@@ -80,7 +80,7 @@ SMALL_EXPECTED = [
     4, 9, 13, 2, 10, 13, 3, 11, 13, 1, 10, 14, 2, 9, 14, 1, 8, 14, 5, 12, 13, 4, 11, 14, 3, 12, 14, 0, 7, 15,
     6, 1, 4, 6, 3, 2,
     35,
-    21, 28, 20,
+    21, 28,
     19, 19,
     17, 20, 17, 21, 17, 21, 16, 19, 16, 19, 16, 19, 16, 19, 17, 20, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19,
     20, 19, 21, 19, 21, 19, 20, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19,
@@ -93,7 +93,7 @@ STANDARD_EXPECTED = [
     1, 11, 13, 5, 8, 13, 2, 12, 13, 4, 9, 13, 1, 12, 14, 3, 10, 14, 4, 11, 14, 5, 8, 14, 3, 9, 14, 1, 10, 13, 2, 12, 14, 3, 10, 14, 4, 11, 14, 5, 10, 13, 3, 11, 13, 2, 12, 13, 1, 9, 13, 4, 9, 14, 0, 7, 15,
     6, 6, 1, 6, 2, 3, 4, 5, 6,
     12,
-    21, 31, 20,
+    21, 31,
     19, 20,
     16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 17, 20, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 18, 21, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 17, 22, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 17, 22, 16, 19, 16, 19, 16, 19, 17, 20, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 17, 21, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19, 16, 19,
     19, 19, 19, 19, 19, 19, 20, 19, 19, 19, 19, 19, 19, 19, 19, 19, 20, 19, 19, 19, 19, 19, 19, 19, 19, 21, 19, 19, 19, 19, 19, 19, 21, 19, 22, 22, 19, 19, 19, 19, 19, 20, 22, 19, 19, 19, 19, 19, 22, 20, 19, 19, 19, 19, 19, 21, 19, 19, 19, 19, 19, 21, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19,
@@ -131,7 +131,7 @@ class TestVocab:
 class TestMiniMap:
     def test_full_tensor(self) -> None:
         t = tokenize(MINI_STATE)
-        assert t.shape == (133,)
+        assert t.shape == (132,)
         assert t.dtype == torch.int32
         assert t.tolist() == MINI_EXPECTED
 
@@ -139,7 +139,7 @@ class TestMiniMap:
 class TestSmallMap:
     def test_full_tensor(self) -> None:
         t = tokenize(SMALL_STATE)
-        assert t.shape == (169,)
+        assert t.shape == (168,)
         assert t.dtype == torch.int32
         assert t.tolist() == SMALL_EXPECTED
 
@@ -147,7 +147,7 @@ class TestSmallMap:
 class TestStandardMap:
     def test_full_tensor(self) -> None:
         t = tokenize(STANDARD_STATE)
-        assert t.shape == (285,)
+        assert t.shape == (284,)
         assert t.dtype == torch.int32
         assert t.tolist() == STANDARD_EXPECTED
 
@@ -174,7 +174,7 @@ class TestCompactForm:
 class TestBatch:
     def test_same_map_batch(self) -> None:
         t = tokenize_batch([MINI_STATE, MINI_STATE])
-        assert t.shape == (2, 133)
+        assert t.shape == (2, 132)
         assert t.dtype == torch.int32
 
     def test_batch_matches_single(self) -> None:
@@ -285,13 +285,13 @@ class TestRotatePlayerState:
     def test_mini_2p_rotation_matches_doc(self) -> None:
         """Verify the rotation example from docs/state-serialization.md."""
         original_hr = (
-            "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t-|__|"
+            "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t|__|"
             "._._._._._._v-._._._._._._._v+._._._._._._._._._|"
             "_____-_______+________________|"
             "21010/00130|0/0|00000/00000"
         )
         expected_hr = (
-            "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|+t-|__|"
+            "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|+t|__|"
             "._._._._._._v+._._._._._._._v-._._._._._._._._._|"
             "_____+_______-________________|"
             "00130/21010|0/0|00000/00000"
@@ -320,24 +320,12 @@ class TestRotatePlayerState:
         # P2 with R=2, N=3: ((2-1-2) mod 3)+1 = ((-1) mod 3)+1 = 2+1 = 3 -> '*'
         assert result[pos] == "*"
 
-    # -- postDevCardStage unchanged (it's a turn-stage char, not player) ----
-
-    def test_post_dev_card_stage_unchanged(self) -> None:
-        """The postDevCardStage token is '-' meaning 'none' and should not
-        be modified by rotation (it's at a turn-stage position, not player)."""
-        cfg = MINI_2P
-        pos = 3 * cfg.tile_count + cfg.port_count + 3  # 3rd token of section 4
-        assert MINI_COMPACT[pos] == "-"
-        result = rotate_player_state(MINI_COMPACT, 2, cfg)
-        # postDevCardStage is NOT a player-ID field — it should stay '-'
-        assert result[pos] == "-"
-
     # -- Longest road / largest army remapped --------------------------------
 
     def test_awards_remapped_standard(self) -> None:
         """Standard example: LR=none, LA=player1. Rotate for player 2."""
         cfg = STANDARD_3P
-        lr_pos = 3 * cfg.tile_count + cfg.port_count + 4
+        lr_pos = 3 * cfg.tile_count + cfg.port_count + 3
         la_pos = lr_pos + 1
         assert STANDARD_COMPACT[lr_pos] == "_"  # no longest road
         assert STANDARD_COMPACT[la_pos] == "-"  # player 1
@@ -351,7 +339,7 @@ class TestRotatePlayerState:
     def test_resources_reordered_mini(self) -> None:
         """Mini 2p: resources '21010''00130' should swap to '00130''21010'."""
         cfg = MINI_2P
-        res_start = 3 * cfg.tile_count + cfg.port_count + 6 + 2 * cfg.vertex_count + cfg.edge_count
+        res_start = 3 * cfg.tile_count + cfg.port_count + 5 + 2 * cfg.vertex_count + cfg.edge_count
         original_res = MINI_COMPACT[res_start : res_start + 10]
         assert original_res == "2101000130"
         result = rotate_player_state(MINI_COMPACT, 2, cfg)
@@ -361,7 +349,7 @@ class TestRotatePlayerState:
     def test_resources_reordered_standard(self) -> None:
         """Standard 3p: 3 blocks of 5 should rotate for target=2."""
         cfg = STANDARD_3P
-        res_start = 3 * cfg.tile_count + cfg.port_count + 6 + 2 * cfg.vertex_count + cfg.edge_count
+        res_start = 3 * cfg.tile_count + cfg.port_count + 5 + 2 * cfg.vertex_count + cfg.edge_count
         original_res = STANDARD_COMPACT[res_start : res_start + 15]
         assert original_res == "312010214310320"
         result = rotate_player_state(STANDARD_COMPACT, 2, cfg)
@@ -377,7 +365,7 @@ class TestRotatePlayerState:
         kn_start = (
             3 * cfg.tile_count
             + cfg.port_count
-            + 6
+            + 5
             + 2 * cfg.vertex_count
             + cfg.edge_count
             + 5 * cfg.player_count
@@ -396,7 +384,7 @@ class TestRotatePlayerState:
         dev_start = (
             3 * cfg.tile_count
             + cfg.port_count
-            + 6
+            + 5
             + 2 * cfg.vertex_count
             + cfg.edge_count
             + 5 * cfg.player_count

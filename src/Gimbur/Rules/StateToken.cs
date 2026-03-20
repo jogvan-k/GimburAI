@@ -173,6 +173,30 @@ public static class StateToken
             "Not a valid building character. Expected one of: . v c"),
     };
 
+    // ── Placement Number ─────────────────────────────────────────────
+    // . = empty (0), a = 1st settlement (1), b = 2nd settlement (2)
+    // Used only in placement phase state serialization.
+
+    /// <summary>Encodes a placement number (0=empty, 1=first, 2=second) as a single character.</summary>
+    public static char EncodePlacementNumber(int placementNumber) => placementNumber switch
+    {
+        0 => '.',
+        1 => 'a',
+        2 => 'b',
+        _ => throw new ArgumentOutOfRangeException(nameof(placementNumber), placementNumber,
+            "Must be 0 (empty), 1 (first), or 2 (second)."),
+    };
+
+    /// <summary>Decodes a placement number character back to an int (0=empty, 1=first, 2=second).</summary>
+    public static int DecodePlacementNumber(char c) => c switch
+    {
+        '.' => 0,
+        'a' => 1,
+        'b' => 2,
+        _ => throw new ArgumentOutOfRangeException(nameof(c), c,
+            "Not a valid placement number character. Expected one of: . a b"),
+    };
+
     // ── Turn Stage ──────────────────────────────────────────────────
     // a=PlaceFirstSettlement, e=PlaceFirstRoad, f=PlaceSecondSettlement,
     // i=PlaceSecondRoad, r=PreRoll, x=ChooseRobberLocation,

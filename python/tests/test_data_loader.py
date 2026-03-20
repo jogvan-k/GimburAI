@@ -104,7 +104,7 @@ def _simple_game(wins: list[float] | None = None) -> dict:
 
 MINI_BOARD = "w5lb3ls4lW3hd0nW4ho2l|gsgbgw"
 MINI_STATE_ONLY = (
-    "4|-t-|__|"
+    "4|-t|__|"
     "._._._._._._v-._._._._._._._v+._._._._._._._._._|"
     "_____-_______+________________|"
     "21010/00130|0/0|00000/00000"

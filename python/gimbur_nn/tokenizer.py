@@ -169,10 +169,10 @@ def rotate_player_state(
     #   Tiles:        0            .. 3*T
     #   Ports:        3*T          .. 3*T + P
     #   Robber:       3*T + P      (1 char)
-    #   Current turn: 3*T + P + 1  (3 chars: player, stage, postDevCardStage)
-    #   LR/LA:        3*T + P + 4  (2 chars)
-    #   Vertices:     3*T + P + 6  (2*V chars, pairs of building+owner)
-    #   Edges:        3*T + P + 6 + 2*V  (E chars)
+    #   Current turn: 3*T + P + 1  (2 chars: player, stage)
+    #   LR/LA:        3*T + P + 3  (2 chars)
+    #   Vertices:     3*T + P + 5  (2*V chars, pairs of building+owner)
+    #   Edges:        3*T + P + 5 + 2*V  (E chars)
 
     base = 3 * t + p
 
@@ -185,15 +185,15 @@ def rotate_player_state(
     )
 
     # Longest road owner.
-    pos_lr = base + 4
+    pos_lr = base + 3
     chars[pos_lr] = _rotate_player_char(chars[pos_lr], rotation, n)
 
     # Largest army owner.
-    pos_la = base + 5
+    pos_la = base + 4
     chars[pos_la] = _rotate_player_char(chars[pos_la], rotation, n)
 
     # Vertex owners (2nd char of each vertex pair).
-    vertex_start = base + 6
+    vertex_start = base + 5
     for vi in range(v):
         owner_pos = vertex_start + 2 * vi + 1
         chars[owner_pos] = _rotate_player_char(

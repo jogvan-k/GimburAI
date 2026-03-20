@@ -65,6 +65,13 @@ public sealed class BoardTopology
     /// <summary>Port vertex pairs, ordered clockwise from top. Each pair is a coastal edge.</summary>
     public ImmutableArray<(int VertexA, int VertexB)> Ports { get; }
 
+    /// <summary>
+    /// Per-vertex flag: <c>true</c> if the vertex is a peak (top of hex),
+    /// <c>false</c> if it is a valley (bottom of hex). Peak vertices have
+    /// edge directions N/SW/SE; valley vertices have S/NW/NE.
+    /// </summary>
+    public ImmutableArray<bool> IsPeakVertex { get; }
+
     /// <summary>Indices of coastal edges (edges bordering exactly 1 on-board tile).</summary>
     public ImmutableArray<int> CoastalEdges { get; }
 
@@ -173,6 +180,9 @@ public sealed class BoardTopology
 
         // 5) Generate ports.
         Ports = [.. GeneratePorts(portCount, vertexList, vertexIndex, edgeList, edgeTiles)];
+
+        // 6) Compute peak/valley classification for each vertex.
+        IsPeakVertex = ComputePeakValley(vertexList);
     }
 
     // ── Tile generation ─────────────────────────────────────────────
@@ -554,5 +564,98 @@ public sealed class BoardTopology
         }
 
         return ports;
+    }
+
+    // ── Peak / valley classification ────────────────────────────────
+
+    /// <summary>
+    /// Classifies each vertex as peak or valley by comparing the vertex pixel Y
+    /// to the average Y of its three surrounding hex centers. In the pointy-top
+    /// coordinate system (Y increasing upward), peak vertices sit above the
+    /// average center Y and valley vertices sit below.
+    /// </summary>
+    private static ImmutableArray<bool> ComputePeakValley(List<VertexKey> vertices)
+    {
+        var builder = ImmutableArray.CreateBuilder<bool>(vertices.Count);
+        for (var vi = 0; vi < vertices.Count; vi++)
+        {
+            var key = vertices[vi];
+            var coords = key.ToArray();
+            double sumY = 0;
+            foreach (var c in coords)
+            {
+                var (_, py) = AxialToPixel(c);
+                sumY += py;
+            }
+            var avgY = sumY / 3.0;
+
+            // Compute vertex pixel position (average of three hex-center positions).
+            // But we need the actual vertex position, not the hex-center average.
+            // Use the first hex and find which corner this vertex corresponds to.
+            // Simpler: compute from any tile in the triplet.
+            double vx = 0, vy = 0;
+            foreach (var c in coords)
+            {
+                var (px, py) = AxialToPixel(c);
+                vx += px;
+                vy += py;
+            }
+            vx /= 3.0;
+            vy /= 3.0;
+
+            // For pointy-top hexes with Y increasing upward (-1.5*r),
+            // peak vertices have pixel Y > average hex center Y.
+            // However, the vertex pixel position computed as average of 3 hex centers
+            // IS the vertex position (each vertex is equidistant from its 3 hexes).
+            // We need a different approach: use the hex corner geometry.
+            //
+            // Alternative: a peak vertex has its Y coordinate higher than the Y of
+            // the hex center it belongs to, looking at the offset from any single
+            // adjacent hex center.
+            //
+            // Simplest approach: check the sign of (vertexY - hexCenterY) for any
+            // adjacent on-board tile. For a peak vertex (top of hex), the vertex
+            // is above the hex center. For a valley vertex, below.
+            //
+            // Actually the simplest: in axial coords with pointy-top, the 6 corners
+            // alternate peak and valley. Corner 0 (30°) is a valley, corner 1 (90°)
+            // is a peak, corner 2 (150°) is a valley, etc. But this depends on
+            // which corner index maps to which vertex.
+            //
+            // Even simpler: for any adjacent hex, compute the corner pixel and compare
+            // its Y to the hex center Y. If cornerY > centerY, it's a peak vertex.
+            // Let's use the first coordinate in the triplet.
+            var (cx, cy) = AxialToPixel(coords[0]);
+
+            // Find which corner of coords[0] this vertex corresponds to.
+            // The vertex is at the intersection of coords[0], coords[1], coords[2].
+            // Each pair of adjacent coords defines a shared edge, and the vertex is
+            // at the corner where all three meet.
+            // Instead of complex corner detection, just compute the actual pixel position.
+            var dirs = HexCoord.Directions;
+            bool found = false;
+            bool isPeak = false;
+            for (var i = 0; i < 6; i++)
+            {
+                var n1 = coords[0] + dirs[i];
+                var n2 = coords[0] + dirs[(i + 5) % 6];
+                var candidate = VertexKey.Create(coords[0], n1, n2);
+                if (candidate == key)
+                {
+                    var (_, cornerY) = HexCornerPixel(cx, cy, i);
+                    isPeak = cornerY > cy;
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
+                throw new InvalidOperationException(
+                    $"Could not classify vertex {vi} as peak or valley.");
+
+            builder.Add(isPeak);
+        }
+
+        return builder.MoveToImmutable();
     }
 }

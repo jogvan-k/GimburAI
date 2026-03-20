@@ -3,7 +3,7 @@ using Gimbur.Rules;
 namespace Gimbur.Rules.Tests;
 
 [TestFixture]
-public class BoardSymmetryTests
+public partial class BoardSymmetryTests
 {
     // ── Permutation count ───────────────────────────────────────────
 
