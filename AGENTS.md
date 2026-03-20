@@ -41,13 +41,21 @@
 
 ## Python Project (gimbur-nn)
 - Lives under `python/` with package `gimbur_nn`.
-- Project config: `python/pyproject.toml` (uses ruff for linting).
+- Project config: `python/pyproject.toml` (uses ruff for linting/formatting).
 - Key modules:
-  - `tokenizer.py` — parses serialized board/state strings (from `CatanStateSerializer`) into PyTorch tensors.
-  - `model.py` — `CatanNet` (`nn.Module`) that predicts per-player win probabilities from tokenized states.
+  - `game_config.py` — map dimension constants and tensor size formulas for mini/small/standard maps.
+  - `tokenizer.py` — legacy game-state tokenizer; parses 10-section serialized strings into PyTorch tensors.
+  - `state_tokenizer.py` — game-state tokenizer class (`StateTokenizer`).
+  - `placement_tokenizer.py` — placement-phase tokenizer class (`PlacementTokenizer`); handles 4-section placement state strings and action vocabulary.
+  - `data_loader.py` — loads JSONL training data exported by `gimbur simulate --export`, builds `SimulationDataset` for PyTorch `DataLoader`.
+  - `model_config.py` — model hyperparameter configuration.
+  - `transformer_model.py` — transformer-based model architecture.
+  - `pipeline.py` — training/evaluation pipeline utilities.
   - `train.py` — training loop; reads JSONL data exported by `gimbur simulate --export`.
   - `serve.py` — HTTP inference server; loads a trained checkpoint and serves predictions for the MCTS engine.
-- Run with `python -m gimbur_nn.train` / `python -m gimbur_nn.serve` from the `python/` directory.
+- Tests live under `python/tests/` using pytest:
+  - `test_tokenizer.py` — tests for all tokenizer classes (game state, placement state, action vocab).
+  - `test_data_loader.py` — tests for data loading, sample expansion, and dataset construction.
 - Style: Python 3.11+, `from __future__ import annotations`, ruff for formatting/linting.
 
 ## Build/Test Commands
@@ -90,6 +98,31 @@ dotnet test -v detailed
 
 # List all available tests without running them
 dotnet test -t
+```
+
+### Python Commands
+```bash
+# Run all Python tests (from repo root)
+python -m pytest python/tests/ -v
+
+# Run a specific Python test file
+python -m pytest python/tests/test_tokenizer.py -v
+
+# Run a specific test class or test
+python -m pytest python/tests/test_tokenizer.py::TestPlacementTokenizer -v
+python -m pytest python/tests/test_tokenizer.py::TestPlacementTokenizer::test_action_vocab_size_mini -v
+
+# Lint with ruff (from python/ directory)
+python -m ruff check python/
+
+# Format with ruff
+python -m ruff format python/
+
+# Run training
+python -m gimbur_nn.train
+
+# Run inference server
+python -m gimbur_nn.serve
 ```
 
 ### Other Commands
@@ -184,6 +217,34 @@ dotnet clean && dotnet restore && dotnet build
 - Use `namespace` for types that are part of the public API (e.g., `namespace Kjarni`)
 - Use `module` for groupings of functions (e.g., `module Kjarni.MCTS.Algorithm`)
 - Keep module-level functions in logical groups
+
+## Python Style Guidelines
+
+### General Conventions
+- Target Python 3.11+ (`requires-python = ">=3.11"` in `pyproject.toml`).
+- Always include `from __future__ import annotations` at the top of every module.
+- Use ruff for both linting and formatting (`line-length = 100`, rules: E, F, I, W, UP).
+- PyTorch is the only required runtime dependency; `fastapi`/`uvicorn` are optional for serving.
+
+### File Organization
+- Production code lives in `python/gimbur_nn/` (the package).
+- Tests live in `python/tests/` with `test_` prefix (pytest convention).
+- Configuration constants (map sizes, vocab sizes, tensor formulas) belong in `game_config.py`.
+- Tokenizer classes are split by concern: `state_tokenizer.py` (game state), `placement_tokenizer.py` (placement phase), `tokenizer.py` (legacy/shared).
+
+### Naming Conventions
+- **Modules**: snake_case (`game_config.py`, `placement_tokenizer.py`).
+- **Classes**: PascalCase (`PlacementTokenizer`, `StateTokenizer`, `SimulationDataset`).
+- **Functions/methods**: snake_case (`tokenize_state`, `decode_action`, `load_games`).
+- **Constants**: UPPER_SNAKE_CASE for module-level constants (`MINI_TILES`, `RESOURCE_CHARS`), or lowercase for config dict keys.
+- **Type aliases**: PascalCase when using `TypeAlias` or similar.
+
+### Testing Conventions
+- Use pytest (no unittest subclassing required, but grouping with classes is fine).
+- Test classes use `Test` prefix: `TestPlacementTokenizer`, `TestVocab`, `TestMiniMap`.
+- Test methods use `test_` prefix with descriptive snake_case names.
+- Use `pytest.raises` for expected exceptions.
+- Keep test data inline when small; use helper functions for repeated setup.
 
 # Dotnet CLI
 Use dotnet cli when adding or modifying the solution, e.g. when setting up new projects, use `dotnet new classlib --name <project_name>`. Don't forget to update the .slnx file, e.g. `dotnet sln add <project_path>`.
