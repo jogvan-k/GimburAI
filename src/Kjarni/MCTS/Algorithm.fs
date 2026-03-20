@@ -41,7 +41,7 @@ let actionEvaluator (explorationConstant: float) (state: MCTSState) (actionIndex
     match l with
     | Unexplored _ ->
         explorationRate explorationConstant state.Rollouts 0 prior
-    | DeterministicAction resState ->
+    | DeterministicAction resState | HorizonAction resState ->
         let winRate = winRate resState actingPlayer
         let explorationRate = explorationRate explorationConstant state.Rollouts resState.Rollouts prior
         winRate + explorationRate
@@ -66,7 +66,7 @@ let rollStochasticAction(probWeights: int array) =
     i
 
 
-let rec recSelect (explorationConstant: float) (s: MCTSState, visitedStates: MCTSState list) =
+let rec recSelect (explorationConstant: float) (expansionGuard: (ICoreState -> CoreAction -> bool) option) (s: MCTSState, visitedStates: MCTSState list) =
     if Array.isEmpty s.Actions then
         Exhausted(visitedStates, oneHotOutcome(s.State.PlayerTurn, s.State.NumberOfPlayers))
     else
@@ -75,18 +75,26 @@ let rec recSelect (explorationConstant: float) (s: MCTSState, visitedStates: MCT
               |> Array.indexed
               |> Array.maxBy (fun (i, a) -> actionEvaluator explorationConstant s i a)
         match snd selectedAction with
-        | Unexplored _ -> Candidate(visitedStates, fst selectedAction)
-        | DeterministicAction ds -> recSelect explorationConstant (ds,  ds :: visitedStates)
+        | Unexplored coreAction ->
+            match expansionGuard with
+            | Some guard when guard s.State coreAction ->
+                // Expansion blocked — create HorizonAction on first visit.
+                let horizonState = MCTSState(coreAction |> function Deterministic da -> da.State() | Stochastic sa -> (sa.Outcomes() |> Array.head |> snd))
+                s.Actions.[fst selectedAction] <- HorizonAction horizonState
+                Horizon(visitedStates, horizonState)
+            | _ -> Candidate(visitedStates, fst selectedAction)
+        | DeterministicAction ds -> recSelect explorationConstant expansionGuard (ds,  ds :: visitedStates)
         | StochasticAction so ->
             let i = rollStochasticAction (Array.map (fun o -> o.ProbabilityWeight) so)
             let state = so.[i].State
             if state.Rollouts = 0 // Unexplored outcome, return state
             then StochasticCandidate(visitedStates, fst selectedAction, i)
-            else recSelect explorationConstant (state, state :: visitedStates)
+            else recSelect explorationConstant expansionGuard (state, state :: visitedStates)
         | Terminal outcome -> Exhausted(visitedStates, outcome)
+        | HorizonAction hs -> Horizon(visitedStates, hs)
 
-let select (explorationConstant: float) (root: MCTSState) =
-    recSelect explorationConstant (root, [root])
+let select (explorationConstant: float) (expansionGuard: (ICoreState -> CoreAction -> bool) option) (root: MCTSState) =
+    recSelect explorationConstant expansionGuard (root, [root])
 
 let expand (s: MCTSState, i) =
       match s.Actions.[i] with
@@ -172,6 +180,7 @@ let extractionEvaluator (p: Player, l: Action) =
     | Terminal outcome -> outcome.[int p]
     | DeterministicAction da -> winRate da p
     | StochasticAction outcomes -> sampledWinRate outcomes p
+    | HorizonAction ha -> winRate ha p
     | Unexplored _ -> 0.
 
 let extractBestPath (root: MCTSState) =
@@ -200,6 +209,7 @@ let actionRollouts (a: Action) =
     match a with
     | Unexplored _ -> 0
     | DeterministicAction s -> s.Rollouts
+    | HorizonAction s -> s.Rollouts
     | StochasticAction outcomes -> Array.sumBy (fun o -> o.State.Rollouts) outcomes
     | Terminal _ -> 0
 
@@ -306,7 +316,7 @@ let collectActionStates (s: MCTSState) : (ICoreState[] * int[] * int[][]) =
                     states.Add(resultState)
                 layout.Add(outcomes.Length)
                 weights.Add(outcomes |> Array.map fst)
-        | DeterministicAction child ->
+        | DeterministicAction child | HorizonAction child ->
             states.Add(child.State)
             layout.Add(1)
             weights.Add([| 1 |])
@@ -374,6 +384,7 @@ type PriorStats =
     val mutable priorStatesEvaluated: int
     /// Per-depth count of prior states evaluated (depth → state count).
     val mutable priorStatesPerDepth: Dictionary<int, int>
+    val mutable horizonSkips: int
   end
 
 /// Walk the selection path bottom-up, replacing actions with Terminal when
@@ -426,7 +437,7 @@ let propagateTerminals (visitedStates: MCTSState list) =
 
     propagate visitedStates
 
-let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float, actionRolloutLimit: int, priorClient: IPriorClient option) =
+let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float, actionRolloutLimit: int, priorClient: IPriorClient option, expansionGuard: (ICoreState -> CoreAction -> bool) option) =
     // Normalise the option to guard against C# passing Some(null).
     let priorClient =
         match priorClient with
@@ -493,7 +504,7 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
               || timer.ElapsedTicks < evaluateUntil.Value)
           && maxActionRollouts root < actionRolloutLimit
           && not (isResolved root) do
-        match select explorationConstant root with
+        match select explorationConstant expansionGuard root with
         | Exhausted (stateHistory, outcome) ->
             backPropagate stateHistory outcome
             propagateTerminals stateHistory
@@ -545,5 +556,10 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                     propagateTerminals visitedStates
                     collectPriors ()
             | _ -> failwith "unreachable"
+        | Horizon (stateHistory, horizonState) ->
+            let outcome = simulate maxRolloutDepth horizonState
+            backPropagate (horizonState :: stateHistory) outcome
+            priorStats.horizonSkips <- priorStats.horizonSkips + 1
+            collectPriors ()
 
     (extractBestPath root |> List.toArray, priorStats)

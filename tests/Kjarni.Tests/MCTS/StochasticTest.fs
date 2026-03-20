@@ -166,7 +166,7 @@ type StochasticselectTests() =
         let root = makeStochasticRoot ()
         // The only action is Unexplored (Stochastic _), so select should
         // return Candidate for expansion.
-        match select (sqrt 2.) root with
+        match select (sqrt 2.) None root with
         | Candidate (ancestors, idx) ->
             ancestors |> should haveLength 1
             idx |> should equal 0
@@ -184,7 +184,7 @@ type StochasticselectTests() =
         root.Rollouts <- 1
         root.WinCounts <- [| 1.; 0. |]
 
-        let result = select (sqrt 2.) root
+        let result = select (sqrt 2.) None root
 
         // Outcomes have 0 rollouts, so select should return StochasticCandidate
         match result with
@@ -222,7 +222,7 @@ type StochasticselectTests() =
         // childA has children so it could yield Candidate.
         // childB is terminal so it could yield Exhausted.
         // Either way it should not be a StochasticCandidate since outcomes are visited.
-        let result = select (sqrt 2.) mctsRoot
+        let result = select (sqrt 2.) None mctsRoot
 
         match result with
         | StochasticCandidate _ -> Assert.Fail "Expected recursion into visited outcome, not StochasticCandidate"

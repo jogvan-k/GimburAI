@@ -1,4 +1,4 @@
-module Kjarni.MCTS.Types
+﻿module Kjarni.MCTS.Types
 
 open System
 open System.Collections.Generic
@@ -35,6 +35,7 @@ and Action =
     | DeterministicAction of MCTSState
     | StochasticAction of StochasticOutcome []
     | Terminal of float[]
+    | HorizonAction of MCTSState
 
 and StochasticOutcome = { ProbabilityWeight: int; State: MCTSState }
 
@@ -42,6 +43,7 @@ type SelectionResult =
     | Candidate of (MCTSState list * int)
     | StochasticCandidate of (MCTSState list * int * int)
     | Exhausted of (MCTSState list * float array)
+    | Horizon of (MCTSState list * MCTSState)
 
 type LogInfo =
     struct
@@ -57,4 +59,5 @@ type LogInfo =
         val mutable priorStatesEvaluated: int
         /// Per-depth count of prior states evaluated (depth → state count).
         val mutable priorStatesPerDepth: Dictionary<int, int>
+        val mutable horizonSkips: int
     end
