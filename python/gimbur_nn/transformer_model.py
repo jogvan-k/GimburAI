@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .game_config import GameConfig
-from .tokenizer import VOCAB_CHARS
+from .state_tokenizer import StateTokenizer
 
 
 class GimburTransformerConfig:
@@ -145,7 +145,8 @@ class GimburTransformer(nn.Module):
         self.model_config = model_cfg
         assert model_cfg.d_model % model_cfg.n_heads == 0
 
-        self.tok_embeddings = nn.Embedding(len(VOCAB_CHARS), model_cfg.d_model)
+        tok = StateTokenizer(game_cfg)
+        self.tok_embeddings = nn.Embedding(tok.vocab_size, model_cfg.d_model)
         self.pos_embeddings = nn.Embedding(game_cfg.state_token_size, model_cfg.d_model)
         self.embed_dropout = nn.Dropout(model_cfg.dropout)
 

@@ -3,18 +3,38 @@ Game configuration for each valid map + player-count combination.
 
 Mirrors the C# ``GameConfig`` presets (Mini, Small, Standard) and
 expands them into one config per valid player count.  Each config
-carries the topology sizes and derived ``state_token_size`` needed by
-the neural-network layer (see ``transformer_model.py``).
+carries the topology sizes and derived token sizes needed by the
+neural-network layers (see ``transformer_model.py``).
 
-Token sequence length formula (compact form, no separators)::
+Two token-size formulas are provided:
 
-    (3*T + 2*V + E + P + 6) + 11*N
+Game state (compact form, no separators)::
+
+    (3*T + 2*V + E + P + 5) + 11*N
 
 where T = tiles, V = vertices, E = edges, P = ports, N = players.
-The constant 6 = robber(1) + current-turn(3) + awards(2).
+The constant 5 = robber(1) + current-turn(2) + awards(2).
+
+Placement phase state::
+
+    3*T + P + 2*V + E
+
+Player-count-independent (player info is embedded in vertex/edge tokens).
 """
 
 from __future__ import annotations
+
+from enum import Enum
+
+
+class ModelType(Enum):
+    """Which neural network model will consume the serialized state."""
+
+    GAME_STATE = "game_state"
+    """GimburStateEvaluator — full game state during normal play."""
+
+    PLACEMENT = "placement"
+    """GimburPlacementActionEvaluator — placement phase state + actions."""
 
 
 class GameConfig:
@@ -43,9 +63,18 @@ class GameConfig:
     port_count: int
     """Number of ports / harbors (P)."""
 
-    # ── Derived ──────────────────────────────────────────────────────
+    # ── Derived token sizes ──────────────────────────────────────────
     state_token_size: int
-    """Compact-form token sequence length for this map + player count."""
+    """Compact-form token sequence length for game state serialization."""
+
+    placement_token_size: int
+    """Compact-form token sequence length for placement phase state."""
+
+    action_vocab_size: int
+    """Number of unique placement actions for this map (E * 2)."""
+
+    placement_vocab_size: int
+    """Combined placement embedding table size (state chars + action strings)."""
 
     # ── Victory / thresholds ─────────────────────────────────────────
     victory_points_to_win: int
@@ -69,9 +98,21 @@ class GameConfig:
     initial_placement_rounds: int
 
 
-def _token_size(t: int, v: int, e: int, p: int, n: int) -> int:
-    """Compute compact-form token sequence length."""
-    return (3 * t + 2 * v + e + p + 6) + 11 * n
+def _state_token_size(t: int, v: int, e: int, p: int, n: int) -> int:
+    """Compute compact-form game state token sequence length."""
+    return (3 * t + 2 * v + e + p + 5) + 11 * n
+
+
+def _placement_token_size(t: int, v: int, e: int, p: int) -> int:
+    """Compute compact-form placement phase state token sequence length."""
+    return 3 * t + p + 2 * v + e
+
+
+def _placement_state_vocab_size(player_count: int) -> int:
+    """Number of unique state characters in placement phase vocabulary."""
+    # 18 base chars (resource, port, pip, side, placement number minus overlap)
+    # plus (player_count + 1) player-id characters (_-+*^).
+    return player_count + 19
 
 
 def _make_config(
@@ -101,9 +142,14 @@ def _make_config(
     cfg.vertex_count = vertex_count
     cfg.edge_count = edge_count
     cfg.port_count = port_count
-    cfg.state_token_size = _token_size(
+    cfg.state_token_size = _state_token_size(
         tile_count, vertex_count, edge_count, port_count, player_count
     )
+    cfg.placement_token_size = _placement_token_size(
+        tile_count, vertex_count, edge_count, port_count
+    )
+    cfg.action_vocab_size = edge_count * 2
+    cfg.placement_vocab_size = _placement_state_vocab_size(player_count) + cfg.action_vocab_size
     cfg.victory_points_to_win = victory_points_to_win
     cfg.longest_road_minimum = longest_road_minimum
     cfg.largest_army_minimum = largest_army_minimum
@@ -180,6 +226,25 @@ SMALL_3P = _make_config(
     initial_placement_rounds=2,
 )
 
+STANDARD_2P = _make_config(
+    name="standard_2p",
+    map_name="standard",
+    player_count=2,
+    tile_count=_STD_T,
+    vertex_count=_STD_V,
+    edge_count=_STD_E,
+    port_count=_STD_P,
+    victory_points_to_win=10,
+    longest_road_minimum=5,
+    largest_army_minimum=3,
+    discard_threshold=7,
+    max_settlements=5,
+    max_cities=4,
+    max_roads=15,
+    resource_cards_per_type=19,
+    initial_placement_rounds=2,
+)
+
 STANDARD_3P = _make_config(
     name="standard_3p",
     map_name="standard",
@@ -222,6 +287,7 @@ ALL_CONFIGS: tuple[GameConfig, ...] = (
     MINI_2P,
     SMALL_2P,
     SMALL_3P,
+    STANDARD_2P,
     STANDARD_3P,
     STANDARD_4P,
 )
