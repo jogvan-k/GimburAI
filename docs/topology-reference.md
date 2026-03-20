@@ -3,7 +3,7 @@
 This document defines the coordinate system, element identities, and adjacency
 relationships for hex-based Catan board layouts. It is the canonical reference
 for the GimburAI engine. For the serialization format, see
-[state-serialization.md](state-serialization.md).
+[state-action-serialization.md](state-action-serialization.md).
 
 ---
 
@@ -137,7 +137,7 @@ plus some global/per-player scalars:
 
 Because every tile, vertex, and edge has a **fixed index**, the entire state can
 be serialized as a fixed-length vector of tokens (see
-[state-serialization.md](state-serialization.md)). Two states are identical if
+[state-action-serialization.md](state-action-serialization.md)). Two states are identical if
 and only if their serialized vectors are identical.
 
 ### What is NOT stored (derivable)
@@ -522,6 +522,75 @@ Each tile has exactly 6 boundary edges.
 | 27 | 6 |
 | 28 | 5 |
 | 29 | 6 |
+
+### 4.15 Action Table (60 actions)
+
+Each action represents a settlement vertex + road direction pair for the
+[placement action tokenizer](state-action-serialization.md#part-iii-placement-action-serialization).
+Sorted by vertex index, then direction.
+
+| Token | Action | Vertex | Direction | Edge |
+| --- | --- | --- | --- | --- |
+| 0 | 0SE | 0 | SE | 0 |
+| 1 | 0SW | 0 | SW | 2 |
+| 2 | 1SE | 1 | SE | 1 |
+| 3 | 1SW | 1 | SW | 4 |
+| 4 | 2NE | 2 | NE | 2 |
+| 5 | 2S | 2 | S | 3 |
+| 6 | 3NE | 3 | NE | 4 |
+| 7 | 3NW | 3 | NW | 0 |
+| 8 | 3S | 3 | S | 5 |
+| 9 | 4NW | 4 | NW | 1 |
+| 10 | 4S | 4 | S | 6 |
+| 11 | 5N | 5 | N | 3 |
+| 12 | 5SE | 5 | SE | 7 |
+| 13 | 5SW | 5 | SW | 10 |
+| 14 | 6N | 6 | N | 5 |
+| 15 | 6SE | 6 | SE | 8 |
+| 16 | 6SW | 6 | SW | 12 |
+| 17 | 7N | 7 | N | 6 |
+| 18 | 7SE | 7 | SE | 9 |
+| 19 | 7SW | 7 | SW | 14 |
+| 20 | 8NE | 8 | NE | 10 |
+| 21 | 8S | 8 | S | 11 |
+| 22 | 9NE | 9 | NE | 12 |
+| 23 | 9NW | 9 | NW | 7 |
+| 24 | 9S | 9 | S | 13 |
+| 25 | 10NE | 10 | NE | 14 |
+| 26 | 10NW | 10 | NW | 8 |
+| 27 | 10S | 10 | S | 15 |
+| 28 | 11NW | 11 | NW | 9 |
+| 29 | 11S | 11 | S | 16 |
+| 30 | 12N | 12 | N | 11 |
+| 31 | 12SE | 12 | SE | 17 |
+| 32 | 13N | 13 | N | 16 |
+| 33 | 13SW | 13 | SW | 24 |
+| 34 | 14N | 14 | N | 13 |
+| 35 | 14SE | 14 | SE | 18 |
+| 36 | 14SW | 14 | SW | 20 |
+| 37 | 15N | 15 | N | 15 |
+| 38 | 15SE | 15 | SE | 19 |
+| 39 | 15SW | 15 | SW | 22 |
+| 40 | 16NE | 16 | NE | 20 |
+| 41 | 16NW | 16 | NW | 17 |
+| 42 | 16S | 16 | S | 21 |
+| 43 | 17NE | 17 | NE | 22 |
+| 44 | 17NW | 17 | NW | 18 |
+| 45 | 17S | 17 | S | 23 |
+| 46 | 18NE | 18 | NE | 24 |
+| 47 | 18NW | 18 | NW | 19 |
+| 48 | 18S | 18 | S | 25 |
+| 49 | 19N | 19 | N | 21 |
+| 50 | 19SE | 19 | SE | 26 |
+| 51 | 20N | 20 | N | 23 |
+| 52 | 20SE | 20 | SE | 27 |
+| 53 | 20SW | 20 | SW | 28 |
+| 54 | 21N | 21 | N | 25 |
+| 55 | 21SW | 21 | SW | 29 |
+| 56 | 22NE | 22 | NE | 28 |
+| 57 | 22NW | 22 | NW | 26 |
+| 58 | 23NE | 23 | NE | 29 |
+| 59 | 23NW | 23 | NW | 27 |
 
 ---
 
@@ -926,6 +995,97 @@ Each tile has exactly 6 boundary edges.
 | 38 | 8 |
 | 39 | 9 |
 | 40 | 9 |
+
+### 5.15 Action Table (82 actions)
+
+Each action represents a settlement vertex + road direction pair for the
+[placement action tokenizer](state-action-serialization.md#part-iii-placement-action-serialization).
+Sorted by vertex index, then direction.
+
+| Token | Action | Vertex | Direction | Edge |
+| --- | --- | --- | --- | --- |
+| 0 | 0SE | 0 | SE | 0 |
+| 1 | 0SW | 0 | SW | 3 |
+| 2 | 1SE | 1 | SE | 1 |
+| 3 | 1SW | 1 | SW | 5 |
+| 4 | 2SE | 2 | SE | 2 |
+| 5 | 2SW | 2 | SW | 7 |
+| 6 | 3NE | 3 | NE | 3 |
+| 7 | 3S | 3 | S | 4 |
+| 8 | 4NE | 4 | NE | 5 |
+| 9 | 4NW | 4 | NW | 0 |
+| 10 | 4S | 4 | S | 6 |
+| 11 | 5NE | 5 | NE | 7 |
+| 12 | 5NW | 5 | NW | 1 |
+| 13 | 5S | 5 | S | 8 |
+| 14 | 6NW | 6 | NW | 2 |
+| 15 | 6S | 6 | S | 9 |
+| 16 | 7N | 7 | N | 4 |
+| 17 | 7SE | 7 | SE | 10 |
+| 18 | 7SW | 7 | SW | 14 |
+| 19 | 8N | 8 | N | 6 |
+| 20 | 8SE | 8 | SE | 11 |
+| 21 | 8SW | 8 | SW | 16 |
+| 22 | 9N | 9 | N | 8 |
+| 23 | 9SE | 9 | SE | 12 |
+| 24 | 9SW | 9 | SW | 18 |
+| 25 | 10N | 10 | N | 9 |
+| 26 | 10SE | 10 | SE | 13 |
+| 27 | 10SW | 10 | SW | 20 |
+| 28 | 11NE | 11 | NE | 14 |
+| 29 | 11S | 11 | S | 15 |
+| 30 | 12NE | 12 | NE | 16 |
+| 31 | 12NW | 12 | NW | 10 |
+| 32 | 12S | 12 | S | 17 |
+| 33 | 13NE | 13 | NE | 18 |
+| 34 | 13NW | 13 | NW | 11 |
+| 35 | 13S | 13 | S | 19 |
+| 36 | 14NE | 14 | NE | 20 |
+| 37 | 14NW | 14 | NW | 12 |
+| 38 | 14S | 14 | S | 21 |
+| 39 | 15NW | 15 | NW | 13 |
+| 40 | 15S | 15 | S | 22 |
+| 41 | 16N | 16 | N | 15 |
+| 42 | 16SE | 16 | SE | 23 |
+| 43 | 17N | 17 | N | 17 |
+| 44 | 17SE | 17 | SE | 24 |
+| 45 | 17SW | 17 | SW | 27 |
+| 46 | 18N | 18 | N | 19 |
+| 47 | 18SE | 18 | SE | 25 |
+| 48 | 18SW | 18 | SW | 29 |
+| 49 | 19N | 19 | N | 21 |
+| 50 | 19SE | 19 | SE | 26 |
+| 51 | 19SW | 19 | SW | 31 |
+| 52 | 20N | 20 | N | 22 |
+| 53 | 20SW | 20 | SW | 33 |
+| 54 | 21NE | 21 | NE | 27 |
+| 55 | 21NW | 21 | NW | 23 |
+| 56 | 21S | 21 | S | 28 |
+| 57 | 22NE | 22 | NE | 29 |
+| 58 | 22NW | 22 | NW | 24 |
+| 59 | 22S | 22 | S | 30 |
+| 60 | 23NE | 23 | NE | 31 |
+| 61 | 23NW | 23 | NW | 25 |
+| 62 | 23S | 23 | S | 32 |
+| 63 | 24NE | 24 | NE | 33 |
+| 64 | 24NW | 24 | NW | 26 |
+| 65 | 24S | 24 | S | 34 |
+| 66 | 25N | 25 | N | 28 |
+| 67 | 25SE | 25 | SE | 35 |
+| 68 | 26N | 26 | N | 30 |
+| 69 | 26SE | 26 | SE | 36 |
+| 70 | 26SW | 26 | SW | 38 |
+| 71 | 27N | 27 | N | 32 |
+| 72 | 27SE | 27 | SE | 37 |
+| 73 | 27SW | 27 | SW | 39 |
+| 74 | 28N | 28 | N | 34 |
+| 75 | 28SW | 28 | SW | 40 |
+| 76 | 29NE | 29 | NE | 38 |
+| 77 | 29NW | 29 | NW | 35 |
+| 78 | 30NE | 30 | NE | 39 |
+| 79 | 30NW | 30 | NW | 36 |
+| 80 | 31NE | 31 | NE | 40 |
+| 81 | 31NW | 31 | NW | 37 |
 
 ---
 
@@ -1546,6 +1706,159 @@ Each vertex touches 1, 2, or 3 on-board tiles.
 | 69 | 16 |
 | 70 | 17 |
 | 71 | 18 |
+
+### 6.15 Action Table (144 actions)
+
+Each action represents a settlement vertex + road direction pair for the
+[placement action tokenizer](state-action-serialization.md#part-iii-placement-action-serialization).
+Sorted by vertex index, then direction.
+
+| Token | Action | Vertex | Direction | Edge |
+| --- | --- | --- | --- | --- |
+| 0 | 0SE | 0 | SE | 0 |
+| 1 | 0SW | 0 | SW | 3 |
+| 2 | 1SE | 1 | SE | 1 |
+| 3 | 1SW | 1 | SW | 5 |
+| 4 | 2SE | 2 | SE | 2 |
+| 5 | 2SW | 2 | SW | 7 |
+| 6 | 3NE | 3 | NE | 3 |
+| 7 | 3S | 3 | S | 4 |
+| 8 | 4NE | 4 | NE | 5 |
+| 9 | 4NW | 4 | NW | 0 |
+| 10 | 4S | 4 | S | 6 |
+| 11 | 5NE | 5 | NE | 7 |
+| 12 | 5NW | 5 | NW | 1 |
+| 13 | 5S | 5 | S | 8 |
+| 14 | 6NW | 6 | NW | 2 |
+| 15 | 6S | 6 | S | 9 |
+| 16 | 7N | 7 | N | 4 |
+| 17 | 7SE | 7 | SE | 10 |
+| 18 | 7SW | 7 | SW | 14 |
+| 19 | 8N | 8 | N | 6 |
+| 20 | 8SE | 8 | SE | 11 |
+| 21 | 8SW | 8 | SW | 16 |
+| 22 | 9N | 9 | N | 8 |
+| 23 | 9SE | 9 | SE | 12 |
+| 24 | 9SW | 9 | SW | 18 |
+| 25 | 10N | 10 | N | 9 |
+| 26 | 10SE | 10 | SE | 13 |
+| 27 | 10SW | 10 | SW | 20 |
+| 28 | 11NE | 11 | NE | 14 |
+| 29 | 11S | 11 | S | 15 |
+| 30 | 12NE | 12 | NE | 16 |
+| 31 | 12NW | 12 | NW | 10 |
+| 32 | 12S | 12 | S | 17 |
+| 33 | 13NE | 13 | NE | 18 |
+| 34 | 13NW | 13 | NW | 11 |
+| 35 | 13S | 13 | S | 19 |
+| 36 | 14NE | 14 | NE | 20 |
+| 37 | 14NW | 14 | NW | 12 |
+| 38 | 14S | 14 | S | 21 |
+| 39 | 15NW | 15 | NW | 13 |
+| 40 | 15S | 15 | S | 22 |
+| 41 | 16N | 16 | N | 15 |
+| 42 | 16SE | 16 | SE | 23 |
+| 43 | 16SW | 16 | SW | 28 |
+| 44 | 17N | 17 | N | 17 |
+| 45 | 17SE | 17 | SE | 24 |
+| 46 | 17SW | 17 | SW | 30 |
+| 47 | 18N | 18 | N | 19 |
+| 48 | 18SE | 18 | SE | 25 |
+| 49 | 18SW | 18 | SW | 32 |
+| 50 | 19N | 19 | N | 21 |
+| 51 | 19SE | 19 | SE | 26 |
+| 52 | 19SW | 19 | SW | 34 |
+| 53 | 20N | 20 | N | 22 |
+| 54 | 20SE | 20 | SE | 27 |
+| 55 | 20SW | 20 | SW | 36 |
+| 56 | 21NE | 21 | NE | 28 |
+| 57 | 21S | 21 | S | 29 |
+| 58 | 22NE | 22 | NE | 30 |
+| 59 | 22NW | 22 | NW | 23 |
+| 60 | 22S | 22 | S | 31 |
+| 61 | 23NE | 23 | NE | 32 |
+| 62 | 23NW | 23 | NW | 24 |
+| 63 | 23S | 23 | S | 33 |
+| 64 | 24NE | 24 | NE | 34 |
+| 65 | 24NW | 24 | NW | 25 |
+| 66 | 24S | 24 | S | 35 |
+| 67 | 25NE | 25 | NE | 36 |
+| 68 | 25NW | 25 | NW | 26 |
+| 69 | 25S | 25 | S | 37 |
+| 70 | 26NW | 26 | NW | 27 |
+| 71 | 26S | 26 | S | 38 |
+| 72 | 27N | 27 | N | 29 |
+| 73 | 27SE | 27 | SE | 39 |
+| 74 | 28N | 28 | N | 38 |
+| 75 | 28SW | 28 | SW | 52 |
+| 76 | 29N | 29 | N | 31 |
+| 77 | 29SE | 29 | SE | 40 |
+| 78 | 29SW | 29 | SW | 44 |
+| 79 | 30N | 30 | N | 33 |
+| 80 | 30SE | 30 | SE | 41 |
+| 81 | 30SW | 30 | SW | 46 |
+| 82 | 31N | 31 | N | 35 |
+| 83 | 31SE | 31 | SE | 42 |
+| 84 | 31SW | 31 | SW | 48 |
+| 85 | 32N | 32 | N | 37 |
+| 86 | 32SE | 32 | SE | 43 |
+| 87 | 32SW | 32 | SW | 50 |
+| 88 | 33NE | 33 | NE | 44 |
+| 89 | 33NW | 33 | NW | 39 |
+| 90 | 33S | 33 | S | 45 |
+| 91 | 34NE | 34 | NE | 46 |
+| 92 | 34NW | 34 | NW | 40 |
+| 93 | 34S | 34 | S | 47 |
+| 94 | 35NE | 35 | NE | 48 |
+| 95 | 35NW | 35 | NW | 41 |
+| 96 | 35S | 35 | S | 49 |
+| 97 | 36NE | 36 | NE | 50 |
+| 98 | 36NW | 36 | NW | 42 |
+| 99 | 36S | 36 | S | 51 |
+| 100 | 37NE | 37 | NE | 52 |
+| 101 | 37NW | 37 | NW | 43 |
+| 102 | 37S | 37 | S | 53 |
+| 103 | 38N | 38 | N | 45 |
+| 104 | 38SE | 38 | SE | 54 |
+| 105 | 39N | 39 | N | 47 |
+| 106 | 39SE | 39 | SE | 55 |
+| 107 | 39SW | 39 | SW | 58 |
+| 108 | 40N | 40 | N | 49 |
+| 109 | 40SE | 40 | SE | 56 |
+| 110 | 40SW | 40 | SW | 60 |
+| 111 | 41N | 41 | N | 51 |
+| 112 | 41SE | 41 | SE | 57 |
+| 113 | 41SW | 41 | SW | 62 |
+| 114 | 42N | 42 | N | 53 |
+| 115 | 42SW | 42 | SW | 64 |
+| 116 | 43NE | 43 | NE | 58 |
+| 117 | 43NW | 43 | NW | 54 |
+| 118 | 43S | 43 | S | 59 |
+| 119 | 44NE | 44 | NE | 60 |
+| 120 | 44NW | 44 | NW | 55 |
+| 121 | 44S | 44 | S | 61 |
+| 122 | 45NE | 45 | NE | 62 |
+| 123 | 45NW | 45 | NW | 56 |
+| 124 | 45S | 45 | S | 63 |
+| 125 | 46NE | 46 | NE | 64 |
+| 126 | 46NW | 46 | NW | 57 |
+| 127 | 46S | 46 | S | 65 |
+| 128 | 47N | 47 | N | 59 |
+| 129 | 47SE | 47 | SE | 66 |
+| 130 | 48N | 48 | N | 61 |
+| 131 | 48SE | 48 | SE | 67 |
+| 132 | 48SW | 48 | SW | 69 |
+| 133 | 49N | 49 | N | 63 |
+| 134 | 49SE | 49 | SE | 68 |
+| 135 | 49SW | 49 | SW | 70 |
+| 136 | 50N | 50 | N | 65 |
+| 137 | 50SW | 50 | SW | 71 |
+| 138 | 51NE | 51 | NE | 69 |
+| 139 | 51NW | 51 | NW | 66 |
+| 140 | 52NE | 52 | NE | 70 |
+| 141 | 52NW | 52 | NW | 67 |
+| 142 | 53NE | 53 | NE | 71 |
+| 143 | 53NW | 53 | NW | 68 |
 
 ---
 
