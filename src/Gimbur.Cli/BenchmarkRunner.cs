@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using System.Text.Encodings.Web;
 using Gimbur;
 using Gimbur.Rules;
 using Kjarni;
@@ -653,6 +654,7 @@ internal class BenchmarkRunner
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = true,
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         };
 
         var output = new

@@ -121,6 +121,12 @@ internal static class RootCommandFactory
             DefaultValueFactory = _ => ExportFormat.Jsonl,
         };
 
+        var exportTypeOption = new Option<ExportType>("--export-type")
+        {
+            Description = "Export schema: GameState (default) or InitialPlacement (placement-only actions)",
+            DefaultValueFactory = _ => ExportType.GameState,
+        };
+
         var searchTimeOption = new Option<int>("--search-time")
         {
             Description = "MCTS search time limit in milliseconds per decision",
@@ -173,6 +179,7 @@ internal static class RootCommandFactory
           noOfPlayersOption,
           exportOption,
           exportFormatOption,
+          exportTypeOption,
           searchTimeOption,
           maxSimulationsOption,
           maxRolloutDepthOption,
@@ -192,6 +199,7 @@ internal static class RootCommandFactory
             string? verbosity = ParseVerbosity(parseResult, globals);
             FileInfo? export = parseResult.GetValue(exportOption);
             ExportFormat exportFormat = parseResult.GetValue(exportFormatOption);
+            ExportType exportType = parseResult.GetValue(exportTypeOption);
             int searchTimeMs = parseResult.GetValue(searchTimeOption);
             int maxSimulations = parseResult.GetValue(maxSimulationsOption);
             int maxRolloutDepth = parseResult.GetValue(maxRolloutDepthOption);
@@ -200,6 +208,10 @@ internal static class RootCommandFactory
             bool prior = parseResult.GetValue(priorOption);
             string nnUrl = parseResult.GetValue(nnUrlOption)!;
             bool placementOnly = parseResult.GetValue(placementOnlyOption);
+
+            // Auto-enable placement-only mode when InitialPlacement export is selected.
+            if (exportType == ExportType.InitialPlacement)
+                placementOnly = true;
 
             // Auto-enable prior when --nn-url is explicitly provided.
             if (!prior && parseResult.Tokens.Any(t => t.Value == "--nn-url"))
@@ -213,6 +225,7 @@ internal static class RootCommandFactory
                 MapConfig = mapConfig,
                 ExportPath = export,
                 ExportFormat = exportFormat,
+                ExportType = exportType,
                 Verbosity = verbosity ?? "normal",
                 SearchTimeMs = searchTimeMs,
                 MaxSimulations = maxSimulations,

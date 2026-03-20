@@ -12,7 +12,7 @@ namespace Gimbur;
 /// Each edge can be described from either endpoint, producing 2 action strings
 /// per edge. Vocabulary sizes: mini=60, small=82, standard=144.
 /// </remarks>
-internal sealed class PlacementActionSerializer
+public sealed class PlacementActionSerializer
 {
     /// <summary>
     /// Describes a single entry in the action vocabulary: a settlement vertex

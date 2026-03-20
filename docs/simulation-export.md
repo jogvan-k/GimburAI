@@ -1,0 +1,286 @@
+# Simulation Export Data Schema
+
+This document defines the JSON output schemas for the `gimbur simulate --export` command. The `--export-type` argument controls which schema is used.
+
+## CLI Arguments
+
+| Argument | Values | Default | Description |
+|----------|--------|---------|-------------|
+| `--export` | `<path>` | *(none)* | File path for JSONL or directory path for JSON export. Required for any export. |
+| `--export-format` | `jsonl`, `json` | `jsonl` | `jsonl`: all games in one file, one JSON object per line. `json`: one file per game in the directory. |
+| `--export-type` | `GameState`, `InitialPlacement` | `GameState` | Controls the output schema. See below. |
+| `--no-symmetries` | *(flag)* | *(off)* | Disable board symmetry permutations in exported data. |
+
+When `--export-type InitialPlacement` is specified, `--placement-only` is automatically enabled.
+
+---
+
+## GameState Export Schema
+
+*Default export type. Produces training data for the **GimburStateEvaluator** model.*
+
+Each game is exported as a single JSON object. In JSONL format, each line is one game.
+
+### Game Object
+
+```json
+{
+  "seed": 42,
+  "map": "mini",
+  "players": 2,
+  "winner": 1,
+  "turns": 47,
+  "constraints": {
+    "searchTimeMs": 1000,
+    "maxSimulations": 2147483647,
+    "maxRolloutDepth": 500,
+    "actionRolloutLimit": 2147483647
+  },
+  "board": {
+    "serialized": "w5lb3ls4lW3hd0nW4ho2l|gsgbgw",
+    "permutations": [
+      "b3lW3hd0nW4ho2lw5l|sgbgwg",
+      "..."
+    ]
+  },
+  "states": ["...see State Object below..."],
+  "priorsCalculated": null
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `seed` | int | Deterministic random seed for this game. |
+| `map` | string | Map configuration identifier (`mini`, `small`, `standard`). |
+| `players` | int | Number of players in the game. |
+| `winner` | int | 1-based player index of the winner, or 0 if no winner (e.g. game aborted). |
+| `turns` | int | Total number of completed turns. |
+| `constraints` | object | MCTS search parameters used for this game. |
+| `board.serialized` | string | Board serialization (tiles and ports only): `tiles\|ports`. See [state-action-serialization.md](state-action-serialization.md) Part I sections 1-2. |
+| `board.permutations` | string[] | Board string under each non-trivial symmetry permutation. Empty array when symmetries are disabled or unavailable. |
+| `states` | State[] | Array of state records, one per MCTS decision point. |
+| `priorsCalculated` | object? | Per-depth count of NN prior states evaluated across all decisions. `null` when priors were not used. Keys are depth strings (`"0"`, `"1"`, ...), values are counts. |
+
+### State Object (GameState)
+
+```json
+{
+  "playerTurn": 1,
+  "serializedState": "4|-t|__|._._._._._._v-._._._._v+._._._._._._._._._|_____-_______+________________|21010/00130|0/0|00000/00000",
+  "simulations": 5000,
+  "elapsedMs": 1000,
+  "winRate": 0.64,
+  "wins": [3200.0, 1800.0],
+  "bestActionWinRate": 0.68,
+  "bestActionWins": [340.0, 160.0],
+  "bestActionRollouts": 500,
+  "reachedTerminal": false,
+  "priorsRequested": 0,
+  "priorsApplied": 0,
+  "priorStatesEvaluated": 0,
+  "permutations": [
+    "...",
+    "..."
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `playerTurn` | int | 1-based player index of the acting player. |
+| `serializedState` | string | State-only serialization (8 pipe-delimited sections: robber through devCards). See [state-action-serialization.md](state-action-serialization.md) Part I sections 3-10. |
+| `simulations` | int | Total MCTS rollouts performed for this decision. |
+| `elapsedMs` | int | Wall-clock time spent on MCTS search (milliseconds). |
+| `winRate` | float | Acting player's win rate at the MCTS root (wins / rollouts). |
+| `wins` | float[] | Raw MCTS win counts at the root, 0-indexed (index 0 = player 1). |
+| `bestActionWinRate` | float | Acting player's win rate at the child state reached by the best action. |
+| `bestActionWins` | float[] | MCTS win counts at the best action's child state. |
+| `bestActionRollouts` | int | Total rollouts at the best action's child state. For stochastic actions this is summed across outcomes. |
+| `reachedTerminal` | bool | Whether MCTS fully resolved the tree (all root actions are Terminal). |
+| `priorsRequested` | int | Number of NN prior requests sent during this search. |
+| `priorsApplied` | int | Number of NN prior responses applied to tree nodes. |
+| `priorStatesEvaluated` | int | Number of individual states evaluated by the NN server. |
+| `permutations` | string[] | `serializedState` under each non-trivial symmetry permutation. Same order as `board.permutations`. |
+
+### Symmetry Permutations (GameState)
+
+Board symmetry permutations rearrange position-dependent data (tile indices, vertex indices, edge indices) while leaving player-identity and per-player sections unchanged.
+
+- `board.permutations[i]` is the board string under symmetry `i`.
+- `states[j].permutations[i]` is the state-only string under the same symmetry `i`.
+- Both arrays have the same length and use the same permutation order.
+
+---
+
+## InitialPlacement Export Schema
+
+*Produces training data for the **GimburPlacementActionEvaluator** model. Records all candidate composite (settlement + road) actions with per-action MCTS statistics.*
+
+When `--export-type InitialPlacement` is specified, the game loop runs in placement-only mode. MCTS search is performed at settlement placement steps (`PlaceFirstSettlement` and `PlaceSecondSettlement`). Each MCTS root action is a `PlaceSettlementAction`, and its child state has `PlaceRoadAction` choices. The export combines these into composite actions serialized as `<vertex><direction>` strings (see [state-action-serialization.md](state-action-serialization.md) Part III).
+
+Player 1 is always the player that placed the first settlement. No player rotation is applied.
+
+### Game Object
+
+```json
+{
+  "seed": 42,
+  "map": "mini",
+  "players": 2,
+  "exportType": "initialPlacement",
+  "constraints": {
+    "searchTimeMs": 1000,
+    "maxSimulations": 2147483647,
+    "maxRolloutDepth": 500,
+    "actionRolloutLimit": 2147483647
+  },
+  "board": {
+    "serialized": "w5lb3ls4lW3hd0nW4ho2l|gsgbgw",
+    "permutations": [
+      "b3lW3hd0nW4ho2lw5l|sgbgwg",
+      "..."
+    ]
+  },
+  "states": ["...see Placement State Object below..."]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `seed` | int | Deterministic random seed for this game. |
+| `map` | string | Map configuration identifier. |
+| `players` | int | Number of players. |
+| `exportType` | string | Always `"initialPlacement"`. |
+| `constraints` | object | MCTS search parameters (same structure as GameState). |
+| `board.serialized` | string | Board serialization (tiles and ports): `tiles\|ports`. |
+| `board.permutations` | string[] | Board string under each symmetry permutation. |
+| `states` | PlacementState[] | Array of placement state records, one per settlement decision. |
+
+Note: The `winner` and `turns` fields from the GameState schema are omitted since placement-only games do not run to completion.
+
+### Placement State Object
+
+```json
+{
+  "playerTurn": 1,
+  "stage": "a",
+  "serializedState": "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|._._._._._._._._._._._._._._._._._._._._._._._._|______________________________|",
+  "simulations": 5000,
+  "elapsedMs": 1000,
+  "actions": [
+    {
+      "action": "6N",
+      "wins": [320.0, 180.0],
+      "rollouts": 500,
+      "winRate": 0.64,
+      "permutations": ["8SE", "10SW", "14N", "16SE"]
+    },
+    {
+      "action": "6SW",
+      "wins": [280.0, 220.0],
+      "rollouts": 480,
+      "winRate": 0.583,
+      "permutations": ["8N", "10SE", "14SW", "16N"]
+    }
+  ],
+  "permutations": [
+    "b3lW3hd0nW4ho2lw5l|sgbgwg|._._._._._._._._._._._._._._._._._._._._._._._._|______________________________|",
+    "..."
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `playerTurn` | int | 1-based player index of the acting player. |
+| `stage` | string | Turn stage character: `a` (place 1st settlement) or `f` (place 2nd settlement). See [state-action-serialization.md](state-action-serialization.md) Part I section 4. |
+| `serializedState` | string | 4-section placement phase state: `tiles\|ports\|placementVertices\|edges`. See [state-action-serialization.md](state-action-serialization.md) Part II. |
+| `simulations` | int | Total MCTS rollouts performed for this decision. |
+| `elapsedMs` | int | Wall-clock time spent on MCTS search (milliseconds). |
+| `actions` | Action[] | All candidate composite actions with per-action MCTS statistics. |
+| `permutations` | string[] | `serializedState` under each non-trivial symmetry permutation. Same order as `board.permutations`. |
+
+### Action Object
+
+Each action represents a composite settlement + road placement. The action string encodes the settlement vertex and road direction as defined in [state-action-serialization.md](state-action-serialization.md) Part III.
+
+```json
+{
+  "action": "6N",
+  "wins": [320.0, 180.0],
+  "rollouts": 500,
+  "winRate": 0.64,
+  "permutations": ["8SE", "10SW", "14N", "16SE"]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `action` | string | Composite action string: `<vertex_index><road_direction>` (e.g. `6N`, `12NW`, `53NE`). |
+| `wins` | float[] | MCTS win counts at the road grandchild node, 0-indexed (index 0 = player 1). See [Composite Action Stats](#composite-action-stats). |
+| `rollouts` | int | Total rollouts at the road grandchild node. |
+| `winRate` | float | Acting player's win rate (wins[playerIndex] / rollouts). |
+| `permutations` | string[] | Action string under each symmetry permutation. Same order as `board.permutations`. The wins, rollouts, and winRate are identical under permutation and are not repeated. |
+
+### Composite Action Stats
+
+During initial placement, the MCTS tree has this structure at each settlement decision:
+
+```
+Root (settlement choices)
+ +-- PlaceSettlement(v=6)
+ |    +-- PlaceRoad(e=5)   -> road grandchild: wins, rollouts
+ |    +-- PlaceRoad(e=7)   -> road grandchild: wins, rollouts
+ |    +-- PlaceRoad(e=8)   -> road grandchild: wins, rollouts
+ +-- PlaceSettlement(v=10)
+ |    +-- PlaceRoad(e=12)  -> road grandchild: wins, rollouts
+ |    +-- PlaceRoad(e=14)  -> road grandchild: wins, rollouts
+ ...etc
+```
+
+Each composite action maps to a specific road grandchild. The `wins` and `rollouts` are read directly from that grandchild MCTS node. This provides per-(vertex, road) granularity, allowing the model to learn directional road preferences.
+
+For unexplored actions (where MCTS did not expand the settlement or road), the action is included with `wins: []`, `rollouts: 0`, `winRate: 0`.
+
+### Symmetry Permutations (InitialPlacement)
+
+Board symmetry permutations transform vertex and edge indices. For placement data, both the state and the actions must be permuted:
+
+1. **State permutation**: The 4-section placement state is permuted via `BoardSymmetry.PermutePlacementState`, which rearranges tiles, ports, vertices, and edges according to the symmetry.
+2. **Action permutation**: Each `(vertex, edge)` pair is mapped through the symmetry's vertex and edge permutation arrays to produce a new `(vertex', edge')`, which is then re-serialized as a new action string via `PlacementActionSerializer`.
+
+The `wins`, `rollouts`, and `winRate` for a permuted action are identical to the original — only the action identity changes. This avoids redundant data in the export.
+
+Example with mini map (5 symmetry permutations):
+
+```json
+{
+  "action": "6N",
+  "wins": [320.0, 180.0],
+  "rollouts": 500,
+  "winRate": 0.64,
+  "permutations": ["8SE", "10SW", "14N", "16SE"]
+}
+```
+
+Here `6N` under rotational symmetries maps to `8SE`, `10SW`, `14N`, and `16SE` respectively. The training pipeline can expand each sample into 1 + len(permutations) training examples by pairing each permuted state with its permuted action list.
+
+---
+
+## Export Formats
+
+### JSONL (default)
+
+All games are written to a single file, one JSON object per line. Each line is a complete game object as described above. Thread-safe: games may appear in any order.
+
+```
+gimbur simulate --games 10 --export data/training.jsonl --export-type GameState
+```
+
+### JSON
+
+Each game is written to its own file with a random GUID filename inside the specified directory.
+
+```
+gimbur simulate --games 10 --export data/games/ --export-format json --export-type InitialPlacement
+```
