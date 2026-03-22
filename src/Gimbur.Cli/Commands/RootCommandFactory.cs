@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Text.Json;
 using System.CommandLine.Parsing;
 using Gimbur.Cli;
 
@@ -192,6 +193,12 @@ internal static class RootCommandFactory
 
         command.SetAction(parseResult =>
         {
+            // ── Load config file if provided ─────────────────────────
+            JsonElement cfg = default;
+            FileInfo? configFile = parseResult.GetValue(globals.Config);
+            if (configFile is not null)
+                cfg = ConfigLoader.Load(configFile);
+
             uint noOfGames = parseResult.GetValue(noOfGamesOption);
             int seed = parseResult.GetValue(globals.Seed) ?? new Random().Next();
             int noOfPlayers = parseResult.GetValue(noOfPlayersOption);
@@ -208,6 +215,55 @@ internal static class RootCommandFactory
             bool prior = parseResult.GetValue(priorOption);
             string nnUrl = parseResult.GetValue(nnUrlOption)!;
             bool placementOnly = parseResult.GetValue(placementOnlyOption);
+
+            // ── Apply config file defaults for simulate ──────────────
+            if (cfg.ValueKind == JsonValueKind.Object)
+            {
+                if (!WasProvided(parseResult, "--games", "-g"))
+                    noOfGames = ConfigLoader.GetUInt(cfg, "games") ?? noOfGames;
+                if (!WasProvided(parseResult, "--seed"))
+                    seed = ConfigLoader.GetInt(cfg, "seed") ?? seed;
+                if (!WasProvided(parseResult, "--players", "-p"))
+                    noOfPlayers = ConfigLoader.GetInt(cfg, "players") ?? noOfPlayers;
+                if (!WasProvided(parseResult, "--map-config"))
+                    mapConfig = ConfigLoader.GetString(cfg, "mapConfig") ?? mapConfig;
+                if (!WasProvided(parseResult, "--export"))
+                {
+                    var exportPath = ConfigLoader.GetString(cfg, "export");
+                    if (exportPath is not null)
+                        export = new FileInfo(exportPath);
+                }
+                if (!WasProvided(parseResult, "--export-format"))
+                {
+                    var fmt = ConfigLoader.GetString(cfg, "exportFormat");
+                    if (fmt is not null && Enum.TryParse<ExportFormat>(fmt, ignoreCase: true, out var ef))
+                        exportFormat = ef;
+                }
+                if (!WasProvided(parseResult, "--export-type"))
+                {
+                    var et = ConfigLoader.GetString(cfg, "exportType");
+                    if (et is not null && Enum.TryParse<ExportType>(et, ignoreCase: true, out var etv))
+                        exportType = etv;
+                }
+                if (!WasProvided(parseResult, "--search-time"))
+                    searchTimeMs = ConfigLoader.GetInt(cfg, "searchTimeMs") ?? searchTimeMs;
+                if (!WasProvided(parseResult, "--max-simulations"))
+                    maxSimulations = ConfigLoader.GetInt(cfg, "maxSimulations") ?? maxSimulations;
+                if (!WasProvided(parseResult, "--max-rollout-depth"))
+                    maxRolloutDepth = ConfigLoader.GetInt(cfg, "maxRolloutDepth") ?? maxRolloutDepth;
+                if (!WasProvided(parseResult, "--action-rollout-limit"))
+                    actionRolloutLimit = ConfigLoader.GetInt(cfg, "actionRolloutLimit") ?? actionRolloutLimit;
+                if (!WasProvided(parseResult, "--no-symmetries"))
+                    noSymmetries = ConfigLoader.GetBool(cfg, "noSymmetries") ?? noSymmetries;
+                if (!WasProvided(parseResult, "--prior"))
+                    prior = ConfigLoader.GetBool(cfg, "prior") ?? prior;
+                if (!WasProvided(parseResult, "--nn-url"))
+                    nnUrl = ConfigLoader.GetString(cfg, "nnUrl") ?? nnUrl;
+                if (!WasProvided(parseResult, "--placement-only"))
+                    placementOnly = ConfigLoader.GetBool(cfg, "placementOnly") ?? placementOnly;
+                if (!WasProvided(parseResult, "--verbosity", "-v") && !WasProvided(parseResult, "-q") && !WasProvided(parseResult, "--verbose"))
+                    verbosity = ConfigLoader.GetString(cfg, "verbosity") ?? verbosity;
+            }
 
             // Auto-enable placement-only mode when InitialPlacement export is selected.
             if (exportType == ExportType.InitialPlacement)
@@ -274,7 +330,7 @@ internal static class RootCommandFactory
         var playersOption = new Option<string[]>("--ai")
         {
             Description = "AI for each player seat (e.g. --ai random greedy mcts nn). " +
-                          "Available: random, greedy, mcts, nn",
+                          "Available: random, greedy, mcts, nn, nnplacement, nnstate",
             AllowMultipleArgumentsPerToken = true,
         };
         playersOption.DefaultValueFactory = _ => new[] { "random", "greedy" };
@@ -321,6 +377,12 @@ internal static class RootCommandFactory
 
         command.SetAction(parseResult =>
         {
+            // ── Load config file if provided ─────────────────────────
+            JsonElement cfg = default;
+            FileInfo? configFile = parseResult.GetValue(globals.Config);
+            if (configFile is not null)
+                cfg = ConfigLoader.Load(configFile);
+
             uint noOfGames = parseResult.GetValue(noOfGamesOption);
             int seed = parseResult.GetValue(globals.Seed) ?? new Random().Next();
             string? mapConfig = parseResult.GetValue(globals.MapConfiguration);
@@ -331,6 +393,39 @@ internal static class RootCommandFactory
             int maxSimulations = parseResult.GetValue(maxSimulationsOption);
             int maxRolloutDepth = parseResult.GetValue(maxRolloutDepthOption);
             string nnUrl = parseResult.GetValue(nnUrlOption)!;
+
+            // ── Apply config file defaults for benchmark ─────────────
+            if (cfg.ValueKind == JsonValueKind.Object)
+            {
+                if (!WasProvided(parseResult, "--games", "-g"))
+                    noOfGames = ConfigLoader.GetUInt(cfg, "games") ?? noOfGames;
+                if (!WasProvided(parseResult, "--seed"))
+                    seed = ConfigLoader.GetInt(cfg, "seed") ?? seed;
+                if (!WasProvided(parseResult, "--map-config"))
+                    mapConfig = ConfigLoader.GetString(cfg, "mapConfig") ?? mapConfig;
+                if (!WasProvided(parseResult, "--output", "-o"))
+                {
+                    var outputPath = ConfigLoader.GetString(cfg, "output");
+                    if (outputPath is not null)
+                        output = new FileInfo(outputPath);
+                }
+                if (!WasProvided(parseResult, "--ai"))
+                {
+                    var ai = ConfigLoader.GetStringArray(cfg, "ai");
+                    if (ai is not null)
+                        aiNames = ai;
+                }
+                if (!WasProvided(parseResult, "--search-time"))
+                    searchTimeMs = ConfigLoader.GetInt(cfg, "searchTimeMs") ?? searchTimeMs;
+                if (!WasProvided(parseResult, "--max-simulations"))
+                    maxSimulations = ConfigLoader.GetInt(cfg, "maxSimulations") ?? maxSimulations;
+                if (!WasProvided(parseResult, "--max-rollout-depth"))
+                    maxRolloutDepth = ConfigLoader.GetInt(cfg, "maxRolloutDepth") ?? maxRolloutDepth;
+                if (!WasProvided(parseResult, "--nn-url"))
+                    nnUrl = ConfigLoader.GetString(cfg, "nnUrl") ?? nnUrl;
+                if (!WasProvided(parseResult, "--verbosity", "-v") && !WasProvided(parseResult, "-q") && !WasProvided(parseResult, "--verbose"))
+                    verbosity = ConfigLoader.GetString(cfg, "verbosity") ?? verbosity;
+            }
 
             var aiKinds = new AiKind[aiNames.Length];
             for (var i = 0; i < aiNames.Length; i++)
@@ -374,5 +469,23 @@ internal static class RootCommandFactory
     private static bool TryParseAiKind(string name, out AiKind kind)
     {
         return Enum.TryParse(name, ignoreCase: true, out kind);
+    }
+
+    /// <summary>
+    /// Returns true if any of the given option names appear as tokens in the
+    /// parse result, indicating the user explicitly provided the option on
+    /// the command line.
+    /// </summary>
+    private static bool WasProvided(ParseResult parseResult, params string[] optionNames)
+    {
+        foreach (var token in parseResult.Tokens)
+        {
+            foreach (var name in optionNames)
+            {
+                if (token.Value == name) return true;
+            }
+        }
+
+        return false;
     }
 }

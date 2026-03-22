@@ -21,6 +21,8 @@ internal enum AiKind
     Greedy,
     Mcts,
     Nn,
+    NnPlacement,
+    NnState,
 }
 
 /// <summary>
@@ -324,7 +326,7 @@ internal class BenchmarkRunner
             return;
         }
 
-        if (_options.Players.Contains(AiKind.Nn))
+        if (UsesNn(_options.Players))
         {
             _nnClient = new NnClient(_options.NnUrl);
             if (!_nnClient.IsHealthyAsync().GetAwaiter().GetResult())
@@ -337,7 +339,7 @@ internal class BenchmarkRunner
 
         // When NN is in use, limit parallelism to avoid overwhelming the
         // inference server with concurrent requests.
-        var maxParallelism = _options.Players.Contains(AiKind.Nn)
+        var maxParallelism = UsesNn(_options.Players)
             ? Math.Min(4, Environment.ProcessorCount)
             : Environment.ProcessorCount;
 
@@ -348,13 +350,13 @@ internal class BenchmarkRunner
             Console.WriteLine($"  Players: {string.Join(" vs ", _options.Players.Select((ai, i) => $"P{i + 1}={ai}"))}");
             Console.WriteLine($"  Seed: {_options.Seed}");
             Console.WriteLine($"  Parallelism: {maxParallelism} cores");
-            if (_options.Players.Contains(AiKind.Mcts))
+            if (_options.Players.Any(ai => ai is AiKind.Mcts))
             {
                 Console.WriteLine($"  MCTS search time: {_options.SearchTimeMs}ms");
                 Console.WriteLine($"  MCTS max simulations: {(_options.MaxSimulations == int.MaxValue ? "unlimited" : _options.MaxSimulations.ToString())}");
                 Console.WriteLine($"  MCTS max rollout depth: {_options.MaxRolloutDepth}");
             }
-            if (_options.Players.Contains(AiKind.Nn))
+            if (UsesNn(_options.Players))
             {
                 Console.WriteLine($"  NN server: {_options.NnUrl}");
             }
@@ -472,7 +474,7 @@ internal class BenchmarkRunner
     /// Creates a new player instance for the given AI kind.
     /// A new instance is created per game to allow stateful players (e.g. MCTS tree reuse).
     /// </summary>
-    private IBenchmarkPlayer CreatePlayer(AiKind kind)
+    private IBenchmarkPlayer CreatePlayer(AiKind kind, GameConfig config)
     {
         return kind switch
         {
@@ -487,9 +489,18 @@ internal class BenchmarkRunner
                 null,
                 null)),
             AiKind.Nn => new NnPlayer(_nnClient!),
+            AiKind.NnPlacement => new NnPlacementPlayer(
+                _nnClient!, PlacementActionSerializer.ForTopology(config.Map.Topology)),
+            AiKind.NnState => new NnStatePlayer(_nnClient!),
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, $"Unknown AI kind: {kind}"),
         };
     }
+
+    /// <summary>
+    /// Returns true if any player in the array requires an NN inference server.
+    /// </summary>
+    private static bool UsesNn(AiKind[] players) =>
+        players.Any(ai => ai is AiKind.Nn or AiKind.NnPlacement or AiKind.NnState);
 
     private (int WinnerSeat, int Turns, int PriorsRequested, int PriorsApplied, int PriorStatesEvaluated, Dictionary<int, int>? PriorsCalculated) RunSingleGame(GameConfig config, Random rng, AiKind[] seatAssignment)
     {
@@ -500,7 +511,7 @@ internal class BenchmarkRunner
         var players = new IBenchmarkPlayer[playerCount + 1];
         for (var i = 0; i < playerCount; i++)
         {
-            players[i + 1] = CreatePlayer(seatAssignment[i]);
+            players[i + 1] = CreatePlayer(seatAssignment[i], config);
         }
 
         const int maxTotalActions = 10_000;

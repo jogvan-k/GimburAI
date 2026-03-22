@@ -88,6 +88,29 @@ public sealed class NnClient : IDisposable
     }
 
     /// <summary>
+    /// Sends compact placement state strings together with action strings to
+    /// the <c>/predict-placement</c> endpoint.  The server evaluates each
+    /// (state, action) pair and returns bucket probability distributions.
+    /// </summary>
+    /// <param name="compactStates">Compact serialized placement phase states.</param>
+    /// <param name="actions">Placement action strings (one per state).</param>
+    /// <returns>
+    /// An array of float arrays, one per input (state, action) pair.  Each
+    /// inner array has <see cref="BucketCount"/> elements summing to ~1.0.
+    /// </returns>
+    public async Task<float[][]> PredictPlacementAsync(
+        IReadOnlyList<string> compactStates,
+        IReadOnlyList<string> actions)
+    {
+        var request = new PredictPlacementRequest { States = compactStates, Actions = actions };
+        var response = await SendWithRetryAsync(
+            () => _http.PostAsJsonAsync("predict-placement", request, JsonOptions));
+        var result = await response.Content.ReadFromJsonAsync<PredictPlacementResponse>(JsonOptions);
+        return result?.Probabilities ?? [];
+    }
+
+
+    /// <summary>
     /// Converts a 128-bucket probability distribution into a single expected
     /// win probability in [0, 1].  Bucket centres are evenly spaced:
     /// centre(i) = (i + 0.5) / BucketCount.
@@ -209,5 +232,16 @@ public sealed class NnClient : IDisposable
     {
         [JsonPropertyName("win_probabilities")]
         public float[] WinProbabilities { get; init; } = [];
+    }
+
+    private sealed class PredictPlacementRequest
+    {
+        public IReadOnlyList<string> States { get; init; } = [];
+        public IReadOnlyList<string> Actions { get; init; } = [];
+    }
+
+    private sealed class PredictPlacementResponse
+    {
+        public float[][] Probabilities { get; init; } = [];
     }
 }
