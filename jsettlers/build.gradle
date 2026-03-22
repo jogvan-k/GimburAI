@@ -1,0 +1,35 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation fileTree(dir: 'JSettlers2/build/libs', include: ['*.jar'])
+    implementation 'com.google.code.gson:gson:2.11.0'
+}
+
+application {
+    mainClassName = 'gimbur.jsettlers.BenchmarkCli'
+}
+
+jar {
+    manifest {
+        attributes 'Main-Class': 'gimbur.jsettlers.BenchmarkCli'
+    }
+    from {
+        configurations.runtimeClasspath.collect {
+            it.isDirectory() ? it : zipTree(it)
+        }
+    }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    archiveBaseName = 'gimbur-jsettlers'
+}

@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/Gimbur.Cli/Gimbur.Cli.csproj" />
     <Project Path="src/Kjarni/Kjarni.fsproj" />
+    <Project Path="src/Gimbur.Server/Gimbur.Server.csproj" />
     <Project Path="src/Gimbur.Tui/Gimbur.Tui.csproj" />
     <Project Path="src/Gimbur/Gimbur.csproj" />
   </Folder>
