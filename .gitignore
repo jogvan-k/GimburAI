@@ -70,3 +70,7 @@ src/Gimbur.Cli/*.jsonl
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+# Pipeline
+pipeline/
+trainingdata/

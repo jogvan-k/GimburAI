@@ -13,6 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .game_config import GameConfig
+from .placement_tokenizer import PlacementTokenizer
 from .state_tokenizer import StateTokenizer
 
 
@@ -181,5 +182,41 @@ class GimburTransformer(nn.Module):
         # [batch_size, emb_dimension]
         # last_token = x[:, -1, :]
 
+        bucket_logits = self.bucket_head(x)
+        return bucket_logits
+
+
+class GimburPlacementTransformer(nn.Module):
+    """Neural network for evaluating Catan placement actions.
+
+    Input:  tokenized placement state + action (from PlacementTokenizer).
+    Output: win probability bucket logits for the action.
+    """
+
+    def __init__(self, game_cfg: GameConfig, model_cfg: GimburTransformerConfig) -> None:
+        super().__init__()
+        self.game_config = game_cfg
+        self.model_config = model_cfg
+        assert model_cfg.d_model % model_cfg.n_heads == 0
+
+        tok = PlacementTokenizer(game_cfg)
+        self.tok_embeddings = nn.Embedding(tok.vocab_size, model_cfg.d_model)
+        # placement state tokens + 1 action token
+        self.pos_embeddings = nn.Embedding(game_cfg.placement_token_size + 1, model_cfg.d_model)
+        self.embed_dropout = nn.Dropout(model_cfg.dropout)
+
+        self.trf_blocks = nn.Sequential(
+            *[TransformerBlock(model_cfg) for _ in range(model_cfg.n_layers)]
+        )
+        self.final_ln = nn.LayerNorm(model_cfg.d_model)
+        self.bucket_head = nn.Linear(model_cfg.d_model, model_cfg.n_buckets, bias=False)
+
+    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
+        batch_size, seq_len = token_ids.shape
+        positions = torch.arange(seq_len, device=token_ids.device).unsqueeze(0)
+        x = self.tok_embeddings(token_ids) + self.pos_embeddings(positions)
+        x = self.embed_dropout(x)
+        x = self.trf_blocks(x)
+        x = self.final_ln(x)
         bucket_logits = self.bucket_head(x)
         return bucket_logits

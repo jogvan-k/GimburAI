@@ -59,6 +59,7 @@ class TrainConfig:
     val_split: float = 0.1
     test_split: float = 0.0
     log_interval: int = 50
+    checkpoint_dir: bool = True
 
 
 @dataclass
@@ -87,6 +88,7 @@ class PipelineConfig:
     map_config: str = "mini"
     game_config: str = "mini_2p"
     model_config: str = "small"
+    model_type: str = "state"
 
     # Reproducibility.
     seed: int | None = None
@@ -152,6 +154,7 @@ def _load_config(path: Path) -> PipelineConfig:
         "map_config",
         "game_config",
         "model_config",
+        "model_type",
         "seed",
         "data_dir",
         "model_dir",
@@ -208,6 +211,24 @@ def _model_path(cfg: PipelineConfig, gen: int) -> Path:
 
 def _results_path(cfg: PipelineConfig, gen: int, name: str) -> Path:
     return Path(cfg.results_dir) / f"gen{gen}" / f"{name}.json"
+
+
+def _checkpoint_path(cfg: PipelineConfig, gen: int) -> Path:
+    return Path(cfg.model_dir) / f"gen{gen}_checkpoints"
+
+
+def _config_dir(cfg: PipelineConfig) -> Path:
+    """Directory for generated subprocess config files."""
+    return Path(cfg.model_dir) / ".configs"
+
+
+def _write_config(cfg: PipelineConfig, name: str, data: dict[str, Any]) -> Path:
+    """Write a JSON config file and return its path."""
+    config_dir = _config_dir(cfg)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    path = config_dir / f"{name}.json"
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -288,8 +309,10 @@ class _ServerProcess:
         model_path: Path,
         game_config: str,
         model_config: str,
+        model_type: str = "state",
         serve_cfg: ServeConfig,
         python_module: str,
+        pipeline_cfg: PipelineConfig | None = None,
         cwd: Path | None = None,
     ) -> None:
         if self._proc is not None:
@@ -298,23 +321,43 @@ class _ServerProcess:
         # Fail fast if the port is already occupied by another process.
         self._check_port_available(serve_cfg.host, serve_cfg.port)
 
-        args = [
-            sys.executable,
-            "-m",
-            f"{python_module}.serve",
-            "--model",
-            str(model_path),
-            "--game-config",
-            game_config,
-            "--model-config",
-            model_config,
-            "--port",
-            str(serve_cfg.port),
-            "--host",
-            serve_cfg.host,
-            "--log-level",
-            serve_cfg.log_level,
-        ]
+        # Build serve config JSON.
+        serve_config: dict[str, Any] = {
+            "model": str(model_path),
+            "gameConfig": game_config,
+            "modelConfig": model_config,
+            "modelType": model_type,
+            "port": serve_cfg.port,
+            "host": serve_cfg.host,
+            "logLevel": serve_cfg.log_level,
+        }
+
+        if pipeline_cfg is not None:
+            config_path = _write_config(pipeline_cfg, "serve", serve_config)
+            args = [
+                sys.executable, "-m", f"{python_module}.serve",
+                "--config", str(config_path),
+            ]
+        else:
+            args = [
+                sys.executable,
+                "-m",
+                f"{python_module}.serve",
+                "--model",
+                str(model_path),
+                "--game-config",
+                game_config,
+                "--model-config",
+                model_config,
+                "--model-type",
+                model_type,
+                "--port",
+                str(serve_cfg.port),
+                "--host",
+                serve_cfg.host,
+                "--log-level",
+                serve_cfg.log_level,
+            ]
 
         print(f"\n--- Starting inference server: {' '.join(args)}")
         self._proc = subprocess.Popen(args, cwd=cwd)
@@ -404,45 +447,35 @@ def _step_simulate(cfg: PipelineConfig, gen: int, project_root: Path, nn_url: st
     remaining = target_games - existing
     requested_games = math.ceil(remaining * max(sim.oversample, 1.0))
 
-    args = [
-        "dotnet",
-        "run",
-        "--project",
-        cfg.dotnet_project,
-        "--",
-        "simulate",
-        "--games",
-        str(requested_games),
-        "--players",
-        str(sim.players),
-        "--map-config",
-        cfg.map_config,
-        "--export",
-        str(out_dir),
-        "--export-format",
-        "json",
-        "--search-time",
-        str(sim.search_time_ms),
-        "--max-simulations",
-        str(sim.max_simulations),
-        "--max-rollout-depth",
-        str(sim.max_rollout_depth),
-    ]
-
+    # Build config JSON for gimbur simulate.
+    sim_config: dict[str, Any] = {
+        "games": requested_games,
+        "players": sim.players,
+        "mapConfig": cfg.map_config,
+        "export": str(out_dir),
+        "exportFormat": "json",
+        "searchTimeMs": sim.search_time_ms,
+        "maxSimulations": sim.max_simulations,
+        "maxRolloutDepth": sim.max_rollout_depth,
+    }
     if sim.action_rollout_limit is not None:
-        args.extend(["--action-rollout-limit", str(sim.action_rollout_limit)])
-
+        sim_config["actionRolloutLimit"] = sim.action_rollout_limit
     if not sim.symmetries:
-        args.append("--no-symmetries")
-
+        sim_config["noSymmetries"] = True
     if sim.verbosity:
-        args.extend(["--verbosity", sim.verbosity])
-
+        sim_config["verbosity"] = sim.verbosity
     if cfg.seed is not None:
-        args.extend(["--seed", str(cfg.seed + gen)])
-
+        sim_config["seed"] = cfg.seed + gen
     if nn_url is not None:
-        args.extend(["--prior", "--nn-url", nn_url])
+        sim_config["prior"] = True
+        sim_config["nnUrl"] = nn_url
+
+    config_path = _write_config(cfg, f"simulate_gen{gen}", sim_config)
+
+    args = [
+        "dotnet", "run", "--project", cfg.dotnet_project,
+        "--", "simulate", "--config", str(config_path),
+    ]
 
     label = f"Gen {gen}: Simulate ({remaining} remaining of {target_games} games"
     if existing > 0:
@@ -454,6 +487,7 @@ def _step_simulate(cfg: PipelineConfig, gen: int, project_root: Path, nn_url: st
     print(f"\n{'=' * 60}")
     print(f"  {label}")
     print(f"  $ {' '.join(args)}")
+    print(f"  config: {config_path}")
     print(f"{'=' * 60}\n", flush=True)
 
     if requested_games <= remaining:
@@ -527,39 +561,40 @@ def _step_train(cfg: PipelineConfig, gen: int, project_root: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     tr = cfg.train
-    args = [
-        sys.executable,
-        "-m",
-        f"{cfg.python_module}.train",
-        "--data",
-        str(data_path),
-        "--game-config",
-        cfg.game_config,
-        "--model-config",
-        cfg.model_config,
-        "--out",
-        str(out_path),
-        "--epochs",
-        str(tr.epochs),
-        "--patience",
-        str(tr.patience),
-        "--batch-size",
-        str(tr.batch_size),
-        "--lr",
-        str(tr.lr),
-        "--val-split",
-        str(tr.val_split),
-        "--test-split",
-        str(tr.test_split),
-        "--log-interval",
-        str(tr.log_interval),
-    ]
+
+    # Build config JSON for training.
+    train_config: dict[str, Any] = {
+        "data": str(data_path),
+        "gameConfig": cfg.game_config,
+        "modelConfig": cfg.model_config,
+        "modelType": cfg.model_type,
+        "out": str(out_path),
+        "epochs": tr.epochs,
+        "patience": tr.patience,
+        "batchSize": tr.batch_size,
+        "lr": tr.lr,
+        "valSplit": tr.val_split,
+        "testSplit": tr.test_split,
+        "logInterval": tr.log_interval,
+    }
+
+    # Enable per-epoch checkpointing if configured.
+    if tr.checkpoint_dir:
+        ckpt_dir = _checkpoint_path(cfg, gen)
+        train_config["checkpointDir"] = str(ckpt_dir)
 
     # Resume from previous generation's model if available.
     if gen > 0:
         prev_model = _model_path(cfg, gen - 1)
         if prev_model.exists():
-            args.extend(["--resume", str(prev_model)])
+            train_config["resume"] = str(prev_model)
+
+    config_path = _write_config(cfg, f"train_gen{gen}", train_config)
+
+    args = [
+        sys.executable, "-m", f"{cfg.python_module}.train",
+        "--config", str(config_path),
+    ]
 
     _run(args, label=f"Gen {gen}: Train", cwd=project_root)
 
@@ -583,27 +618,26 @@ def _step_benchmark(
             gen_results[bench.name] = json.loads(out_path.read_text())
             continue
 
-        args = [
-            "dotnet",
-            "run",
-            "--project",
-            cfg.dotnet_project,
-            "--",
-            "benchmark",
-            "--games",
-            str(bench.games),
-            "--ai",
-            *bench.ai,
-            "--map-config",
-            cfg.map_config,
-            "--output",
-            str(out_path),
-            "--nn-url",
-            nn_url,
-        ]
-
+        # Build config JSON for benchmark.
+        bench_config: dict[str, Any] = {
+            "games": bench.games,
+            "ai": bench.ai,
+            "mapConfig": cfg.map_config,
+            "output": str(out_path),
+            "nnUrl": nn_url,
+            "verbosity": "quiet",
+        }
         if cfg.seed is not None:
-            args.extend(["--seed", str(cfg.seed + gen * 1000)])
+            bench_config["seed"] = cfg.seed + gen * 1000
+
+        config_path = _write_config(
+            cfg, f"benchmark_gen{gen}_{bench.name}", bench_config
+        )
+
+        args = [
+            "dotnet", "run", "--project", cfg.dotnet_project,
+            "--", "benchmark", "--config", str(config_path),
+        ]
 
         _run(
             args,
@@ -748,8 +782,10 @@ def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> Non
                     model_path=prev_model,
                     game_config=cfg.game_config,
                     model_config=cfg.model_config,
+                    model_type=cfg.model_type,
                     serve_cfg=cfg.serve,
                     python_module=cfg.python_module,
+                    pipeline_cfg=cfg,
                     cwd=project_root,
                 )
                 gen_nn_url = nn_url
@@ -776,8 +812,10 @@ def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> Non
                     model_path=model_path,
                     game_config=cfg.game_config,
                     model_config=cfg.model_config,
+                    model_type=cfg.model_type,
                     serve_cfg=cfg.serve,
                     python_module=cfg.python_module,
+                    pipeline_cfg=cfg,
                     cwd=project_root,
                 )
 

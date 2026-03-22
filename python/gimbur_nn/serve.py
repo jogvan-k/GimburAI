@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import heapq
+import json
 import logging
 import threading
 from pathlib import Path
@@ -32,9 +33,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .game_config import CONFIGS_BY_NAME, GameConfig
+from .placement_tokenizer import PlacementTokenizer
 from .state_tokenizer import StateTokenizer
 from .transformer_model import (
     MODEL_CONFIGS_BY_NAME,
+    GimburPlacementTransformer,
     GimburTransformer,
 )
 
@@ -71,6 +74,26 @@ class PredictPlayerResponse(BaseModel):
 
     win_probabilities: list[float]
     """Scalar expected win probability for each target player."""
+
+
+# ── Placement endpoint models ─────────────────────────────────────────────────
+
+
+class PredictPlacementRequest(BaseModel):
+    """Request body for the /predict-placement endpoint."""
+
+    states: list[str]
+    """Serialized placement phase state strings."""
+
+    actions: list[str]
+    """Placement action strings (one per state)."""
+
+
+class PredictPlacementResponse(BaseModel):
+    """Response body for the /predict-placement endpoint."""
+
+    probabilities: list[list[float]]
+    """Per-(state,action) bucket probabilities, shape (n, n_buckets)."""
 
 
 # ── Prior queue models ────────────────────────────────────────────────────────
@@ -198,27 +221,76 @@ class PriorQueue:
             return len(self._heap)
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _strip_json_comments(text: str) -> str:
+    """Remove single-line // comments from JSON text (outside strings)."""
+    lines = []
+    for line in text.splitlines():
+        in_string = False
+        escape = False
+        for i, ch in enumerate(line):
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+            elif ch == "/" and not in_string and i + 1 < len(line) and line[i + 1] == "/":
+                line = line[:i].rstrip()
+                break
+        lines.append(line)
+    return "\n".join(lines)
+
+
+_CONFIG_KEY_MAP: dict[str, str] = {
+    "model": "model",
+    "gameConfig": "game_config",
+    "modelConfig": "model_config",
+    "modelType": "model_type",
+    "port": "port",
+    "host": "host",
+    "logLevel": "log_level",
+}
+"""Maps camelCase JSON config keys to argparse dest names."""
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Serve GimburNet for inference.")
     parser.add_argument(
         "--model",
         type=Path,
-        required=True,
+        required=False,
+        default=None,
         help="Path to trained model checkpoint.",
     )
     parser.add_argument(
         "--game-config",
         type=str,
-        required=True,
+        required=False,
+        default=None,
         choices=sorted(CONFIGS_BY_NAME),
         help="Game configuration preset (must match the checkpoint).",
     )
     parser.add_argument(
         "--model-config",
         type=str,
-        required=True,
+        required=False,
+        default=None,
         choices=sorted(MODEL_CONFIGS_BY_NAME),
         help="Model size preset (must match the checkpoint).",
+    )
+    parser.add_argument(
+        "--model-type",
+        type=str,
+        default="state",
+        choices=["state", "placement"],
+        help=(
+            "Model type: 'state' for GimburTransformer, 'placement' for GimburPlacementTransformer."
+        ),
     )
     parser.add_argument("--port", type=int, default=8000, help="HTTP port.")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Bind address.")
@@ -229,13 +301,20 @@ def parse_args() -> argparse.Namespace:
         choices=["debug", "info", "warning", "error", "critical"],
         help="Uvicorn log level. Use 'warning' to suppress HTTP 200/202 access logs.",
     )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to JSON config file with camelCase keys. CLI args override config values.",
+    )
     return parser.parse_args()
 
 
 def create_app(
-    model: GimburTransformer,
+    model: GimburTransformer | GimburPlacementTransformer,
     device: torch.device,
     game_cfg: GameConfig,
+    model_type: str = "state",
 ) -> FastAPI:
     """Build the FastAPI application with the model captured in closure."""
     tokenizer = StateTokenizer(game_cfg)
@@ -404,29 +483,106 @@ def create_app(
         prior_queue.flush()
         return {"status": "flushed"}
 
+    # ── Placement endpoint ────────────────────────────────────────────────────
+
+    if model_type == "placement":
+        placement_tokenizer = PlacementTokenizer(game_cfg)
+
+        @app.post("/predict-placement", response_model=PredictPlacementResponse)
+        async def predict_placement(
+            request: PredictPlacementRequest,
+        ) -> PredictPlacementResponse:
+            """Predict win probability for placement (state, action) pairs.
+
+            Each state is paired with the corresponding action, tokenized
+            via PlacementTokenizer, and evaluated by the placement model.
+            """
+            if not request.states:
+                raise HTTPException(
+                    status_code=400,
+                    detail="states list must not be empty",
+                )
+            if len(request.states) != len(request.actions):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"states ({len(request.states)}) and actions "
+                        f"({len(request.actions)}) must have the same length"
+                    ),
+                )
+
+            try:
+                token_batch = torch.stack(
+                    [
+                        placement_tokenizer.tokenize_state_action(s, a)
+                        for s, a in zip(request.states, request.actions)
+                    ]
+                ).to(device)
+            except (KeyError, ValueError) as exc:
+                logger.error(
+                    "Tokenization failed in /predict-placement: %s\n"
+                    "  First state (truncated): %.200s\n  First action: %s",
+                    exc,
+                    request.states[0] if request.states else "<empty>",
+                    request.actions[0] if request.actions else "<empty>",
+                )
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+            with torch.no_grad():
+                logits = model(token_batch)
+                last_logits = logits[:, -1, :]
+                probs = F.softmax(last_logits, dim=-1)
+
+            return PredictPlacementResponse(probabilities=probs.cpu().tolist())
+
     return app
 
 
 def main() -> None:
     args = parse_args()
 
+    # ── Load config file and apply defaults ───────────────────────────────
+    if args.config is not None:
+        text = _strip_json_comments(args.config.read_text())
+        raw = json.loads(text)
+        for json_key, attr in _CONFIG_KEY_MAP.items():
+            if json_key in raw and getattr(args, attr) is None:
+                value = raw[json_key]
+                # Convert string path for --model.
+                if attr == "model":
+                    value = Path(value)
+                setattr(args, attr, value)
+
+    # Validate required args (may have come from config file).
+    if args.model is None:
+        raise SystemExit("Error: --model is required (via CLI or config file).")
+    if args.game_config is None:
+        raise SystemExit("Error: --game-config is required (via CLI or config file).")
+    if args.model_config is None:
+        raise SystemExit("Error: --model-config is required (via CLI or config file).")
+
     game_cfg = CONFIGS_BY_NAME[args.game_config]
     model_cfg = MODEL_CONFIGS_BY_NAME[args.model_config]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = GimburTransformer(game_cfg, model_cfg)
+    # ── Select model class based on model_type ────────────────────────────
+    if args.model_type == "placement":
+        model = GimburPlacementTransformer(game_cfg, model_cfg)
+    else:
+        model = GimburTransformer(game_cfg, model_cfg)
+
     model.load_state_dict(torch.load(args.model, map_location=device, weights_only=True))
     model.to(device)
     model.eval()
 
     param_count = sum(p.numel() for p in model.parameters())
     print(
-        f"Loaded {args.model_config} model for {args.game_config} "
+        f"Loaded {args.model_config} {args.model_type} model for {args.game_config} "
         f"({param_count:,} parameters) on {device}"
     )
 
-    app = create_app(model, device, game_cfg)
+    app = create_app(model, device, game_cfg, model_type=args.model_type)
     uvicorn.run(
         app,
         host=args.host,

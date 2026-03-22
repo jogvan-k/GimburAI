@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING
 import torch
 from torch.utils.data import Dataset
 
+from .placement_tokenizer import PlacementTokenizer
 from .state_tokenizer import StateTokenizer
 
 if TYPE_CHECKING:
@@ -275,6 +276,114 @@ class SimulationDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
     ) -> None:
         tok = StateTokenizer(cfg)
         raw = expand_games(games, cfg, n_buckets=n_buckets, tokenizer=tok)
+        self._tokens = [t for t, _ in raw]
+        self._targets = torch.tensor([b for _, b in raw], dtype=torch.long)
+
+    def __len__(self) -> int:
+        return len(self._tokens)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        return self._tokens[idx], self._targets[idx]
+
+
+# ── Placement phase sample expansion ─────────────────────────────────
+
+
+def expand_placement_games(
+    games: list[dict],
+    cfg: GameConfig,
+    *,
+    n_buckets: int = 128,
+    tokenizer: PlacementTokenizer | None = None,
+) -> list[tuple[torch.Tensor, int]]:
+    """Expand placement-phase game dicts into ``(token_ids, bucket)`` samples.
+
+    Each game's states are expanded via symmetry permutations.  Unlike
+    :func:`expand_games`, there is no player rotation — each action
+    already has its own ``winRate``, and each ``(state, action)`` pair
+    produces one sample.
+
+    Args:
+        games: List of parsed placement game dicts.
+        cfg: Game configuration matching the exported data.
+        n_buckets: Number of output buckets (must match the model).
+        tokenizer: Optional pre-built tokenizer (avoids re-creation).
+
+    Returns:
+        A flat list of ``(token_ids, target_bucket)`` pairs.
+    """
+    if tokenizer is None:
+        tokenizer = PlacementTokenizer(cfg)
+    samples: list[tuple[torch.Tensor, int]] = []
+    for game in games:
+        _process_placement_game(game, n_buckets, samples, tokenizer)
+    return samples
+
+
+def _process_placement_game(
+    game: dict,
+    n_buckets: int,
+    samples: list[tuple[torch.Tensor, int]],
+    tokenizer: PlacementTokenizer,
+) -> None:
+    """Expand one placement-phase game record into training samples."""
+    board_serialized: str = game["board"]["serialized"]
+    board_permutations: list[str] = game["board"]["permutations"]
+
+    for state_entry in game["states"]:
+        state_serialized: str = state_entry["serializedState"]
+        state_permutations: list[str] = state_entry["permutations"]
+
+        # Identity combo + one combo per symmetry permutation.
+        board_variants = [board_serialized, *board_permutations]
+        state_variants = [state_serialized, *state_permutations]
+
+        for variant_idx, (board_str, state_str) in enumerate(
+            zip(board_variants, state_variants),
+        ):
+            # Reconstruct full human-readable form, then compact.
+            full_hr = board_str + "|" + state_str
+            compact = _compact(full_hr)
+
+            for action_entry in state_entry["actions"]:
+                # Select the correct action string for this variant.
+                if variant_idx == 0:
+                    action_string = action_entry["action"]
+                else:
+                    action_string = action_entry["permutations"][variant_idx - 1]
+
+                token_ids = tokenizer.tokenize_state_action(compact, action_string)
+                prob: float = action_entry["winRate"]
+                bucket = _prob_to_bucket(prob, n_buckets)
+                samples.append((token_ids, bucket))
+
+
+# ── Placement Dataset ────────────────────────────────────────────────
+
+
+class PlacementDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
+    """PyTorch dataset for placement-phase training data.
+
+    Expands placement games into samples on construction and holds them
+    in memory.  Each item is a ``(token_ids, target_bucket)`` pair where
+    ``token_ids`` is a 1-D ``int`` tensor (state + action tokens) and
+    ``target_bucket`` is a scalar ``long`` tensor.
+
+    Args:
+        games: List of parsed placement game dicts (from :func:`load_games`).
+        cfg: Game configuration matching the exported data.
+        n_buckets: Number of output buckets (default 128).
+    """
+
+    def __init__(
+        self,
+        games: list[dict],
+        cfg: GameConfig,
+        *,
+        n_buckets: int = 128,
+    ) -> None:
+        tok = PlacementTokenizer(cfg)
+        raw = expand_placement_games(games, cfg, n_buckets=n_buckets, tokenizer=tok)
         self._tokens = [t for t, _ in raw]
         self._targets = torch.tensor([b for _, b in raw], dtype=torch.long)
 
