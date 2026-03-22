@@ -469,6 +469,8 @@ def _step_simulate(cfg: PipelineConfig, gen: int, project_root: Path, nn_url: st
     if nn_url is not None:
         sim_config["prior"] = True
         sim_config["nnUrl"] = nn_url
+    if cfg.model_type == "placement":
+        sim_config["exportType"] = "InitialPlacement"
 
     config_path = _write_config(cfg, f"simulate_gen{gen}", sim_config)
 

@@ -53,11 +53,11 @@ type mixed_state(playerTurn, hash, deterministicChildren: ICoreState list, stoch
 /// A mock IPriorClient that records requests and returns pre-configured
 /// responses on CollectPriors.
 type MockPriorClient() =
-    let _requests = ResizeArray<int64 * ICoreState[] * int * int>()
+    let _requests = ResizeArray<int64 * ICoreState * ICoreState[] * int * int>()
     let _responses = Queue<PriorResponse>()
     let mutable _flushed = false
 
-    /// All prior requests that were enqueued (nodeId, states, actingPlayer, depth).
+    /// All prior requests that were enqueued (nodeId, parentState, states, actingPlayer, depth).
     member _.Requests = _requests |> Seq.toList
 
     /// Schedule a response to be returned on the next CollectPriors call.
@@ -68,8 +68,8 @@ type MockPriorClient() =
     member _.WasFlushed = _flushed
 
     interface IPriorClient with
-        member _.RequestPrior(nodeId, states, actingPlayer, depth) =
-            _requests.Add((nodeId, states, actingPlayer, depth))
+        member _.RequestPrior(nodeId, parentState, states, actingPlayer, depth) =
+            _requests.Add((nodeId, parentState, states, actingPlayer, depth))
 
         member _.CollectPriors() =
             let results = _responses |> Seq.toArray
@@ -83,7 +83,7 @@ type MockPriorClient() =
 /// A mock prior client that immediately enqueues a response for every request
 /// using a callback that produces win probabilities from the states.
 type AutoRespondPriorClient(winProbFn: ICoreState[] -> float[]) =
-    let _requests = ResizeArray<int64 * ICoreState[] * int * int>()
+    let _requests = ResizeArray<int64 * ICoreState * ICoreState[] * int * int>()
     let _responses = Queue<PriorResponse>()
     let mutable _flushed = false
 
@@ -91,8 +91,8 @@ type AutoRespondPriorClient(winProbFn: ICoreState[] -> float[]) =
     member _.WasFlushed = _flushed
 
     interface IPriorClient with
-        member _.RequestPrior(nodeId, states, actingPlayer, depth) =
-            _requests.Add((nodeId, states, actingPlayer, depth))
+        member _.RequestPrior(nodeId, parentState, states, actingPlayer, depth) =
+            _requests.Add((nodeId, parentState, states, actingPlayer, depth))
             let winProbs = winProbFn states
             _responses.Enqueue(PriorResponse(nodeId, winProbs))
 
@@ -560,7 +560,7 @@ type PriorSearchIntegrationTests() =
         // the prior request is for the child's actions, and the actingPlayer
         // should be the child's PlayerTurn + 1 (1-indexed).
         if mockClient.Requests.Length > 0 then
-            let (_, _, actingPlayer, _) = mockClient.Requests.[0]
+            let (_, _, _, actingPlayer, _) = mockClient.Requests.[0]
             // actingPlayer is 1-indexed player whose turn it is at the expanded node
             actingPlayer |> should be (greaterThanOrEqualTo 1)
 
@@ -588,7 +588,7 @@ type PriorSearchIntegrationTests() =
         // We should have requests with depth starting at 0 (first expansion
         // from root has stateHistory = [root], so depth = 0).
         mockClient.Requests.Length |> should be (greaterThan 0)
-        let depths = mockClient.Requests |> List.map (fun (_, _, _, d) -> d)
+        let depths = mockClient.Requests |> List.map (fun (_, _, _, _, d) -> d)
         // First expansion is at depth 0 (child of root)
         depths |> should contain 0
 

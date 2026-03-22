@@ -442,3 +442,345 @@ class TestSimulationDataset:
     def test_empty_games_list(self) -> None:
         ds = SimulationDataset([], MINI_2P)
         assert len(ds) == 0
+
+
+# ---------------------------------------------------------------------------
+# Placement phase data loader tests
+# ---------------------------------------------------------------------------
+
+# Minimal placement state for mini 2p (4 sections: tiles|ports|vertices|edges).
+# Uses the same format from topology-reference.md Part II.
+MINI_PLACEMENT_STATE = (
+    "w5lb3ls4lW3hd0nW4ho2l|gsgbgw"
+    "|._._._._._._._._._._._._._._._._._._._._._._._._"
+    "|______________________________"
+)
+
+# A second variant (as if produced by a board permutation) — swap first two
+# tiles and vertex chars to get a different but still-valid state string.
+MINI_PLACEMENT_STATE_PERM = (
+    "b3lw5ls4lW3hd0nW4ho2l|gsgbgw"
+    "|._._._._._._._._._._._._._._._._._._._._._._._._"
+    "|______________________________"
+)
+
+# Two valid mini actions (from the placement action vocabulary).
+MINI_ACTION_A = "0SE"
+MINI_ACTION_B = "5N"
+
+# Permuted action counterparts.
+MINI_ACTION_A_PERM = "1SW"
+MINI_ACTION_B_PERM = "6N"
+
+
+def _make_placement_game(
+    *,
+    states: list[dict],
+    n_players: int = 2,
+    map_name: str = "mini",
+) -> dict:
+    """Create a minimal placement-phase JSONL game record."""
+    return {
+        "version": 1,
+        "seed": 42,
+        "map": map_name,
+        "players": n_players,
+        "winner": 1,
+        "turns": 1,
+        "exportType": "InitialPlacement",
+        "board": {
+            "serialized": "w5lb3ls4lW3hd0nW4ho2l|gsgbgw",
+            "permutations": [],
+        },
+        "states": states,
+    }
+
+
+def _make_placement_state(
+    *,
+    state_str: str = MINI_PLACEMENT_STATE,
+    state_perms: list[str] | None = None,
+    actions: list[dict] | None = None,
+    player_turn: int = 1,
+) -> dict:
+    """Create a minimal placement state entry."""
+    return {
+        "playerTurn": player_turn,
+        "serializedState": state_str,
+        "permutations": state_perms or [],
+        "actions": actions or [],
+    }
+
+
+def _make_action(
+    *,
+    action: str,
+    win_rate: float,
+    permutations: list[str] | None = None,
+) -> dict:
+    """Create a minimal placement action entry."""
+    return {
+        "action": action,
+        "winRate": win_rate,
+        "rollouts": 50,
+        "permutations": permutations or [],
+    }
+
+
+class TestExpandPlacementGames:
+    """Tests for expand_placement_games."""
+
+    def test_single_state_single_action_no_perms(self) -> None:
+        """1 state * 1 variant * 1 action = 1 sample."""
+        game = _make_placement_game(
+            states=[
+                _make_placement_state(
+                    actions=[_make_action(action=MINI_ACTION_A, win_rate=0.7)],
+                ),
+            ],
+        )
+        from gimbur_nn.data_loader import expand_placement_games
+
+        samples = expand_placement_games([game], MINI_2P)
+        assert len(samples) == 1
+
+    def test_single_state_multiple_actions_no_perms(self) -> None:
+        """1 state * 1 variant * 2 actions = 2 samples."""
+        game = _make_placement_game(
+            states=[
+                _make_placement_state(
+                    actions=[
+                        _make_action(action=MINI_ACTION_A, win_rate=0.7),
+                        _make_action(action=MINI_ACTION_B, win_rate=0.3),
+                    ],
+                ),
+            ],
+        )
+        from gimbur_nn.data_loader import expand_placement_games
+
+        samples = expand_placement_games([game], MINI_2P)
+        assert len(samples) == 2
+
+    def test_with_one_permutation(self) -> None:
+        """1 state * 2 variants * 2 actions = 4 samples."""
+        game = _make_placement_game(
+            states=[
+                _make_placement_state(
+                    state_perms=[MINI_PLACEMENT_STATE_PERM],
+                    actions=[
+                        _make_action(
+                            action=MINI_ACTION_A,
+                            win_rate=0.7,
+                            permutations=[MINI_ACTION_A_PERM],
+                        ),
+                        _make_action(
+                            action=MINI_ACTION_B,
+                            win_rate=0.3,
+                            permutations=[MINI_ACTION_B_PERM],
+                        ),
+                    ],
+                ),
+            ],
+        )
+        from gimbur_nn.data_loader import expand_placement_games
+
+        samples = expand_placement_games([game], MINI_2P)
+        assert len(samples) == 4
+
+    def test_multiple_states(self) -> None:
+        """2 states * 1 variant * 1 action each = 2 samples."""
+        game = _make_placement_game(
+            states=[
+                _make_placement_state(
+                    actions=[_make_action(action=MINI_ACTION_A, win_rate=0.6)],
+                ),
+                _make_placement_state(
+                    actions=[_make_action(action=MINI_ACTION_B, win_rate=0.4)],
+                ),
+            ],
+        )
+        from gimbur_nn.data_loader import expand_placement_games
+
+        samples = expand_placement_games([game], MINI_2P)
+        assert len(samples) == 2
+
+    def test_multiple_games(self) -> None:
+        """2 games, each with 1 state and 1 action = 2 samples."""
+        game = _make_placement_game(
+            states=[
+                _make_placement_state(
+                    actions=[_make_action(action=MINI_ACTION_A, win_rate=0.5)],
+                ),
+            ],
+        )
+        from gimbur_nn.data_loader import expand_placement_games
+
+        samples = expand_placement_games([game, game], MINI_2P)
+        assert len(samples) == 2
+
+    def test_empty_games_list(self) -> None:
+        from gimbur_nn.data_loader import expand_placement_games
+
+        samples = expand_placement_games([], MINI_2P)
+        assert len(samples) == 0
+
+    def test_token_shape_and_dtype(self) -> None:
+        """Token tensors should be placement_token_size + 1 (state + action)."""
+        game = _make_placement_game(
+            states=[
+                _make_placement_state(
+                    actions=[_make_action(action=MINI_ACTION_A, win_rate=0.5)],
+                ),
+            ],
+        )
+        from gimbur_nn.data_loader import expand_placement_games
+
+        samples = expand_placement_games([game], MINI_2P)
+        token_ids, bucket = samples[0]
+        expected_len = MINI_2P.placement_token_size + 1  # 105 + 1 = 106
+        assert token_ids.shape == (expected_len,)
+        assert token_ids.dtype == torch.int32
+        assert 0 <= bucket < 128
+
+    def test_bucket_reflects_win_rate(self) -> None:
+        """Higher win rate should produce a higher bucket index."""
+        game = _make_placement_game(
+            states=[
+                _make_placement_state(
+                    actions=[
+                        _make_action(action=MINI_ACTION_A, win_rate=0.9),
+                        _make_action(action=MINI_ACTION_B, win_rate=0.1),
+                    ],
+                ),
+            ],
+        )
+        from gimbur_nn.data_loader import expand_placement_games
+
+        samples = expand_placement_games([game], MINI_2P)
+        _, bucket_high = samples[0]  # 0.9 win rate
+        _, bucket_low = samples[1]  # 0.1 win rate
+        assert bucket_high > bucket_low
+
+    def test_state_not_prefixed_with_board(self) -> None:
+        """Regression: serializedState already has all 4 sections.
+
+        The data loader must NOT prepend the board string, otherwise
+        the token count would be wrong (doubled tiles+ports section).
+        """
+        game = _make_placement_game(
+            states=[
+                _make_placement_state(
+                    actions=[_make_action(action=MINI_ACTION_A, win_rate=0.5)],
+                ),
+            ],
+        )
+        from gimbur_nn.data_loader import expand_placement_games
+
+        samples = expand_placement_games([game], MINI_2P)
+        token_ids, _ = samples[0]
+        # If board were incorrectly prepended, length would be
+        # 105 + 27 (compact board) + 1 (action) = 133, not 106.
+        assert token_ids.shape == (MINI_2P.placement_token_size + 1,)
+
+    def test_permutation_uses_permuted_action(self) -> None:
+        """Variant 0 uses action["action"], variant 1+ uses action["permutations"]."""
+        game = _make_placement_game(
+            states=[
+                _make_placement_state(
+                    state_perms=[MINI_PLACEMENT_STATE_PERM],
+                    actions=[
+                        _make_action(
+                            action=MINI_ACTION_A,
+                            win_rate=0.5,
+                            permutations=[MINI_ACTION_A_PERM],
+                        ),
+                    ],
+                ),
+            ],
+        )
+        from gimbur_nn.data_loader import expand_placement_games
+        from gimbur_nn.placement_tokenizer import PlacementTokenizer
+
+        tok = PlacementTokenizer(MINI_2P)
+        samples = expand_placement_games([game], MINI_2P, tokenizer=tok)
+        assert len(samples) == 2
+
+        # Last token of each sample is the action token.
+        action_token_0 = samples[0][0][-1].item()
+        action_token_1 = samples[1][0][-1].item()
+
+        # Variant 0 should use MINI_ACTION_A, variant 1 should use MINI_ACTION_A_PERM.
+        assert action_token_0 == tok.action_vocab[MINI_ACTION_A]
+        assert action_token_1 == tok.action_vocab[MINI_ACTION_A_PERM]
+
+    def test_no_player_rotation(self) -> None:
+        """Placement expansion has no player rotation (unlike game-state expansion).
+
+        1 state * 1 action * 1 variant = 1 sample (not multiplied by n_players).
+        """
+        game = _make_placement_game(
+            states=[
+                _make_placement_state(
+                    actions=[_make_action(action=MINI_ACTION_A, win_rate=0.5)],
+                ),
+            ],
+        )
+        from gimbur_nn.data_loader import expand_placement_games
+
+        samples = expand_placement_games([game], MINI_2P)
+        # Game state expansion would give 2 samples (2 players).
+        # Placement expansion should give only 1.
+        assert len(samples) == 1
+
+
+class TestPlacementDataset:
+    """Tests for PlacementDataset."""
+
+    def test_len_and_getitem(self) -> None:
+        from gimbur_nn.data_loader import PlacementDataset
+
+        game = _make_placement_game(
+            states=[
+                _make_placement_state(
+                    actions=[
+                        _make_action(action=MINI_ACTION_A, win_rate=0.6),
+                        _make_action(action=MINI_ACTION_B, win_rate=0.4),
+                    ],
+                ),
+            ],
+        )
+        ds = PlacementDataset([game], MINI_2P)
+        assert len(ds) == 2
+
+        token_ids, target = ds[0]
+        assert token_ids.shape == (MINI_2P.placement_token_size + 1,)
+        assert token_ids.dtype == torch.int32
+        assert target.dtype == torch.long
+        assert 0 <= target.item() < 128
+
+    def test_compatible_with_dataloader(self) -> None:
+        from gimbur_nn.data_loader import PlacementDataset
+
+        game = _make_placement_game(
+            states=[
+                _make_placement_state(
+                    actions=[
+                        _make_action(action=MINI_ACTION_A, win_rate=0.5),
+                        _make_action(action=MINI_ACTION_B, win_rate=0.5),
+                    ],
+                ),
+            ],
+        )
+        ds = PlacementDataset([game], MINI_2P)
+        loader = torch.utils.data.DataLoader(ds, batch_size=2)
+
+        batch_tokens, batch_targets = next(iter(loader))
+        seq_len = MINI_2P.placement_token_size + 1
+        assert batch_tokens.shape == (2, seq_len)
+        assert batch_targets.shape == (2,)
+
+    def test_empty_games_list(self) -> None:
+        from gimbur_nn.data_loader import PlacementDataset
+
+        ds = PlacementDataset([], MINI_2P)
+        assert len(ds) == 0

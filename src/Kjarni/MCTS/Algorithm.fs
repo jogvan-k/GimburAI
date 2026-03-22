@@ -467,7 +467,7 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                 if actionStates.Length > 0 then
                     nodeReg.[node.NodeId] <- node
                     layoutReg.[node.NodeId] <- (layout, outcomeWeights)
-                    client.RequestPrior(node.NodeId, actionStates, int node.State.PlayerTurn + 1, depth)
+                    client.RequestPrior(node.NodeId, node.State, actionStates, int node.State.PlayerTurn + 1, depth)
                     priorStats.priorsRequested <- priorStats.priorsRequested + 1
                     priorStats.priorStatesEvaluated <- priorStats.priorStatesEvaluated + actionStates.Length
                     let count =

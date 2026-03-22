@@ -3,6 +3,9 @@
   "mapConfig": "mini",
   "gameConfig": "mini_2p",
   "modelConfig": "small",
+  // Model type: "state" for full game state model, "placement" for
+  // initial placement model.
+  "modelType": "state",
 
   // Omit "seed" for non-reproducible runs, or set for reproducibility.
   // Each generation offsets the seed: seed + gen for simulate, seed + gen*1000 for benchmark.
@@ -40,7 +43,9 @@
     "lr": 1e-4,
     "valSplit": 0.1,
     "testSplit": 0.0,
-    "logInterval": 50
+    "logInterval": 50,
+    // Enable per-epoch checkpointing for training recovery.
+    "checkpointDir": true
   },
 
   // Inference server parameters (python -m gimbur_nn.serve).

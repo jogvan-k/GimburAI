@@ -73,4 +73,5 @@ nunit-*.xml
 
 # Pipeline
 pipeline/
+Pipelines/
 trainingdata/

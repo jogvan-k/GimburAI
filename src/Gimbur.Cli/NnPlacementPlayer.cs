@@ -14,13 +14,14 @@ namespace Gimbur.Cli;
 /// highest expected win probability.  Road stages apply the road that was
 /// chosen as part of the best composite action.
 ///
-/// During the main game, the player delegates to <see cref="GreedyPlayer"/>.
+/// During the main game, the player delegates to a configurable fallback
+/// (defaults to <see cref="GreedyPlayer"/>).
 /// </summary>
 internal sealed class NnPlacementPlayer : IBenchmarkPlayer
 {
     private readonly NnClient _client;
     private readonly PlacementActionSerializer _actionSerializer;
-    private readonly GreedyPlayer _greedy = new();
+    private readonly IBenchmarkPlayer _fallback;
 
     /// <summary>
     /// When a settlement stage selects a (settlement, road) pair, the chosen
@@ -28,10 +29,11 @@ internal sealed class NnPlacementPlayer : IBenchmarkPlayer
     /// </summary>
     private int _pendingRoadEdge = -1;
 
-    public NnPlacementPlayer(NnClient client, PlacementActionSerializer actionSerializer)
+    public NnPlacementPlayer(NnClient client, PlacementActionSerializer actionSerializer, IBenchmarkPlayer? fallback = null)
     {
         _client = client;
         _actionSerializer = actionSerializer;
+        _fallback = fallback ?? new GreedyPlayer();
     }
 
     public CatanState? Act(CatanState state, Random rng)
@@ -44,7 +46,7 @@ internal sealed class NnPlacementPlayer : IBenchmarkPlayer
         if (!isPlacement)
         {
             _pendingRoadEdge = -1;
-            return _greedy.Act(state, rng);
+            return _fallback.Act(state, rng);
         }
 
         var coreActions = state.Actions();

@@ -47,12 +47,13 @@ type PriorResponse =
 type IPriorClient =
     /// Enqueue an async prior request for the given node.
     /// nodeId — opaque identifier to correlate response back to the MCTSState.
+    /// parentState — the state at the node being expanded (before any action).
     /// states — result states for each action (one per deterministic action,
     ///          one per stochastic outcome). The implementation is responsible
     ///          for serialization.
     /// actingPlayer — the player whose turn it is at the parent node.
     /// depth — depth from root (lower = higher priority).
-    abstract RequestPrior : nodeId: int64 * states: ICoreState[] * actingPlayer: int * depth: int -> unit
+    abstract RequestPrior : nodeId: int64 * parentState: ICoreState * states: ICoreState[] * actingPlayer: int * depth: int -> unit
 
     /// Drain all completed prior responses from the mailbox. Non-blocking.
     abstract CollectPriors : unit -> PriorResponse[]

@@ -135,6 +135,36 @@ class PriorCollectResponse(BaseModel):
     responses: list[PriorResponseItem]
 
 
+# ── Placement prior queue models ──────────────────────────────────────────────
+
+
+class PlacementPriorRequest(BaseModel):
+    """A single placement prior request for one tree node."""
+
+    id: str
+    """Opaque ID to correlate response back to the MCTSState."""
+
+    states: list[str]
+    """Serialized placement phase state strings (one per composite action)."""
+
+    actions: list[str]
+    """Composite action strings (e.g. '3S', '12NW'), one per state."""
+
+    child_boundaries: list[int]
+    """Start indices mapping composite actions to settlement children.
+    child_boundaries[i] is the start index for child i;
+    child_boundaries[-1] is the sentinel (total count)."""
+
+    priority: int
+    """Depth from root; lower = more important."""
+
+
+class PlacementPriorEnqueueRequest(BaseModel):
+    """Request body for /prior-placement-enqueue."""
+
+    requests: list[PlacementPriorRequest]
+
+
 # ── Priority queue for async prior inference ──────────────────────────────────
 
 _PRIOR_QUEUE_CAPACITY = 4096
@@ -221,6 +251,71 @@ class PriorQueue:
             return len(self._heap)
 
 
+class PlacementPriorQueue:
+    """Thread-safe priority queue for placement prior requests.
+
+    Same bounded-capacity semantics as PriorQueue but for
+    PlacementPriorRequest items.
+    """
+
+    def __init__(self, capacity: int = _PRIOR_QUEUE_CAPACITY) -> None:
+        self._capacity = capacity
+        self._lock = threading.Lock()
+        self._heap: list[tuple[int, int, PlacementPriorRequest]] = []
+        self._seq = 0
+        self._results: list[PriorResponseItem] = []
+
+    def enqueue(self, req: PlacementPriorRequest) -> bool:
+        """Add a request.  Returns True if accepted, False if dropped."""
+        with self._lock:
+            if len(self._heap) < self._capacity:
+                heapq.heappush(self._heap, (req.priority, self._seq, req))
+                self._seq += 1
+                return True
+            worst_priority = max(item[0] for item in self._heap)
+            if req.priority < worst_priority:
+                worst_idx = max(
+                    range(len(self._heap)),
+                    key=lambda i: (self._heap[i][0], self._heap[i][1]),
+                )
+                self._heap[worst_idx] = self._heap[-1]
+                self._heap.pop()
+                heapq.heapify(self._heap)
+                heapq.heappush(self._heap, (req.priority, self._seq, req))
+                self._seq += 1
+                return True
+            return False
+
+    def dequeue_batch(self, batch_size: int) -> list[PlacementPriorRequest]:
+        """Remove and return up to *batch_size* highest-priority requests."""
+        with self._lock:
+            batch: list[PlacementPriorRequest] = []
+            for _ in range(min(batch_size, len(self._heap))):
+                _, _, req = heapq.heappop(self._heap)
+                batch.append(req)
+            return batch
+
+    def add_results(self, results: list[PriorResponseItem]) -> None:
+        with self._lock:
+            self._results.extend(results)
+
+    def collect_results(self) -> list[PriorResponseItem]:
+        with self._lock:
+            results = self._results
+            self._results = []
+            return results
+
+    def flush(self) -> None:
+        with self._lock:
+            self._heap.clear()
+            self._results.clear()
+            self._seq = 0
+
+    def pending_count(self) -> int:
+        with self._lock:
+            return len(self._heap)
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -256,6 +351,18 @@ _CONFIG_KEY_MAP: dict[str, str] = {
     "logLevel": "log_level",
 }
 """Maps camelCase JSON config keys to argparse dest names."""
+
+
+_ARG_DEFAULTS: dict[str, object] = {
+    "model": None,
+    "game_config": None,
+    "model_config": None,
+    "model_type": "state",
+    "port": 8000,
+    "host": "127.0.0.1",
+    "log_level": "info",
+}
+"""Default values for argparse arguments, used to detect explicit CLI overrides."""
 
 
 def parse_args() -> argparse.Namespace:
@@ -317,9 +424,7 @@ def create_app(
     model_type: str = "state",
 ) -> FastAPI:
     """Build the FastAPI application with the model captured in closure."""
-    tokenizer = StateTokenizer(game_cfg)
     app = FastAPI(title="GimburNet Inference")
-    prior_queue = PriorQueue()
 
     def _expected_win_prob(probs: torch.Tensor) -> float:
         """Compute expected win probability from a 1-D bucket distribution."""
@@ -328,25 +433,126 @@ def create_app(
         centres = (centres + 0.5) / n
         return float((probs * centres).sum())
 
-    def _infer_prior_batch(batch: list[PriorRequest]) -> list[PriorResponseItem]:
-        """Run inference on a batch of prior requests and return results."""
-        results: list[PriorResponseItem] = []
-        for req in batch:
-            if not req.states:
-                results.append(PriorResponseItem(id=req.id, win_probabilities=[]))
-                continue
-            try:
-                rotated = [tokenizer.rotate_player_state(s, req.player) for s in req.states]
-                token_ids = tokenizer.tokenize_batch(rotated).to(device)
-            except (KeyError, ValueError):
-                # Bad state — return zeros so the MCTS falls back to uniform.
-                results.append(
-                    PriorResponseItem(
-                        id=req.id,
-                        win_probabilities=[0.0] * len(req.states),
+    # ── State-model endpoints (disabled for placement models) ─────────────
+
+    if model_type != "placement":
+        tokenizer = StateTokenizer(game_cfg)
+        prior_queue = PriorQueue()
+
+        def _infer_prior_batch(batch: list[PriorRequest]) -> list[PriorResponseItem]:
+            """Run inference on a batch of prior requests and return results."""
+            results: list[PriorResponseItem] = []
+            for req in batch:
+                if not req.states:
+                    results.append(PriorResponseItem(id=req.id, win_probabilities=[]))
+                    continue
+                try:
+                    rotated = [tokenizer.rotate_player_state(s, req.player) for s in req.states]
+                    token_ids = tokenizer.tokenize_batch(rotated).to(device)
+                except (KeyError, ValueError):
+                    # Bad state — return zeros so the MCTS falls back to uniform.
+                    results.append(
+                        PriorResponseItem(
+                            id=req.id,
+                            win_probabilities=[0.0] * len(req.states),
+                        )
                     )
+                    continue
+
+                with torch.no_grad():
+                    logits = model(token_ids)
+                    last_logits = logits[:, -1, :]
+                    probs = F.softmax(last_logits, dim=-1)
+
+                win_probs = [_expected_win_prob(probs[i]) for i in range(probs.shape[0])]
+                results.append(PriorResponseItem(id=req.id, win_probabilities=win_probs))
+
+            return results
+
+        async def _prior_worker() -> None:
+            """Background task that continuously processes the prior queue."""
+            batch_size = 8
+            while True:
+                batch = prior_queue.dequeue_batch(batch_size)
+                if batch:
+                    # Run inference in a thread pool to avoid blocking the event loop.
+                    loop = asyncio.get_event_loop()
+                    results = await loop.run_in_executor(None, _infer_prior_batch, batch)
+                    prior_queue.add_results(results)
+                else:
+                    # No work — sleep briefly to avoid busy-waiting.
+                    await asyncio.sleep(0.005)
+
+        # Store background task reference to prevent garbage collection.
+        _background_tasks: set[asyncio.Task[None]] = set()
+
+        @app.on_event("startup")
+        async def start_prior_worker() -> None:
+            task = asyncio.create_task(_prior_worker())
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
+
+        @app.post("/predict", response_model=PredictResponse)
+        async def predict(request: PredictRequest) -> PredictResponse:
+            if not request.states:
+                raise HTTPException(status_code=400, detail="states list must not be empty")
+
+            try:
+                token_ids = tokenizer.tokenize_batch(request.states).to(device)
+            except (KeyError, ValueError) as exc:
+                logger.error(
+                    "Tokenization failed in /predict: %s\n  First state (truncated): %.200s",
+                    exc,
+                    request.states[0] if request.states else "<empty>",
                 )
-                continue
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+            with torch.no_grad():
+                logits = model(token_ids)  # (batch, seq_len, n_buckets)
+                last_logits = logits[:, -1, :]  # (batch, n_buckets)
+                probs = F.softmax(last_logits, dim=-1)
+
+            return PredictResponse(probabilities=probs.cpu().tolist())
+
+        @app.post("/predict-player", response_model=PredictPlayerResponse)
+        async def predict_player(
+            request: PredictPlayerRequest,
+        ) -> PredictPlayerResponse:
+            """Predict win probability for specific target players.
+
+            Each state is rotated so that the corresponding target player
+            becomes player 1, then the model's player-1 win probability is
+            returned as a scalar expected value.
+            """
+            if not request.states:
+                raise HTTPException(
+                    status_code=400,
+                    detail="states list must not be empty",
+                )
+            if len(request.states) != len(request.players):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"states ({len(request.states)}) and players "
+                        f"({len(request.players)}) must have the same length"
+                    ),
+                )
+
+            try:
+                rotated = [
+                    tokenizer.rotate_player_state(s, p)
+                    for s, p in zip(request.states, request.players)
+                ]
+                token_ids = tokenizer.tokenize_batch(rotated).to(device)
+            except (KeyError, ValueError) as exc:
+                logger.error(
+                    "Tokenization failed in /predict-player: %s\n"
+                    "  Players: %s\n  First state (truncated): %.200s",
+                    exc,
+                    request.players[:5],
+                    request.states[0] if request.states else "<empty>",
+                )
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
             with torch.no_grad():
                 logits = model(token_ids)
@@ -354,134 +560,40 @@ def create_app(
                 probs = F.softmax(last_logits, dim=-1)
 
             win_probs = [_expected_win_prob(probs[i]) for i in range(probs.shape[0])]
-            results.append(PriorResponseItem(id=req.id, win_probabilities=win_probs))
+            return PredictPlayerResponse(win_probabilities=win_probs)
 
-        return results
+        # ── Prior endpoints ───────────────────────────────────────────────────
 
-    async def _prior_worker() -> None:
-        """Background task that continuously processes the prior queue."""
-        batch_size = 8
-        while True:
-            batch = prior_queue.dequeue_batch(batch_size)
-            if batch:
-                # Run inference in a thread pool to avoid blocking the event loop.
-                loop = asyncio.get_event_loop()
-                results = await loop.run_in_executor(None, _infer_prior_batch, batch)
-                prior_queue.add_results(results)
-            else:
-                # No work — sleep briefly to avoid busy-waiting.
-                await asyncio.sleep(0.005)
-
-    # Store background task reference to prevent garbage collection.
-    _background_tasks: set[asyncio.Task[None]] = set()
-
-    @app.on_event("startup")
-    async def start_prior_worker() -> None:
-        task = asyncio.create_task(_prior_worker())
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
-
-    @app.post("/predict", response_model=PredictResponse)
-    async def predict(request: PredictRequest) -> PredictResponse:
-        if not request.states:
-            raise HTTPException(status_code=400, detail="states list must not be empty")
-
-        try:
-            token_ids = tokenizer.tokenize_batch(request.states).to(device)
-        except (KeyError, ValueError) as exc:
-            logger.error(
-                "Tokenization failed in /predict: %s\n  First state (truncated): %.200s",
-                exc,
-                request.states[0] if request.states else "<empty>",
-            )
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        with torch.no_grad():
-            logits = model(token_ids)  # (batch, seq_len, n_buckets)
-            last_logits = logits[:, -1, :]  # (batch, n_buckets)
-            probs = F.softmax(last_logits, dim=-1)
-
-        return PredictResponse(probabilities=probs.cpu().tolist())
-
-    @app.post("/predict-player", response_model=PredictPlayerResponse)
-    async def predict_player(
-        request: PredictPlayerRequest,
-    ) -> PredictPlayerResponse:
-        """Predict win probability for specific target players.
-
-        Each state is rotated so that the corresponding target player
-        becomes player 1, then the model's player-1 win probability is
-        returned as a scalar expected value.
-        """
-        if not request.states:
-            raise HTTPException(
-                status_code=400,
-                detail="states list must not be empty",
-            )
-        if len(request.states) != len(request.players):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"states ({len(request.states)}) and players "
-                    f"({len(request.players)}) must have the same length"
-                ),
+        @app.post("/prior-enqueue", status_code=202)
+        async def prior_enqueue(request: PriorEnqueueRequest) -> JSONResponse:
+            """Accept a batch of prior requests into the priority queue."""
+            accepted = 0
+            dropped = 0
+            for req in request.requests:
+                if prior_queue.enqueue(req):
+                    accepted += 1
+                else:
+                    dropped += 1
+            return JSONResponse(
+                status_code=202,
+                content={"accepted": accepted, "dropped": dropped},
             )
 
-        try:
-            rotated = [
-                tokenizer.rotate_player_state(s, p) for s, p in zip(request.states, request.players)
-            ]
-            token_ids = tokenizer.tokenize_batch(rotated).to(device)
-        except (KeyError, ValueError) as exc:
-            logger.error(
-                "Tokenization failed in /predict-player: %s\n"
-                "  Players: %s\n  First state (truncated): %.200s",
-                exc,
-                request.players[:5],
-                request.states[0] if request.states else "<empty>",
-            )
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        @app.post("/prior-collect", response_model=PriorCollectResponse)
+        async def prior_collect() -> PriorCollectResponse:
+            """Return all completed prior inference results."""
+            results = prior_queue.collect_results()
+            return PriorCollectResponse(responses=results)
 
-        with torch.no_grad():
-            logits = model(token_ids)
-            last_logits = logits[:, -1, :]
-            probs = F.softmax(last_logits, dim=-1)
-
-        win_probs = [_expected_win_prob(probs[i]) for i in range(probs.shape[0])]
-        return PredictPlayerResponse(win_probabilities=win_probs)
+        @app.post("/prior-flush")
+        async def prior_flush() -> dict[str, str]:
+            """Clear the priority queue and discard pending results."""
+            prior_queue.flush()
+            return {"status": "flushed"}
 
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
-
-    # ── Prior endpoints ───────────────────────────────────────────────────────
-
-    @app.post("/prior-enqueue", status_code=202)
-    async def prior_enqueue(request: PriorEnqueueRequest) -> JSONResponse:
-        """Accept a batch of prior requests into the priority queue."""
-        accepted = 0
-        dropped = 0
-        for req in request.requests:
-            if prior_queue.enqueue(req):
-                accepted += 1
-            else:
-                dropped += 1
-        return JSONResponse(
-            status_code=202,
-            content={"accepted": accepted, "dropped": dropped},
-        )
-
-    @app.post("/prior-collect", response_model=PriorCollectResponse)
-    async def prior_collect() -> PriorCollectResponse:
-        """Return all completed prior inference results."""
-        results = prior_queue.collect_results()
-        return PriorCollectResponse(responses=results)
-
-    @app.post("/prior-flush")
-    async def prior_flush() -> dict[str, str]:
-        """Clear the priority queue and discard pending results."""
-        prior_queue.flush()
-        return {"status": "flushed"}
 
     # ── Placement endpoint ────────────────────────────────────────────────────
 
@@ -535,6 +647,118 @@ def create_app(
 
             return PredictPlacementResponse(probabilities=probs.cpu().tolist())
 
+        # ── Placement prior queue and endpoints ──────────────────────────────
+
+        placement_prior_queue = PlacementPriorQueue()
+
+        def _infer_placement_prior_batch(
+            batch: list[PlacementPriorRequest],
+        ) -> list[PriorResponseItem]:
+            """Run inference on a batch of placement prior requests.
+
+            For each request, tokenizes all (state, action) pairs, runs the
+            placement model, then aggregates per settlement child by taking
+            the max win probability across roads for each child.
+            """
+            results: list[PriorResponseItem] = []
+            for req in batch:
+                if not req.states or not req.actions:
+                    results.append(PriorResponseItem(id=req.id, win_probabilities=[]))
+                    continue
+                try:
+                    token_batch = torch.stack(
+                        [
+                            placement_tokenizer.tokenize_state_action(s, a)
+                            for s, a in zip(req.states, req.actions)
+                        ]
+                    ).to(device)
+                except (KeyError, ValueError):
+                    # Bad state/action — return zeros so MCTS falls back to uniform.
+                    n_children = max(0, len(req.child_boundaries) - 1)
+                    results.append(
+                        PriorResponseItem(
+                            id=req.id,
+                            win_probabilities=[0.0] * n_children,
+                        )
+                    )
+                    continue
+
+                with torch.no_grad():
+                    logits = model(token_batch)
+                    last_logits = logits[:, -1, :]
+                    probs = F.softmax(last_logits, dim=-1)
+
+                # Compute expected win probability for each (state, action) pair.
+                n_buckets = probs.shape[1]
+                centres = torch.arange(n_buckets, dtype=probs.dtype, device=probs.device)
+                centres = (centres + 0.5) / n_buckets
+                pair_win_probs = (probs * centres).sum(dim=-1)  # shape: (n_pairs,)
+
+                # Aggregate per settlement child: max across roads.
+                child_win_probs: list[float] = []
+                boundaries = req.child_boundaries
+                for ci in range(len(boundaries) - 1):
+                    start = boundaries[ci]
+                    end = boundaries[ci + 1]
+                    if start < end:
+                        child_max = float(pair_win_probs[start:end].max())
+                    else:
+                        child_max = 0.0
+                    child_win_probs.append(child_max)
+
+                results.append(PriorResponseItem(id=req.id, win_probabilities=child_win_probs))
+
+            return results
+
+        async def _placement_prior_worker() -> None:
+            """Background task that continuously processes the placement prior queue."""
+            batch_size = 8
+            while True:
+                batch = placement_prior_queue.dequeue_batch(batch_size)
+                if batch:
+                    loop = asyncio.get_event_loop()
+                    results = await loop.run_in_executor(None, _infer_placement_prior_batch, batch)
+                    placement_prior_queue.add_results(results)
+                else:
+                    await asyncio.sleep(0.005)
+
+        _placement_bg_tasks: set[asyncio.Task[None]] = set()
+
+        @app.on_event("startup")
+        async def start_placement_prior_worker() -> None:
+            task = asyncio.create_task(_placement_prior_worker())
+            _placement_bg_tasks.add(task)
+            task.add_done_callback(_placement_bg_tasks.discard)
+
+        @app.post("/prior-placement-enqueue", status_code=202)
+        async def prior_placement_enqueue(
+            request: PlacementPriorEnqueueRequest,
+        ) -> JSONResponse:
+            """Accept a batch of placement prior requests into the priority queue."""
+            accepted = 0
+            dropped = 0
+            for req in request.requests:
+                if placement_prior_queue.enqueue(req):
+                    accepted += 1
+                else:
+                    dropped += 1
+            return JSONResponse(
+                status_code=202,
+                content={"accepted": accepted, "dropped": dropped},
+            )
+
+        @app.post("/prior-placement-collect", response_model=PriorCollectResponse)
+        async def prior_placement_collect() -> PriorCollectResponse:
+            """Return all completed placement prior inference results."""
+            results = placement_prior_queue.collect_results()
+            return PriorCollectResponse(responses=results)
+
+        @app.post("/prior-placement-flush")
+        async def prior_placement_flush() -> dict[str, str]:
+            """Clear the placement priority queue and discard pending results."""
+            placement_prior_queue.flush()
+            return {"status": "flushed"}
+
     return app
 
 
@@ -546,12 +770,19 @@ def main() -> None:
         text = _strip_json_comments(args.config.read_text())
         raw = json.loads(text)
         for json_key, attr in _CONFIG_KEY_MAP.items():
-            if json_key in raw and getattr(args, attr) is None:
-                value = raw[json_key]
-                # Convert string path for --model.
-                if attr == "model":
-                    value = Path(value)
-                setattr(args, attr, value)
+            if json_key not in raw:
+                continue
+            current = getattr(args, attr, None)
+            default = _ARG_DEFAULTS.get(attr)
+            # If the CLI value differs from the default, the user explicitly
+            # provided it — keep the CLI value.
+            if current != default:
+                continue
+            value = raw[json_key]
+            # Convert string path for --model.
+            if attr == "model":
+                value = Path(value)
+            setattr(args, attr, value)
 
     # Validate required args (may have come from config file).
     if args.model is None:

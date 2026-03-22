@@ -330,7 +330,7 @@ internal static class RootCommandFactory
         var playersOption = new Option<string[]>("--ai")
         {
             Description = "AI for each player seat (e.g. --ai random greedy mcts nn). " +
-                          "Available: random, greedy, mcts, nn, nnplacement, nnstate",
+                          "Available: random, greedy, mcts, nn, nn-placement, nn-placement-random, nn-state",
             AllowMultipleArgumentsPerToken = true,
         };
         playersOption.DefaultValueFactory = _ => new[] { "random", "greedy" };
@@ -468,7 +468,7 @@ internal static class RootCommandFactory
 
     private static bool TryParseAiKind(string name, out AiKind kind)
     {
-        return Enum.TryParse(name, ignoreCase: true, out kind);
+        return Enum.TryParse(name.Replace("-", ""), ignoreCase: true, out kind);
     }
 
     /// <summary>

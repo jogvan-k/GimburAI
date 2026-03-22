@@ -327,23 +327,16 @@ def _process_placement_game(
     tokenizer: PlacementTokenizer,
 ) -> None:
     """Expand one placement-phase game record into training samples."""
-    board_serialized: str = game["board"]["serialized"]
-    board_permutations: list[str] = game["board"]["permutations"]
-
     for state_entry in game["states"]:
         state_serialized: str = state_entry["serializedState"]
         state_permutations: list[str] = state_entry["permutations"]
 
-        # Identity combo + one combo per symmetry permutation.
-        board_variants = [board_serialized, *board_permutations]
-        state_variants = [state_serialized, *state_permutations]
+        # Identity + one per symmetry permutation.
+        # Each variant is already a full 4-section string (tiles|ports|vertices|edges).
+        all_variants = [state_serialized, *state_permutations]
 
-        for variant_idx, (board_str, state_str) in enumerate(
-            zip(board_variants, state_variants),
-        ):
-            # Reconstruct full human-readable form, then compact.
-            full_hr = board_str + "|" + state_str
-            compact = _compact(full_hr)
+        for variant_idx, state_str in enumerate(all_variants):
+            compact = _compact(state_str)
 
             for action_entry in state_entry["actions"]:
                 # Select the correct action string for this variant.

@@ -234,6 +234,27 @@ internal record PlacementStateRecord
     public int ElapsedMs { get; init; }
 
     /// <summary>
+    /// Number of prior requests sent to the NN inference server during this MCTS search.
+    /// </summary>
+    public int PriorsRequested { get; init; }
+
+    /// <summary>
+    /// Number of prior responses successfully applied to tree nodes during this MCTS search.
+    /// </summary>
+    public int PriorsApplied { get; init; }
+
+    /// <summary>
+    /// Number of individual states evaluated by the NN server during this MCTS search.
+    /// </summary>
+    public int PriorStatesEvaluated { get; init; }
+
+    /// <summary>
+    /// Per-depth count of prior states evaluated during this MCTS search.
+    /// Null when no priors were used.
+    /// </summary>
+    public Dictionary<int, int>? PriorStatesPerDepth { get; init; }
+
+    /// <summary>
     /// All candidate composite actions with per-action MCTS statistics.
     /// </summary>
     public required List<PlacementActionRecord> Actions { get; init; }
@@ -278,6 +299,12 @@ internal record PlacementGameResult
     public required int ActionRolloutLimit { get; init; }
     public required string BoardSerialized { get; init; }
     public required List<PlacementStateRecord> States { get; init; }
+
+    /// <summary>
+    /// Per-depth count of prior states evaluated across all MCTS decisions in this game.
+    /// Null when no priors were used.
+    /// </summary>
+    public Dictionary<int, int>? PriorsCalculated { get; init; }
 }
 
 /// <summary>
@@ -386,7 +413,16 @@ internal class SimulationRunner
         PriorClient? priorClient = null;
         if (_options.Prior)
         {
-            priorClient = new PriorClient(_options.NnUrl);
+            var priorMode = _options.ExportType == ExportType.InitialPlacement
+                ? PriorMode.Placement
+                : PriorMode.State;
+            PlacementActionSerializer? priorActionSerializer = null;
+            if (priorMode == PriorMode.Placement)
+            {
+                var priorConfig = ResolveGameConfig();
+                priorActionSerializer = PlacementActionSerializer.ForTopology(priorConfig.Map.Topology);
+            }
+            priorClient = new PriorClient(_options.NnUrl, priorMode, priorActionSerializer);
         }
 
         try
@@ -939,6 +975,12 @@ internal class SimulationRunner
                     SerializedState = serializedState,
                     Simulations = logInfo.simulations,
                     ElapsedMs = (int)logInfo.elapsedTime.TotalMilliseconds,
+                    PriorsRequested = logInfo.priorsRequested,
+                    PriorsApplied = logInfo.priorsApplied,
+                    PriorStatesEvaluated = logInfo.priorStatesEvaluated,
+                    PriorStatesPerDepth = logInfo.priorStatesPerDepth is { Count: > 0 }
+                        ? new Dictionary<int, int>(logInfo.priorStatesPerDepth)
+                        : null,
                     Actions = compositeActions,
                 });
 
@@ -979,6 +1021,19 @@ internal class SimulationRunner
             if (totalActions >= maxTotalActions) break;
         }
 
+        // Aggregate per-depth prior stats across all MCTS decisions.
+        Dictionary<int, int>? priorsCalculated = null;
+        foreach (var s in placementStates)
+        {
+            if (s.PriorStatesPerDepth is not { Count: > 0 }) continue;
+            priorsCalculated ??= new Dictionary<int, int>();
+            foreach (var (depth, count) in s.PriorStatesPerDepth)
+            {
+                priorsCalculated.TryGetValue(depth, out var existing);
+                priorsCalculated[depth] = existing + count;
+            }
+        }
+
         return new PlacementGameResult
         {
             Seed = gameSeed,
@@ -990,6 +1045,7 @@ internal class SimulationRunner
             ActionRolloutLimit = _options.ActionRolloutLimit,
             BoardSerialized = boardSerialized,
             States = placementStates,
+            PriorsCalculated = priorsCalculated,
         };
     }
 
@@ -1256,6 +1312,9 @@ internal class SimulationRunner
                 s.SerializedState,
                 s.Simulations,
                 s.ElapsedMs,
+                s.PriorsRequested,
+                s.PriorsApplied,
+                s.PriorStatesEvaluated,
                 actions = s.Actions.Select(a => new
                 {
                     a.Action,
@@ -1272,6 +1331,9 @@ internal class SimulationRunner
                     ? symmetryPerms.Select(p => BoardSymmetry.PermutePlacementState(s.SerializedState, p)).ToArray()
                     : Array.Empty<string>(),
             }).ToArray(),
+            priorsCalculated = game.PriorsCalculated != null
+                ? game.PriorsCalculated.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
+                : null,
         };
     }
 }
