@@ -81,7 +81,8 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
         explorationConstant: Math.Sqrt(2.0),
         actionRolloutLimit: int.MaxValue,
         priorClient: null,
-        expansionGuard: null);
+        expansionGuard: null,
+        maxPriorDepth: int.MaxValue);
 
     var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(mctsConfig);
     var mctsRoot = new Kjarni.MCTS.Types.MCTSState((ICoreState)state);

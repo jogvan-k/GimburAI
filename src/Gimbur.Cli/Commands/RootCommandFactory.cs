@@ -174,6 +174,13 @@ internal static class RootCommandFactory
                           "The game loop ends when the best action is a HorizonAction.",
         };
 
+        var maxPriorDepthOption = new Option<int>("--max-prior-depth")
+        {
+            Description = "Maximum tree depth for NN prior requests (default: unlimited). " +
+                          "Nodes deeper than this use uniform priors, reducing wasted inference work.",
+            DefaultValueFactory = _ => int.MaxValue,
+        };
+
         var command = new Command("simulate", "Run Settlers of Catan AI self-play simulations.")
         {
           noOfGamesOption,
@@ -189,6 +196,7 @@ internal static class RootCommandFactory
           priorOption,
           nnUrlOption,
           placementOnlyOption,
+          maxPriorDepthOption,
         };
 
         command.SetAction(parseResult =>
@@ -215,6 +223,7 @@ internal static class RootCommandFactory
             bool prior = parseResult.GetValue(priorOption);
             string nnUrl = parseResult.GetValue(nnUrlOption)!;
             bool placementOnly = parseResult.GetValue(placementOnlyOption);
+            int maxPriorDepth = parseResult.GetValue(maxPriorDepthOption);
 
             // ── Apply config file defaults for simulate ──────────────
             if (cfg.ValueKind == JsonValueKind.Object)
@@ -261,6 +270,8 @@ internal static class RootCommandFactory
                     nnUrl = ConfigLoader.GetString(cfg, "nnUrl") ?? nnUrl;
                 if (!WasProvided(parseResult, "--placement-only"))
                     placementOnly = ConfigLoader.GetBool(cfg, "placementOnly") ?? placementOnly;
+                if (!WasProvided(parseResult, "--max-prior-depth"))
+                    maxPriorDepth = ConfigLoader.GetInt(cfg, "maxPriorDepth") ?? maxPriorDepth;
                 if (!WasProvided(parseResult, "--verbosity", "-v") && !WasProvided(parseResult, "-q") && !WasProvided(parseResult, "--verbose"))
                     verbosity = ConfigLoader.GetString(cfg, "verbosity") ?? verbosity;
             }
@@ -291,6 +302,7 @@ internal static class RootCommandFactory
                 Prior = prior,
                 NnUrl = nnUrl,
                 PlacementOnly = placementOnly,
+                MaxPriorDepth = maxPriorDepth,
             };
 
             var runner = new SimulationRunner(options);

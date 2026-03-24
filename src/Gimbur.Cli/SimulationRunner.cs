@@ -111,6 +111,13 @@ internal record SimulationOptions
     /// stops when the best MCTS action is a HorizonAction.
     /// </summary>
     public bool PlacementOnly { get; init; }
+
+    /// <summary>
+    /// Maximum tree depth at which prior (NN) requests are sent.
+    /// Nodes deeper than this are left with uniform priors.
+    /// Defaults to int.MaxValue (no limit).
+    /// </summary>
+    public int MaxPriorDepth { get; init; } = int.MaxValue;
 }
 
 /// <summary>
@@ -175,6 +182,16 @@ internal record StateRecord
     /// Null when no priors were used.
     /// </summary>
     public Dictionary<int, int>? PriorStatesPerDepth { get; init; }
+
+    /// <summary>
+    /// Number of nodes skipped by the ShouldRequestPrior pre-check during this MCTS search.
+    /// </summary>
+    public int PriorsSkipped { get; init; }
+
+    /// <summary>
+    /// Number of prior states that could not be matched with their original state.
+    /// </summary>
+    public int PriorStatesNotFound { get; set; }
 }
 
 /// <summary>
@@ -255,9 +272,19 @@ internal record PlacementStateRecord
     public Dictionary<int, int>? PriorStatesPerDepth { get; init; }
 
     /// <summary>
+    /// Number of nodes skipped by the ShouldRequestPrior pre-check during this MCTS search.
+    /// </summary>
+    public int PriorsSkipped { get; init; }
+
+    /// <summary>
     /// All candidate composite actions with per-action MCTS statistics.
     /// </summary>
     public required List<PlacementActionRecord> Actions { get; init; }
+
+    /// <summary>
+    /// Number of prior states that could not be matched with their original state.
+    /// </summary>
+    public int PriorStatesNotFound { get; set; }
 }
 
 /// <summary>
@@ -712,7 +739,8 @@ internal class SimulationRunner
             System.Math.Sqrt(2.0),
             _options.ActionRolloutLimit,
             priorClient,
-            expansionGuard);
+            expansionGuard,
+            _options.MaxPriorDepth);
         var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(mctsConfig);
         var states = new List<StateRecord>();
 
@@ -797,12 +825,14 @@ internal class SimulationRunner
                     BestActionWins = bestActionWins,
                     BestActionRollouts = bestActionRollouts,
                     ReachedTerminal = logInfo.reachedTerminal,
-                    PriorsRequested = logInfo.priorsRequested,
+                    PriorsRequested = logInfo.priorStatesRequested,
+                    PriorStatesNotFound = logInfo.stateNotFound,
                     PriorsApplied = logInfo.priorsApplied,
                     PriorStatesEvaluated = logInfo.priorStatesEvaluated,
                     PriorStatesPerDepth = logInfo.priorStatesPerDepth is { Count: > 0 }
                         ? new Dictionary<int, int>(logInfo.priorStatesPerDepth)
                         : null,
+                    PriorsSkipped = logInfo.priorsSkipped,
                 });
 
                 // Apply the best action from MCTS and advance the tree.
@@ -881,7 +911,8 @@ internal class SimulationRunner
             System.Math.Sqrt(2.0),
             _options.ActionRolloutLimit,
             priorClient,
-            expansionGuard);
+            expansionGuard,
+            _options.MaxPriorDepth);
         var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(mctsConfig);
         var placementStates = new List<PlacementStateRecord>();
 
@@ -975,12 +1006,14 @@ internal class SimulationRunner
                     SerializedState = serializedState,
                     Simulations = logInfo.simulations,
                     ElapsedMs = (int)logInfo.elapsedTime.TotalMilliseconds,
-                    PriorsRequested = logInfo.priorsRequested,
+                    PriorsRequested = logInfo.priorStatesRequested,
                     PriorsApplied = logInfo.priorsApplied,
                     PriorStatesEvaluated = logInfo.priorStatesEvaluated,
+                    PriorStatesNotFound = logInfo.stateNotFound,
                     PriorStatesPerDepth = logInfo.priorStatesPerDepth is { Count: > 0 }
                         ? new Dictionary<int, int>(logInfo.priorStatesPerDepth)
                         : null,
+                    PriorsSkipped = logInfo.priorsSkipped,
                     Actions = compositeActions,
                 });
 
@@ -1258,6 +1291,7 @@ internal class SimulationRunner
                 s.PriorsRequested,
                 s.PriorsApplied,
                 s.PriorStatesEvaluated,
+                s.PriorsSkipped,
                 permutations = symmetryPerms.Length > 0
                     ? symmetryPerms.Select(p => BoardSymmetry.PermuteState(s.SerializedState, p)).ToArray()
                     : Array.Empty<string>(),
@@ -1315,6 +1349,7 @@ internal class SimulationRunner
                 s.PriorsRequested,
                 s.PriorsApplied,
                 s.PriorStatesEvaluated,
+                s.PriorsSkipped,
                 actions = s.Actions.Select(a => new
                 {
                     a.Action,

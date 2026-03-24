@@ -15,10 +15,14 @@ namespace Gimbur.Cli;
 /// <c>/predict-player</c> endpoint, and picking the action with the highest
 /// expected win probability.
 /// </summary>
-internal sealed class NnStatePlayer : IBenchmarkPlayer
+internal sealed class NnStatePlayer : IBenchmarkPlayer, INnStatsProvider
 {
     private readonly NnClient _client;
     private readonly GreedyPlayer _greedy = new();
+
+    // INnStatsProvider
+    public int TotalNnRequests { get; private set; }
+    public int TotalNnStatesEvaluated { get; private set; }
 
     public NnStatePlayer(NnClient client)
     {
@@ -92,6 +96,8 @@ internal sealed class NnStatePlayer : IBenchmarkPlayer
         }
 
         var winProbs = _client.PredictPlayerAsync(allStates, allPlayers).GetAwaiter().GetResult();
+        TotalNnRequests++;
+        TotalNnStatesEvaluated += allStates.Count;
 
         var bestActionIndex = 0;
         var bestScore = float.NegativeInfinity;

@@ -68,6 +68,8 @@ type MockPriorClient() =
     member _.WasFlushed = _flushed
 
     interface IPriorClient with
+        member _.ShouldRequestPrior(_parentState) = true
+
         member _.RequestPrior(nodeId, parentState, states, actingPlayer, depth) =
             _requests.Add((nodeId, parentState, states, actingPlayer, depth))
 
@@ -91,6 +93,8 @@ type AutoRespondPriorClient(winProbFn: ICoreState[] -> float[]) =
     member _.WasFlushed = _flushed
 
     interface IPriorClient with
+        member _.ShouldRequestPrior(_parentState) = true
+
         member _.RequestPrior(nodeId, parentState, states, actingPlayer, depth) =
             _requests.Add((nodeId, parentState, states, actingPlayer, depth))
             let winProbs = winProbFn states
@@ -512,7 +516,7 @@ type PriorSearchIntegrationTests() =
         let logInfo = mcts.LatestLogInfo()
 
         // Priors should have been requested and applied
-        logInfo.priorsRequested |> should be (greaterThan 0)
+        logInfo.priorStatesEvaluated |> should be (greaterThan 0)
         logInfo.priorsApplied |> should be (greaterThan 0)
         logInfo.priorStatesEvaluated |> should be (greaterThan 0)
 
@@ -530,7 +534,7 @@ type PriorSearchIntegrationTests() =
         let _ = mcts.RunSimulation(mctsRoot)
         let logInfo = mcts.LatestLogInfo()
 
-        logInfo.priorsRequested |> should equal 0
+        logInfo.priorStatesEvaluated |> should equal 0
         logInfo.priorsApplied |> should equal 0
         logInfo.priorStatesEvaluated |> should equal 0
 

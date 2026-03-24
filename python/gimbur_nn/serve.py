@@ -23,7 +23,9 @@ import heapq
 import json
 import logging
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Generic, TypeVar
 
 import torch
 import torch.nn.functional as F
@@ -169,59 +171,67 @@ class PlacementPriorEnqueueRequest(BaseModel):
 
 _PRIOR_QUEUE_CAPACITY = 4096
 
+T = TypeVar("T")
 
-class PriorQueue:
+
+class PriorQueue(Generic[T]):
     """Thread-safe priority queue for prior requests, with bounded capacity.
 
     Requests are ordered by priority (depth from root, lower = higher
     priority).  When the queue is full, a new request with lower priority
     than the worst queued item is silently dropped; one with higher
     priority evicts the lowest-priority entry.
+
+    Generic over the request type *T* which must have a ``priority: int``
+    attribute.  Works with both ``PriorRequest`` and
+    ``PlacementPriorRequest``.
     """
 
     def __init__(self, capacity: int = _PRIOR_QUEUE_CAPACITY) -> None:
         self._capacity = capacity
         self._lock = threading.Lock()
-        # Min-heap of (priority, sequence_no, PriorRequest).
+        # Min-heap of (priority, sequence_no, request).
         # sequence_no breaks ties to maintain FIFO within the same priority.
-        self._heap: list[tuple[int, int, PriorRequest]] = []
+        self._heap: list[tuple[int, int, T]] = []
         self._seq = 0
         # Completed results waiting to be collected.
         self._results: list[PriorResponseItem] = []
 
-    def enqueue(self, req: PriorRequest) -> bool:
+    def enqueue(self, req: T) -> bool:
         """Add a request.  Returns True if accepted, False if dropped."""
+        priority: int = req.priority  # type: ignore[union-attr]
         with self._lock:
             if len(self._heap) < self._capacity:
-                heapq.heappush(self._heap, (req.priority, self._seq, req))
+                heapq.heappush(self._heap, (priority, self._seq, req))
                 self._seq += 1
                 return True
             # Queue full — check if the new request is higher priority
             # than the worst (highest priority value) in the heap.
             # Since this is a min-heap, the worst is *not* at index 0.
             # We maintain a min-heap by priority, so the *largest* priority
-            # is the one we'd want to evict.  Using nlargest(1) is O(n) but
+            # is the one we'd want to evict.  Using max() is O(n) but
             # the queue is bounded so this is fine.
             worst_priority = max(item[0] for item in self._heap)
-            if req.priority < worst_priority:
+            if priority < worst_priority:
                 # Evict the worst entry.
                 # Find and remove the worst (largest priority, latest seq).
                 worst_idx = max(
-                    range(len(self._heap)), key=lambda i: (self._heap[i][0], self._heap[i][1])
+                    range(len(self._heap)),
+                    key=lambda i: (self._heap[i][0], self._heap[i][1]),
                 )
                 self._heap[worst_idx] = self._heap[-1]
                 self._heap.pop()
                 heapq.heapify(self._heap)
-                heapq.heappush(self._heap, (req.priority, self._seq, req))
+                heapq.heappush(self._heap, (priority, self._seq, req))
                 self._seq += 1
                 return True
             # New request is lower priority — drop it.
             return False
 
-    def dequeue_batch(self, batch_size: int) -> list[PriorRequest]:
+    def dequeue_batch(self, batch_size: int) -> list[T]:
         """Remove and return up to *batch_size* highest-priority requests."""
         with self._lock:
-            batch: list[PriorRequest] = []
+            batch: list[T] = []
             for _ in range(min(batch_size, len(self._heap))):
                 _, _, req = heapq.heappop(self._heap)
                 batch.append(req)
@@ -241,71 +251,6 @@ class PriorQueue:
 
     def flush(self) -> None:
         """Clear the queue and all pending results."""
-        with self._lock:
-            self._heap.clear()
-            self._results.clear()
-            self._seq = 0
-
-    def pending_count(self) -> int:
-        with self._lock:
-            return len(self._heap)
-
-
-class PlacementPriorQueue:
-    """Thread-safe priority queue for placement prior requests.
-
-    Same bounded-capacity semantics as PriorQueue but for
-    PlacementPriorRequest items.
-    """
-
-    def __init__(self, capacity: int = _PRIOR_QUEUE_CAPACITY) -> None:
-        self._capacity = capacity
-        self._lock = threading.Lock()
-        self._heap: list[tuple[int, int, PlacementPriorRequest]] = []
-        self._seq = 0
-        self._results: list[PriorResponseItem] = []
-
-    def enqueue(self, req: PlacementPriorRequest) -> bool:
-        """Add a request.  Returns True if accepted, False if dropped."""
-        with self._lock:
-            if len(self._heap) < self._capacity:
-                heapq.heappush(self._heap, (req.priority, self._seq, req))
-                self._seq += 1
-                return True
-            worst_priority = max(item[0] for item in self._heap)
-            if req.priority < worst_priority:
-                worst_idx = max(
-                    range(len(self._heap)),
-                    key=lambda i: (self._heap[i][0], self._heap[i][1]),
-                )
-                self._heap[worst_idx] = self._heap[-1]
-                self._heap.pop()
-                heapq.heapify(self._heap)
-                heapq.heappush(self._heap, (req.priority, self._seq, req))
-                self._seq += 1
-                return True
-            return False
-
-    def dequeue_batch(self, batch_size: int) -> list[PlacementPriorRequest]:
-        """Remove and return up to *batch_size* highest-priority requests."""
-        with self._lock:
-            batch: list[PlacementPriorRequest] = []
-            for _ in range(min(batch_size, len(self._heap))):
-                _, _, req = heapq.heappop(self._heap)
-                batch.append(req)
-            return batch
-
-    def add_results(self, results: list[PriorResponseItem]) -> None:
-        with self._lock:
-            self._results.extend(results)
-
-    def collect_results(self) -> list[PriorResponseItem]:
-        with self._lock:
-            results = self._results
-            self._results = []
-            return results
-
-    def flush(self) -> None:
         with self._lock:
             self._heap.clear()
             self._results.clear()
@@ -424,7 +369,6 @@ def create_app(
     model_type: str = "state",
 ) -> FastAPI:
     """Build the FastAPI application with the model captured in closure."""
-    app = FastAPI(title="GimburNet Inference")
 
     def _expected_win_prob(probs: torch.Tensor) -> float:
         """Compute expected win probability from a 1-D bucket distribution."""
@@ -433,11 +377,14 @@ def create_app(
         centres = (centres + 0.5) / n
         return float((probs * centres).sum())
 
+    # Collect async worker coroutines to be started by the lifespan handler.
+    _worker_coros: list[object] = []
+
     # ── State-model endpoints (disabled for placement models) ─────────────
 
     if model_type != "placement":
         tokenizer = StateTokenizer(game_cfg)
-        prior_queue = PriorQueue()
+        prior_queue: PriorQueue[PriorRequest] = PriorQueue()
 
         def _infer_prior_batch(batch: list[PriorRequest]) -> list[PriorResponseItem]:
             """Run inference on a batch of prior requests and return results."""
@@ -476,21 +423,133 @@ def create_app(
                 batch = prior_queue.dequeue_batch(batch_size)
                 if batch:
                     # Run inference in a thread pool to avoid blocking the event loop.
-                    loop = asyncio.get_event_loop()
+                    loop = asyncio.get_running_loop()
                     results = await loop.run_in_executor(None, _infer_prior_batch, batch)
                     prior_queue.add_results(results)
                 else:
                     # No work — sleep briefly to avoid busy-waiting.
                     await asyncio.sleep(0.005)
 
-        # Store background task reference to prevent garbage collection.
-        _background_tasks: set[asyncio.Task[None]] = set()
+        _worker_coros.append(_prior_worker)
 
-        @app.on_event("startup")
-        async def start_prior_worker() -> None:
-            task = asyncio.create_task(_prior_worker())
-            _background_tasks.add(task)
-            task.add_done_callback(_background_tasks.discard)
+    if model_type == "placement":
+        placement_tokenizer = PlacementTokenizer(game_cfg)
+
+        placement_prior_queue: PriorQueue[PlacementPriorRequest] = PriorQueue()
+
+        def _infer_placement_prior_batch(
+            batch: list[PlacementPriorRequest],
+        ) -> list[PriorResponseItem]:
+            """Run inference on a batch of placement prior requests.
+
+            Concatenates all (state, action) pairs from all requests into one
+            big tensor, runs a single model forward pass, then splits results
+            back per request and aggregates per settlement child (max across
+            roads for each child).
+            """
+            # Phase 1: Collect all tokenized pairs across all requests.
+            all_tokens: list[torch.Tensor] = []
+            # Per-request metadata: (req_index, n_pairs, is_error).
+            req_meta: list[tuple[int, int, bool]] = []
+
+            for ri, req in enumerate(batch):
+                if not req.states or not req.actions:
+                    req_meta.append((ri, 0, False))
+                    continue
+                try:
+                    tokens = [
+                        placement_tokenizer.tokenize_state_action(s, a)
+                        for s, a in zip(req.states, req.actions)
+                    ]
+                    all_tokens.extend(tokens)
+                    req_meta.append((ri, len(tokens), False))
+                except (KeyError, ValueError):
+                    req_meta.append((ri, 0, True))
+
+            # Phase 2: Single batched forward pass.
+            all_win_probs: torch.Tensor | None = None
+            if all_tokens:
+                token_batch = torch.stack(all_tokens).to(device)
+                with torch.no_grad():
+                    logits = model(token_batch)
+                    last_logits = logits[:, -1, :]
+                    probs = F.softmax(last_logits, dim=-1)
+
+                n_buckets = probs.shape[1]
+                centres = torch.arange(n_buckets, dtype=probs.dtype, device=probs.device)
+                centres = (centres + 0.5) / n_buckets
+                all_win_probs = (probs * centres).sum(dim=-1)  # shape: (total_pairs,)
+
+            # Phase 3: Split results back per request and aggregate.
+            results: list[PriorResponseItem] = []
+            offset = 0
+            for ri, n_pairs, is_error in req_meta:
+                req = batch[ri]
+                if is_error:
+                    n_children = max(0, len(req.child_boundaries) - 1)
+                    results.append(
+                        PriorResponseItem(
+                            id=req.id,
+                            win_probabilities=[0.0] * n_children,
+                        )
+                    )
+                    continue
+                if n_pairs == 0:
+                    results.append(PriorResponseItem(id=req.id, win_probabilities=[]))
+                    continue
+
+                pair_win_probs = all_win_probs[offset : offset + n_pairs]
+                offset += n_pairs
+
+                # Aggregate per settlement child: max across roads.
+                child_win_probs: list[float] = []
+                boundaries = req.child_boundaries
+                for ci in range(len(boundaries) - 1):
+                    start = boundaries[ci]
+                    end = boundaries[ci + 1]
+                    if start < end:
+                        child_max = float(pair_win_probs[start:end].max())
+                    else:
+                        child_max = 0.0
+                    child_win_probs.append(child_max)
+
+                results.append(PriorResponseItem(id=req.id, win_probabilities=child_win_probs))
+
+            return results
+
+        async def _placement_prior_worker() -> None:
+            """Background task that continuously processes the placement prior queue."""
+            batch_size = 8
+            while True:
+                batch = placement_prior_queue.dequeue_batch(batch_size)
+                if batch:
+                    loop = asyncio.get_running_loop()
+                    results = await loop.run_in_executor(None, _infer_placement_prior_batch, batch)
+                    placement_prior_queue.add_results(results)
+                else:
+                    await asyncio.sleep(0.005)
+
+        _worker_coros.append(_placement_prior_worker)
+
+    # ── Lifespan context manager ──────────────────────────────────────────
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):  # noqa: ARG001
+        """Start background workers on startup; cancel them on shutdown."""
+        tasks: set[asyncio.Task[None]] = set()
+        for coro_fn in _worker_coros:
+            task = asyncio.create_task(coro_fn())
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+        yield
+        for task in tasks:
+            task.cancel()
+
+    app = FastAPI(title="GimburNet Inference", lifespan=lifespan)
+
+    # ── State-model route registration ────────────────────────────────────
+
+    if model_type != "placement":
 
         @app.post("/predict", response_model=PredictResponse)
         async def predict(request: PredictRequest) -> PredictResponse:
@@ -598,7 +657,6 @@ def create_app(
     # ── Placement endpoint ────────────────────────────────────────────────────
 
     if model_type == "placement":
-        placement_tokenizer = PlacementTokenizer(game_cfg)
 
         @app.post("/predict-placement", response_model=PredictPlacementResponse)
         async def predict_placement(
@@ -647,88 +705,7 @@ def create_app(
 
             return PredictPlacementResponse(probabilities=probs.cpu().tolist())
 
-        # ── Placement prior queue and endpoints ──────────────────────────────
-
-        placement_prior_queue = PlacementPriorQueue()
-
-        def _infer_placement_prior_batch(
-            batch: list[PlacementPriorRequest],
-        ) -> list[PriorResponseItem]:
-            """Run inference on a batch of placement prior requests.
-
-            For each request, tokenizes all (state, action) pairs, runs the
-            placement model, then aggregates per settlement child by taking
-            the max win probability across roads for each child.
-            """
-            results: list[PriorResponseItem] = []
-            for req in batch:
-                if not req.states or not req.actions:
-                    results.append(PriorResponseItem(id=req.id, win_probabilities=[]))
-                    continue
-                try:
-                    token_batch = torch.stack(
-                        [
-                            placement_tokenizer.tokenize_state_action(s, a)
-                            for s, a in zip(req.states, req.actions)
-                        ]
-                    ).to(device)
-                except (KeyError, ValueError):
-                    # Bad state/action — return zeros so MCTS falls back to uniform.
-                    n_children = max(0, len(req.child_boundaries) - 1)
-                    results.append(
-                        PriorResponseItem(
-                            id=req.id,
-                            win_probabilities=[0.0] * n_children,
-                        )
-                    )
-                    continue
-
-                with torch.no_grad():
-                    logits = model(token_batch)
-                    last_logits = logits[:, -1, :]
-                    probs = F.softmax(last_logits, dim=-1)
-
-                # Compute expected win probability for each (state, action) pair.
-                n_buckets = probs.shape[1]
-                centres = torch.arange(n_buckets, dtype=probs.dtype, device=probs.device)
-                centres = (centres + 0.5) / n_buckets
-                pair_win_probs = (probs * centres).sum(dim=-1)  # shape: (n_pairs,)
-
-                # Aggregate per settlement child: max across roads.
-                child_win_probs: list[float] = []
-                boundaries = req.child_boundaries
-                for ci in range(len(boundaries) - 1):
-                    start = boundaries[ci]
-                    end = boundaries[ci + 1]
-                    if start < end:
-                        child_max = float(pair_win_probs[start:end].max())
-                    else:
-                        child_max = 0.0
-                    child_win_probs.append(child_max)
-
-                results.append(PriorResponseItem(id=req.id, win_probabilities=child_win_probs))
-
-            return results
-
-        async def _placement_prior_worker() -> None:
-            """Background task that continuously processes the placement prior queue."""
-            batch_size = 8
-            while True:
-                batch = placement_prior_queue.dequeue_batch(batch_size)
-                if batch:
-                    loop = asyncio.get_event_loop()
-                    results = await loop.run_in_executor(None, _infer_placement_prior_batch, batch)
-                    placement_prior_queue.add_results(results)
-                else:
-                    await asyncio.sleep(0.005)
-
-        _placement_bg_tasks: set[asyncio.Task[None]] = set()
-
-        @app.on_event("startup")
-        async def start_placement_prior_worker() -> None:
-            task = asyncio.create_task(_placement_prior_worker())
-            _placement_bg_tasks.add(task)
-            task.add_done_callback(_placement_bg_tasks.discard)
+        # ── Placement prior queue endpoints ──────────────────────────────────
 
         @app.post("/prior-placement-enqueue", status_code=202)
         async def prior_placement_enqueue(

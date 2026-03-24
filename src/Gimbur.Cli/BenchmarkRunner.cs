@@ -83,6 +83,20 @@ internal interface IBenchmarkPlayer
     CatanState? Act(CatanState state, Random rng);
 }
 
+
+/// <summary>
+/// Optional interface for benchmark players that use a neural network
+/// inference server. Provides aggregate NN call statistics for reporting.
+/// </summary>
+internal interface INnStatsProvider
+{
+    /// <summary>Total NN prediction requests (batch calls) made during this game.</summary>
+    int TotalNnRequests { get; }
+
+    /// <summary>Total individual states evaluated by the NN server across all requests.</summary>
+    int TotalNnStatesEvaluated { get; }
+}
+
 /// <summary>
 /// Picks a random action from the available actions.
 /// </summary>
@@ -129,7 +143,7 @@ internal sealed class GreedyPlayer : IBenchmarkPlayer
 /// skips forced moves, follows the best path, and reuses the search tree.
 /// Accumulates prior stats across all MCTS decisions for reporting.
 /// </summary>
-internal sealed class MctsPlayer : IBenchmarkPlayer
+internal sealed class MctsPlayer : IBenchmarkPlayer, INnStatsProvider
 {
     private readonly Kjarni.MCTS.AI.MonteCarloTreeSearch _mcts;
     private Kjarni.MCTS.Types.MCTSState? _mctsRoot;
@@ -145,6 +159,10 @@ internal sealed class MctsPlayer : IBenchmarkPlayer
 
     /// <summary>Per-depth count of prior states evaluated across all MCTS decisions.</summary>
     public Dictionary<int, int>? TotalPriorStatesPerDepth { get; private set; }
+
+    // INnStatsProvider
+    int INnStatsProvider.TotalNnRequests => TotalPriorsRequested;
+    int INnStatsProvider.TotalNnStatesEvaluated => TotalPriorStatesEvaluated;
 
     public MctsPlayer(MCTSConfig config)
     {
@@ -171,7 +189,7 @@ internal sealed class MctsPlayer : IBenchmarkPlayer
 
         // Accumulate prior stats from this decision.
         var logInfo = _mcts.LatestLogInfo();
-        TotalPriorsRequested += logInfo.priorsRequested;
+        TotalPriorsRequested += logInfo.priorStatesRequested;
         TotalPriorsApplied += logInfo.priorsApplied;
         TotalPriorStatesEvaluated += logInfo.priorStatesEvaluated;
         if (logInfo.priorStatesPerDepth is { Count: > 0 })
@@ -488,7 +506,8 @@ internal class BenchmarkRunner
                 System.Math.Sqrt(2.0),
                 int.MaxValue,
                 null,
-                null)),
+                null,
+                int.MaxValue)),
             AiKind.Nn => new NnPlayer(_nnClient!),
             AiKind.NnPlacement => new NnPlacementPlayer(
                 _nnClient!, PlacementActionSerializer.ForTopology(config.Map.Topology)),
@@ -538,18 +557,22 @@ internal class BenchmarkRunner
             }
         }
 
-        // Aggregate prior stats from all MCTS players in this game.
+        // Aggregate NN stats from all players that use neural network inference.
         var priorsRequested = 0;
         var priorsApplied = 0;
         var priorStatesEvaluated = 0;
         Dictionary<int, int>? priorsCalculated = null;
         foreach (var player in players)
         {
+            if (player is INnStatsProvider nnStats)
+            {
+                priorsRequested += nnStats.TotalNnRequests;
+                priorStatesEvaluated += nnStats.TotalNnStatesEvaluated;
+            }
+
             if (player is MctsPlayer mctsPlayer)
             {
-                priorsRequested += mctsPlayer.TotalPriorsRequested;
                 priorsApplied += mctsPlayer.TotalPriorsApplied;
-                priorStatesEvaluated += mctsPlayer.TotalPriorStatesEvaluated;
                 if (mctsPlayer.TotalPriorStatesPerDepth is { Count: > 0 })
                 {
                     priorsCalculated ??= new Dictionary<int, int>();

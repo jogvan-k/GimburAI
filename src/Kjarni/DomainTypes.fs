@@ -45,6 +45,13 @@ type PriorResponse =
 /// Fires non-blocking prior requests on node expansion and collects completed
 /// responses after backpropagation.
 type IPriorClient =
+    /// Fast pre-check: returns true when the client can produce a meaningful
+    /// prior for a node whose parent is in the given state.  Called before the
+    /// expensive collectActionStates step so that the engine can skip nodes
+    /// that the implementation would discard anyway (e.g. road-stage nodes
+    /// in placement mode).
+    abstract ShouldRequestPrior : parentState: ICoreState -> bool
+
     /// Enqueue an async prior request for the given node.
     /// nodeId — opaque identifier to correlate response back to the MCTSState.
     /// parentState — the state at the node being expanded (before any action).
@@ -90,7 +97,8 @@ type MCTSConfig =
       ExplorationConstant: float
       ActionRolloutLimit: int
       PriorClient: IPriorClient option
-      ExpansionGuard: (ICoreState -> CoreAction -> bool) option }
+      ExpansionGuard: (ICoreState -> CoreAction -> bool) option
+      MaxPriorDepth: int }
 
     static member Default =
         { SearchTime = Unlimited
@@ -99,4 +107,5 @@ type MCTSConfig =
           ExplorationConstant = sqrt 2.
           ActionRolloutLimit = System.Int32.MaxValue
           PriorClient = None
-          ExpansionGuard = None }
+          ExpansionGuard = None
+          MaxPriorDepth = System.Int32.MaxValue }

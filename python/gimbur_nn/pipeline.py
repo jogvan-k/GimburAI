@@ -43,6 +43,7 @@ class SimulateConfig:
     max_simulations: int = 200
     max_rollout_depth: int = 500
     action_rollout_limit: int | None = None
+    max_prior_depth: int | None = None
     symmetries: bool = True
     verbosity: str = "quiet"
     oversample: float = 1.0
@@ -460,6 +461,8 @@ def _step_simulate(cfg: PipelineConfig, gen: int, project_root: Path, nn_url: st
     }
     if sim.action_rollout_limit is not None:
         sim_config["actionRolloutLimit"] = sim.action_rollout_limit
+    if sim.max_prior_depth is not None:
+        sim_config["maxPriorDepth"] = sim.max_prior_depth
     if not sim.symmetries:
         sim_config["noSymmetries"] = True
     if sim.verbosity:

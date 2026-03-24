@@ -17,7 +17,7 @@ namespace Gimbur.Cli;
 /// During the main game, the player delegates to a configurable fallback
 /// (defaults to <see cref="GreedyPlayer"/>).
 /// </summary>
-internal sealed class NnPlacementPlayer : IBenchmarkPlayer
+internal sealed class NnPlacementPlayer : IBenchmarkPlayer, INnStatsProvider
 {
     private readonly NnClient _client;
     private readonly PlacementActionSerializer _actionSerializer;
@@ -28,6 +28,10 @@ internal sealed class NnPlacementPlayer : IBenchmarkPlayer
     /// road edge index is stored here and consumed on the following road stage.
     /// </summary>
     private int _pendingRoadEdge = -1;
+
+    // INnStatsProvider
+    public int TotalNnRequests { get; private set; }
+    public int TotalNnStatesEvaluated { get; private set; }
 
     public NnPlacementPlayer(NnClient client, PlacementActionSerializer actionSerializer, IBenchmarkPlayer? fallback = null)
     {
@@ -144,6 +148,8 @@ internal sealed class NnPlacementPlayer : IBenchmarkPlayer
         }
 
         var buckets = _client.PredictPlacementAsync(states, actions).GetAwaiter().GetResult();
+        TotalNnRequests++;
+        TotalNnStatesEvaluated += states.Count;
 
         // Find the composite action with the highest expected win probability.
         var bestIndex = 0;

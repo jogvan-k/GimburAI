@@ -379,12 +379,16 @@ let computePriorPolicy (winProbs: float[]) (layout: int[]) (outcomeWeights: int[
 /// Stats tracked during prior request/collection in the search loop.
 type PriorStats =
   struct
-    val mutable priorsRequested: int
-    val mutable priorsApplied: int
-    val mutable priorStatesEvaluated: int
+    val mutable priorStatesRequested: int
+    val mutable priorStatesApplied: int
+    val mutable priorActionsEvaluated: int
     /// Per-depth count of prior states evaluated (depth → state count).
     val mutable priorStatesPerDepth: Dictionary<int, int>
     val mutable horizonSkips: int
+    /// Number of nodes skipped by the ShouldRequestPrior pre-check.
+    val mutable priorsSkipped: int
+    /// Number of states not found when trying to apply prior response
+    val mutable stateNotFound: int
   end
 
 /// Walk the selection path bottom-up, replacing actions with Terminal when
@@ -437,7 +441,7 @@ let propagateTerminals (visitedStates: MCTSState list) =
 
     propagate visitedStates
 
-let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float, actionRolloutLimit: int, priorClient: IPriorClient option, expansionGuard: (ICoreState -> CoreAction -> bool) option) =
+let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float, actionRolloutLimit: int, priorClient: IPriorClient option, expansionGuard: (ICoreState -> CoreAction -> bool) option, maxPriorDepth: int) =
     // Normalise the option to guard against C# passing Some(null).
     let priorClient =
         match priorClient with
@@ -459,22 +463,27 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
     priorStats.priorStatesPerDepth <- Dictionary<int, int>()
 
     /// Fire a prior request for the given node (non-blocking).
+    /// Skips if the node already has priors or is already registered
+    /// (pending response from an earlier request in this search).
     let requestPrior (node: MCTSState) (depth: int) =
         match priorClient, nodeRegistry, layoutRegistry with
         | Some client, Some nodeReg, Some layoutReg ->
-            if not (Array.isEmpty node.Actions) && node.Priors.IsNone then
-                let (actionStates, layout, outcomeWeights) = collectActionStates node
-                if actionStates.Length > 0 then
-                    nodeReg.[node.NodeId] <- node
-                    layoutReg.[node.NodeId] <- (layout, outcomeWeights)
-                    client.RequestPrior(node.NodeId, node.State, actionStates, int node.State.PlayerTurn + 1, depth)
-                    priorStats.priorsRequested <- priorStats.priorsRequested + 1
-                    priorStats.priorStatesEvaluated <- priorStats.priorStatesEvaluated + actionStates.Length
-                    let count =
-                        match priorStats.priorStatesPerDepth.TryGetValue(depth) with
-                        | true, v -> v
-                        | _ -> 0
-                    priorStats.priorStatesPerDepth.[depth] <- count + actionStates.Length
+            if depth <= maxPriorDepth && not (Array.isEmpty node.Actions) && node.Priors.IsNone && not (nodeReg.ContainsKey(node.NodeId)) then
+                if not (client.ShouldRequestPrior(node.State)) then
+                    priorStats.priorsSkipped <- priorStats.priorsSkipped + 1
+                else
+                    let (actionStates, layout, outcomeWeights) = collectActionStates node
+                    if actionStates.Length > 0 then
+                        nodeReg.[node.NodeId] <- node
+                        layoutReg.[node.NodeId] <- (layout, outcomeWeights)
+                        client.RequestPrior(node.NodeId, node.State, actionStates, int node.State.PlayerTurn + 1, depth)
+                        priorStats.priorStatesRequested <- priorStats.priorStatesRequested + 1
+                        priorStats.priorActionsEvaluated <- priorStats.priorActionsEvaluated + actionStates.Length
+                        let count =
+                            match priorStats.priorStatesPerDepth.TryGetValue(depth) with
+                            | true, v -> v
+                            | _ -> 0
+                        priorStats.priorStatesPerDepth.[depth] <- count + actionStates.Length
         | _ -> ()
 
     /// Collect completed prior responses and apply them to tree nodes.
@@ -489,15 +498,27 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                     | true, (layout, outcomeWeights) ->
                         let policy = computePriorPolicy resp.WinProbabilities layout outcomeWeights
                         node.Priors <- Some policy
-                        priorStats.priorsApplied <- priorStats.priorsApplied + 1
+                        priorStats.priorStatesApplied <- priorStats.priorStatesApplied + 1
                         // Remove from registries once applied
                         nodeReg.Remove(resp.NodeId) |> ignore
                         layoutReg.Remove(resp.NodeId) |> ignore
                     | _ -> ()
                 | _ ->
                     // Stale response (node no longer in registry) — discard
+                    priorStats.stateNotFound <- priorStats.stateNotFound + 1
                     ()
         | _ -> ()
+
+    // Re-submit prior requests for already-expanded nodes along the
+    // selection path that are missing priors (e.g. from tree reuse where
+    // the fresh registries don't know about them yet).
+    let resubmitPriors (stateHistory: MCTSState list) =
+        let len = List.length stateHistory
+        // stateHistory is [deepest; ...; root], depths are [len-1; ...; 0].
+        let mutable depth = len - 1
+        for node in stateHistory do
+            requestPrior node depth
+            depth <- depth - 1
 
     while root.Rollouts < maxSimulationCount
           && (not evaluateUntil.IsSome
@@ -506,10 +527,12 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
           && not (isResolved root) do
         match select explorationConstant expansionGuard root with
         | Exhausted (stateHistory, outcome) ->
+            resubmitPriors stateHistory
             backPropagate stateHistory outcome
             propagateTerminals stateHistory
             collectPriors ()
         | Candidate (stateHistory, i) ->
+            resubmitPriors stateHistory
             let mostRecentState = stateHistory.[0]
             let depth = stateHistory.Length - 1
 
@@ -540,6 +563,7 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                 propagateTerminals visitedStates
                 collectPriors ()
         | StochasticCandidate (stateHistory, ia, is) ->
+            resubmitPriors stateHistory
             match stateHistory.[0].Actions.[ia] with
             | StochasticAction stochasticOutcomes ->
                 let expandedState = stochasticOutcomes.[is].State
@@ -557,6 +581,7 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                     collectPriors ()
             | _ -> failwith "unreachable"
         | Horizon (stateHistory, horizonState) ->
+            resubmitPriors stateHistory
             let outcome = simulate maxRolloutDepth horizonState
             backPropagate (horizonState :: stateHistory) outcome
             priorStats.horizonSkips <- priorStats.horizonSkips + 1

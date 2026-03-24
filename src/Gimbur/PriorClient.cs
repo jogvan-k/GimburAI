@@ -81,6 +81,23 @@ public sealed class PriorClient : IPriorClient, IDisposable
     }
 
     /// <summary>
+    /// Fast pre-check: returns <c>true</c> when the client can produce a
+    /// meaningful prior for a node whose parent is in the given state.
+    /// In <see cref="PriorMode.Placement"/>, only settlement decision points
+    /// are eligible; in <see cref="PriorMode.State"/>, all states are eligible.
+    /// </summary>
+    public bool ShouldRequestPrior(ICoreState parentState)
+    {
+        if (_mode != PriorMode.Placement)
+        {
+            return true;
+        }
+
+        var stage = ((CatanState)parentState).Stage;
+        return stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement;
+    }
+
+    /// <summary>
     /// Enqueue an async prior request. Dispatches to either state-based or
     /// placement-based serialization depending on the configured <see cref="PriorMode"/>.
     /// </summary>

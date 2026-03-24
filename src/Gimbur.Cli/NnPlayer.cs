@@ -17,9 +17,13 @@ namespace Gimbur.Cli;
 /// player becomes player 1 before inference, returning a scalar win
 /// probability that can be maximised directly.
 /// </summary>
-internal sealed class NnPlayer : IBenchmarkPlayer
+internal sealed class NnPlayer : IBenchmarkPlayer, INnStatsProvider
 {
     private readonly NnClient _client;
+
+    // INnStatsProvider
+    public int TotalNnRequests { get; private set; }
+    public int TotalNnStatesEvaluated { get; private set; }
 
     public NnPlayer(NnClient client)
     {
@@ -80,6 +84,8 @@ internal sealed class NnPlayer : IBenchmarkPlayer
         // Batch predict all states at once.  The server rotates each state
         // so that actingPlayer becomes player 1 and returns scalar win probs.
         var winProbs = _client.PredictPlayerAsync(allStates, allPlayers).GetAwaiter().GetResult();
+        TotalNnRequests++;
+        TotalNnStatesEvaluated += allStates.Count;
 
         // Score each action: for deterministic actions use the win prob directly;
         // for stochastic actions compute the expected value across outcomes.

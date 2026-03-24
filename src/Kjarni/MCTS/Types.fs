@@ -54,10 +54,13 @@ type LogInfo =
         val mutable successfulTranspositionTableLookup: int
         val mutable transpositionTableSize: int
         val mutable reachedTerminal: bool
-        val mutable priorsRequested: int
+        val mutable priorStatesRequested: int
         val mutable priorsApplied: int
         val mutable priorStatesEvaluated: int
         /// Per-depth count of prior states evaluated (depth → state count).
         val mutable priorStatesPerDepth: Dictionary<int, int>
         val mutable horizonSkips: int
+        /// Number of nodes skipped by the ShouldRequestPrior pre-check.
+        val mutable priorsSkipped: int
+        val mutable stateNotFound: int
     end
