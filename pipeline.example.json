@@ -45,7 +45,10 @@
     "testSplit": 0.0,
     "logInterval": 50,
     // Enable per-epoch checkpointing for training recovery.
-    "checkpointDir": true
+    "checkpointDir": true,
+    // When true, each generation resumes training from the previous
+    // generation's model weights instead of starting from scratch.
+    "resumeFromPrevious": true
   },
 
   // Inference server parameters (python -m gimbur_nn.serve).

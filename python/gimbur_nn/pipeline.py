@@ -61,6 +61,7 @@ class TrainConfig:
     test_split: float = 0.0
     log_interval: int = 50
     checkpoint_dir: bool = True
+    resume_from_previous: bool = True
 
 
 @dataclass
@@ -589,7 +590,7 @@ def _step_train(cfg: PipelineConfig, gen: int, project_root: Path) -> None:
         train_config["checkpointDir"] = str(ckpt_dir)
 
     # Resume from previous generation's model if available.
-    if gen > 0:
+    if tr.resume_from_previous and gen > 0:
         prev_model = _model_path(cfg, gen - 1)
         if prev_model.exists():
             train_config["resume"] = str(prev_model)
