@@ -24,6 +24,7 @@ internal enum AiKind
     NnPlacement,
     NnPlacementRandom,
     NnState,
+    NnStateRandom,
 }
 
 /// <summary>
@@ -514,6 +515,7 @@ internal class BenchmarkRunner
             AiKind.NnPlacementRandom => new NnPlacementPlayer(
                 _nnClient!, PlacementActionSerializer.ForTopology(config.Map.Topology), new RandomPlayer()),
             AiKind.NnState => new NnStatePlayer(_nnClient!),
+            AiKind.NnStateRandom => new NnStatePlayer(_nnClient!, new RandomPlayer()),
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, $"Unknown AI kind: {kind}"),
         };
     }
@@ -522,7 +524,7 @@ internal class BenchmarkRunner
     /// Returns true if any player in the array requires an NN inference server.
     /// </summary>
     private static bool UsesNn(AiKind[] players) =>
-        players.Any(ai => ai is AiKind.Nn or AiKind.NnPlacement or AiKind.NnPlacementRandom or AiKind.NnState);
+        players.Any(ai => ai is AiKind.Nn or AiKind.NnPlacement or AiKind.NnPlacementRandom or AiKind.NnState or AiKind.NnStateRandom);
 
     private (int WinnerSeat, int Turns, int PriorsRequested, int PriorsApplied, int PriorStatesEvaluated, Dictionary<int, int>? PriorsCalculated) RunSingleGame(GameConfig config, Random rng, AiKind[] seatAssignment)
     {

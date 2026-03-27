@@ -5,28 +5,29 @@ using Kjarni;
 namespace Gimbur.Cli;
 
 /// <summary>
-/// Hybrid player that uses greedy heuristics for the initial placement phase
-/// and the neural network state model for the main game.
+/// Hybrid player that uses a configurable fallback for the initial placement
+/// phase and the neural network state model for the main game.
 ///
-/// During placement stages (0–3), the player delegates to
-/// <see cref="GreedyPlayer"/>.  Once the main game begins (stage ≥ 4), the
-/// player uses the same evaluation strategy as <see cref="NnPlayer"/>:
-/// enumerating all actions, evaluating resulting states via the
-/// <c>/predict-player</c> endpoint, and picking the action with the highest
-/// expected win probability.
+/// During placement stages (0–3), the player delegates to the fallback
+/// (defaults to <see cref="GreedyPlayer"/>).  Once the main game begins
+/// (stage ≥ 4), the player uses the same evaluation strategy as
+/// <see cref="NnPlayer"/>: enumerating all actions, evaluating resulting
+/// states via the <c>/predict-player</c> endpoint, and picking the action
+/// with the highest expected win probability.
 /// </summary>
 internal sealed class NnStatePlayer : IBenchmarkPlayer, INnStatsProvider
 {
     private readonly NnClient _client;
-    private readonly GreedyPlayer _greedy = new();
+    private readonly IBenchmarkPlayer _placementFallback;
 
     // INnStatsProvider
     public int TotalNnRequests { get; private set; }
     public int TotalNnStatesEvaluated { get; private set; }
 
-    public NnStatePlayer(NnClient client)
+    public NnStatePlayer(NnClient client, IBenchmarkPlayer? placementFallback = null)
     {
         _client = client;
+        _placementFallback = placementFallback ?? new GreedyPlayer();
     }
 
     public CatanState? Act(CatanState state, Random rng)
@@ -38,7 +39,7 @@ internal sealed class NnStatePlayer : IBenchmarkPlayer, INnStatsProvider
 
         if (isPlacement)
         {
-            return _greedy.Act(state, rng);
+            return _placementFallback.Act(state, rng);
         }
 
         var coreActions = state.Actions();

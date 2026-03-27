@@ -118,6 +118,16 @@ internal record SimulationOptions
     /// Defaults to int.MaxValue (no limit).
     /// </summary>
     public int MaxPriorDepth { get; init; } = int.MaxValue;
+
+    /// <summary>
+    /// When set to a positive value, placement simulation enumerates every composite
+    /// (settlement + road) action and runs a fresh MCTS search with this many simulations
+    /// from each resulting post-placement state. This ensures uniform evaluation coverage
+    /// across all actions, including poor ones, producing more balanced training data.
+    /// Defaults to 0 (disabled — uses standard MCTS with UCB allocation).
+    /// Only applies when <see cref="ExportType"/> is <see cref="ExportType.InitialPlacement"/>.
+    /// </summary>
+    public int SimulationsPerAction { get; init; }
 }
 
 /// <summary>
@@ -324,6 +334,7 @@ internal record PlacementGameResult
     public required int MaxSimulations { get; init; }
     public required int MaxRolloutDepth { get; init; }
     public required int ActionRolloutLimit { get; init; }
+    public int SimulationsPerAction { get; init; }
     public required string BoardSerialized { get; init; }
     public required List<PlacementStateRecord> States { get; init; }
 
@@ -937,9 +948,102 @@ internal class SimulationRunner
                 state = (CatanState)UnwrapCoreAction(actions[0]).DoCoreAction();
                 mctsRoot = AdvanceMctsRoot(mctsRoot, 0, (ICoreState)state);
             }
+            else if (isSettlementStage && _options.SimulationsPerAction > 0)
+            {
+                // Per-action MCTS mode: enumerate every composite (settlement + road)
+                // action and run a fresh MCTS search from each post-placement state.
+                // This ensures uniform evaluation coverage across all actions.
+                var timer = Stopwatch.StartNew();
+                var playerIndex = (int)state.PlayerTurn;
+                var stageChar = StateToken.EncodeTurnStage(state.Stage).ToString();
+                var serializedState = state.SerializePlacementPhase();
+
+                var compositeActions = new List<PlacementActionRecord>();
+                var totalSimulations = 0;
+
+                // Create a per-action MCTS config: simulation-limited, no time limit.
+                var perActionMctsConfig = new Kjarni.MCTSConfig(
+                    searchTime.Unlimited,
+                    _options.SimulationsPerAction,
+                    _options.MaxRolloutDepth,
+                    System.Math.Sqrt(2.0),
+                    _options.ActionRolloutLimit,
+                    priorClient,
+                    expansionGuard,
+                    _options.MaxPriorDepth);
+                var perActionMcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(perActionMctsConfig);
+
+                int bestSettlementIdx = 0;
+                double bestWinRate = double.NegativeInfinity;
+
+                for (var si = 0; si < actions.Length; si++)
+                {
+                    var coreSettlement = UnwrapCoreAction(actions[si]);
+                    if (coreSettlement is not PlaceSettlementAction psa) continue;
+                    var vertex = psa.VertexIndex;
+
+                    // Apply settlement to get road-stage state.
+                    var roadState = (CatanState)coreSettlement.DoCoreAction();
+                    var roadActions = roadState.Actions();
+
+                    for (var ri = 0; ri < roadActions.Length; ri++)
+                    {
+                        var coreRoad = UnwrapCoreAction(roadActions[ri]);
+                        if (coreRoad is not PlaceRoadAction pra) continue;
+                        var edge = pra.EdgeIndex;
+
+                        // Apply road to get post-placement state.
+                        var postPlacementState = (ICoreState)coreRoad.DoCoreAction();
+
+                        // Run fresh MCTS from the post-placement state.
+                        var actionRoot = new Kjarni.MCTS.Types.MCTSState(postPlacementState);
+                        perActionMcts.RunSimulation(actionRoot);
+
+                        var wins = actionRoot.WinCounts is { Length: > 0 }
+                            ? (double[])actionRoot.WinCounts.Clone()
+                            : Array.Empty<double>();
+                        var rollouts = actionRoot.Rollouts;
+                        var winRate = rollouts > 0 && playerIndex < wins.Length
+                            ? wins[playerIndex] / rollouts
+                            : 0.0;
+                        totalSimulations += rollouts;
+
+                        var actionString = actionSerializer.Serialize(vertex, edge);
+                        compositeActions.Add(new PlacementActionRecord
+                        {
+                            Action = actionString,
+                            Vertex = vertex,
+                            Edge = edge,
+                            Wins = wins,
+                            Rollouts = rollouts,
+                            WinRate = winRate,
+                        });
+
+                        if (winRate > bestWinRate)
+                        {
+                            bestWinRate = winRate;
+                            bestSettlementIdx = si;
+                        }
+                    }
+                }
+
+                placementStates.Add(new PlacementStateRecord
+                {
+                    PlayerTurn = state.CurrentPlayer,
+                    Stage = stageChar,
+                    SerializedState = serializedState,
+                    Simulations = totalSimulations,
+                    ElapsedMs = (int)timer.Elapsed.TotalMilliseconds,
+                    Actions = compositeActions,
+                });
+
+                // Apply the best settlement action and advance.
+                state = (CatanState)UnwrapCoreAction(actions[bestSettlementIdx]).DoCoreAction();
+                mctsRoot = null; // Tree not reusable in per-action mode.
+            }
             else if (isSettlementStage)
             {
-                // Run MCTS at the settlement decision point.
+                // Standard MCTS mode: run a single search from the settlement root.
                 mctsRoot ??= new Kjarni.MCTS.Types.MCTSState((ICoreState)state);
                 mcts.RunSimulation(mctsRoot);
                 var bestPath = extractBestPath(mctsRoot);
@@ -1076,6 +1180,7 @@ internal class SimulationRunner
             MaxSimulations = _options.MaxSimulations,
             MaxRolloutDepth = _options.MaxRolloutDepth,
             ActionRolloutLimit = _options.ActionRolloutLimit,
+            SimulationsPerAction = _options.SimulationsPerAction,
             BoardSerialized = boardSerialized,
             States = placementStates,
             PriorsCalculated = priorsCalculated,
@@ -1333,6 +1438,7 @@ internal class SimulationRunner
                 game.MaxSimulations,
                 game.MaxRolloutDepth,
                 game.ActionRolloutLimit,
+                game.SimulationsPerAction,
             },
             board = new
             {

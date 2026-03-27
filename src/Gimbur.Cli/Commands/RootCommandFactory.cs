@@ -181,6 +181,13 @@ internal static class RootCommandFactory
             DefaultValueFactory = _ => int.MaxValue,
         };
 
+        var simulationsPerActionOption = new Option<int>("--simulations-per-action")
+        {
+            Description = "Run a fixed number of MCTS simulations per composite placement action. " +
+                          "Ensures uniform evaluation coverage for all actions (placement export only, default: 0 = disabled).",
+            DefaultValueFactory = _ => 0,
+        };
+
         var command = new Command("simulate", "Run Settlers of Catan AI self-play simulations.")
         {
           noOfGamesOption,
@@ -197,6 +204,7 @@ internal static class RootCommandFactory
           nnUrlOption,
           placementOnlyOption,
           maxPriorDepthOption,
+          simulationsPerActionOption,
         };
 
         command.SetAction(parseResult =>
@@ -224,6 +232,7 @@ internal static class RootCommandFactory
             string nnUrl = parseResult.GetValue(nnUrlOption)!;
             bool placementOnly = parseResult.GetValue(placementOnlyOption);
             int maxPriorDepth = parseResult.GetValue(maxPriorDepthOption);
+            int simulationsPerAction = parseResult.GetValue(simulationsPerActionOption);
 
             // ── Apply config file defaults for simulate ──────────────
             if (cfg.ValueKind == JsonValueKind.Object)
@@ -272,6 +281,8 @@ internal static class RootCommandFactory
                     placementOnly = ConfigLoader.GetBool(cfg, "placementOnly") ?? placementOnly;
                 if (!WasProvided(parseResult, "--max-prior-depth"))
                     maxPriorDepth = ConfigLoader.GetInt(cfg, "maxPriorDepth") ?? maxPriorDepth;
+                if (!WasProvided(parseResult, "--simulations-per-action"))
+                    simulationsPerAction = ConfigLoader.GetInt(cfg, "simulationsPerAction") ?? simulationsPerAction;
                 if (!WasProvided(parseResult, "--verbosity", "-v") && !WasProvided(parseResult, "-q") && !WasProvided(parseResult, "--verbose"))
                     verbosity = ConfigLoader.GetString(cfg, "verbosity") ?? verbosity;
             }
@@ -303,6 +314,7 @@ internal static class RootCommandFactory
                 NnUrl = nnUrl,
                 PlacementOnly = placementOnly,
                 MaxPriorDepth = maxPriorDepth,
+                SimulationsPerAction = simulationsPerAction,
             };
 
             var runner = new SimulationRunner(options);
@@ -342,7 +354,7 @@ internal static class RootCommandFactory
         var playersOption = new Option<string[]>("--ai")
         {
             Description = "AI for each player seat (e.g. --ai random greedy mcts nn). " +
-                          "Available: random, greedy, mcts, nn, nn-placement, nn-placement-random, nn-state",
+                          "Available: random, greedy, mcts, nn, nn-placement, nn-placement-random, nn-state, nn-state-random",
             AllowMultipleArgumentsPerToken = true,
         };
         playersOption.DefaultValueFactory = _ => new[] { "random", "greedy" };
