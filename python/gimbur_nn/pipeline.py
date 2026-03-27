@@ -299,6 +299,38 @@ def _run(args: list[str], *, label: str, cwd: Path | None = None) -> None:
         raise RuntimeError(detail)
 
 
+def _build_serve_config(
+    *,
+    model_path: Path,
+    game_config: str,
+    model_config: str,
+    model_type: str = "state",
+    serve_cfg: ServeConfig,
+) -> dict[str, Any]:
+    """Build the serve config dict for the inference server.
+
+    Maps model_type to the appropriate CLI args:
+    - "state" → --model, --game-config, --model-config
+    - "placement" → --placement-model, --placement-game-config, --placement-model-config
+    """
+    config: dict[str, Any] = {
+        "port": serve_cfg.port,
+        "host": serve_cfg.host,
+        "logLevel": serve_cfg.log_level,
+    }
+
+    if model_type == "placement":
+        config["placementModel"] = str(model_path)
+        config["gameConfig"] = game_config
+        config["placementModelConfig"] = model_config
+    else:
+        config["model"] = str(model_path)
+        config["gameConfig"] = game_config
+        config["modelConfig"] = model_config
+
+    return config
+
+
 class _ServerProcess:
     """Manages the lifecycle of the inference server subprocess."""
 
@@ -323,16 +355,14 @@ class _ServerProcess:
         # Fail fast if the port is already occupied by another process.
         self._check_port_available(serve_cfg.host, serve_cfg.port)
 
-        # Build serve config JSON.
-        serve_config: dict[str, Any] = {
-            "model": str(model_path),
-            "gameConfig": game_config,
-            "modelConfig": model_config,
-            "modelType": model_type,
-            "port": serve_cfg.port,
-            "host": serve_cfg.host,
-            "logLevel": serve_cfg.log_level,
-        }
+        # Build serve config JSON using the model_type-aware helper.
+        serve_config = _build_serve_config(
+            model_path=model_path,
+            game_config=game_config,
+            model_config=model_config,
+            model_type=model_type,
+            serve_cfg=serve_cfg,
+        )
 
         if pipeline_cfg is not None:
             config_path = _write_config(pipeline_cfg, "serve", serve_config)
@@ -341,25 +371,43 @@ class _ServerProcess:
                 "--config", str(config_path),
             ]
         else:
-            args = [
-                sys.executable,
-                "-m",
-                f"{python_module}.serve",
-                "--model",
-                str(model_path),
-                "--game-config",
-                game_config,
-                "--model-config",
-                model_config,
-                "--model-type",
-                model_type,
-                "--port",
-                str(serve_cfg.port),
-                "--host",
-                serve_cfg.host,
-                "--log-level",
-                serve_cfg.log_level,
-            ]
+            # Build CLI args directly based on model_type.
+            if model_type == "placement":
+                args = [
+                    sys.executable,
+                    "-m",
+                    f"{python_module}.serve",
+                    "--placement-model",
+                    str(model_path),
+                    "--game-config",
+                    game_config,
+                    "--placement-model-config",
+                    model_config,
+                    "--port",
+                    str(serve_cfg.port),
+                    "--host",
+                    serve_cfg.host,
+                    "--log-level",
+                    serve_cfg.log_level,
+                ]
+            else:
+                args = [
+                    sys.executable,
+                    "-m",
+                    f"{python_module}.serve",
+                    "--model",
+                    str(model_path),
+                    "--game-config",
+                    game_config,
+                    "--model-config",
+                    model_config,
+                    "--port",
+                    str(serve_cfg.port),
+                    "--host",
+                    serve_cfg.host,
+                    "--log-level",
+                    serve_cfg.log_level,
+                ]
 
         print(f"\n--- Starting inference server: {' '.join(args)}")
         self._proc = subprocess.Popen(args, cwd=cwd)

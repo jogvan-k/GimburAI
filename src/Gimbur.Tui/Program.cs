@@ -1,3 +1,4 @@
+using System.Net.Http;
 using System.Text;
 using System.Text.RegularExpressions;
 using Gimbur.Rules;
@@ -39,6 +40,7 @@ internal static class Program
     private static int[] _lastSeenLogIndexByPlayer = [];
     private static readonly StringBuilder _frameBuffer = new();
     private static NnClient? _nnClient;
+    private static PlacementActionSerializer? _actionSerializer;
 
     private static readonly Regex AnsiEscapePattern = new(
         @"\u001b\[[0-9;]*m",
@@ -62,8 +64,8 @@ internal static class Program
         var players = PromptPlayerCount(config.MinPlayers, config.MaxPlayers);
         var controllers = PromptPlayerControllers(players);
 
-        // If any player uses NN, set up the inference client.
-        if (controllers.Any(c => c == PlayerController.NN))
+        // If any player uses NN or NN-Value, set up the inference client.
+        if (controllers.Any(c => c is PlayerController.NN or PlayerController.NNValue))
         {
             // Check for --nn-url command-line argument first.
             string? nnUrl = null;
@@ -78,6 +80,7 @@ internal static class Program
 
             nnUrl ??= PromptNnUrl();
             _nnClient = new NnClient(nnUrl);
+            _actionSerializer = PlacementActionSerializer.ForTopology(config.Map.Topology);
 
             if (!_nnClient.IsHealthyAsync().GetAwaiter().GetResult())
             {
@@ -139,7 +142,13 @@ internal static class Program
 
             if (controllers[state.CurrentPlayer] == PlayerController.NN)
             {
-                state = ExecuteNnStep(state);
+                state = ExecuteNnStep(state, usePlacementModel: true);
+                continue;
+            }
+
+            if (controllers[state.CurrentPlayer] == PlayerController.NNValue)
+            {
+                state = ExecuteNnStep(state, usePlacementModel: false);
                 continue;
             }
 
@@ -282,13 +291,24 @@ internal static class Program
     }
 
     /// <summary>
-    /// Runs a single NN AI step.  Forced single-action states are applied
-    /// immediately.  When a real decision is needed, all possible resulting
-    /// states are evaluated via the NN inference server and the action with
-    /// the best expected win probability is chosen.  Continues until the
-    /// acting player's turn ends.
+    /// When a settlement stage selects a (settlement, road) pair via the
+    /// placement model, the chosen road edge index is stored here and
+    /// consumed on the following road stage.
     /// </summary>
-    private static CatanState ExecuteNnStep(CatanState state)
+    private static int _pendingRoadEdge = -1;
+
+    /// <summary>
+    /// Runs a single NN AI step.  Forced single-action states are applied
+    /// immediately.  When a real decision is needed, actions are evaluated
+    /// via the NN inference server and the best action is chosen.
+    ///
+    /// When <paramref name="usePlacementModel"/> is true, the placement
+    /// model is used during initial placement stages and the value model
+    /// for the rest of the game.  When false, the value model is used for
+    /// all stages (greedy fallback during placement since the value model
+    /// doesn't understand placement states).
+    /// </summary>
+    private static CatanState ExecuteNnStep(CatanState state, bool usePlacementModel)
     {
         var current = state;
         var startingPlayer = state.CurrentPlayer;
@@ -310,7 +330,163 @@ internal static class Program
             return current;
         }
 
-        // Real decision — evaluate all actions via NN.
+        // Check if we're in a placement stage.
+        var isPlacement = current.Stage is TurnStage.PlaceFirstSettlement
+                                        or TurnStage.PlaceFirstRoad
+                                        or TurnStage.PlaceSecondSettlement
+                                        or TurnStage.PlaceSecondRoad;
+
+        if (isPlacement && usePlacementModel)
+        {
+            current = ExecuteNnPlacementStep(current);
+        }
+        else if (isPlacement)
+        {
+            // NNValue mode: use greedy during placement.
+            var greedy = new GreedyActionSelector();
+            while (current.WinnerPlayer == 0
+                   && current.CurrentPlayer == startingPlayer
+                   && current.Stage is TurnStage.PlaceFirstSettlement
+                                    or TurnStage.PlaceFirstRoad
+                                    or TurnStage.PlaceSecondSettlement
+                                    or TurnStage.PlaceSecondRoad)
+            {
+                var action = greedy.ChooseAction(current, UiRng);
+                if (action is null) break;
+                current = ApplyActionAndLog(current, action, aiControlled: true);
+            }
+        }
+        else
+        {
+            current = ExecuteNnValueStep(current, startingPlayer);
+        }
+
+        // Continue applying forced actions on this player's turn.
+        while (current.WinnerPlayer == 0 && current.CurrentPlayer == startingPlayer)
+        {
+            var actions = current.Actions();
+            if (actions.Length != 1) break;
+
+            var catanAction = UnwrapCoreAction(actions[0]);
+            current = ApplyActionAndLog(current, catanAction, aiControlled: true);
+        }
+
+        // If the NN player still has a decision to make, recurse.
+        if (current.WinnerPlayer == 0
+            && current.CurrentPlayer == startingPlayer
+            && current.Actions().Length > 1)
+        {
+            return ExecuteNnStep(current, usePlacementModel);
+        }
+
+        return current;
+    }
+
+    /// <summary>
+    /// Handles one placement decision using the placement model.
+    /// For settlement stages, enumerates all (settlement, road) composite
+    /// actions and picks the best via the placement model.  For road stages,
+    /// applies the road chosen during the preceding settlement stage.
+    /// </summary>
+    private static CatanState ExecuteNnPlacementStep(CatanState state)
+    {
+        var coreActions = state.Actions();
+        if (coreActions.Length <= 1)
+        {
+            return coreActions.Length == 1
+                ? ApplyActionAndLog(state, UnwrapCoreAction(coreActions[0]), aiControlled: true)
+                : state;
+        }
+
+        // Road stage: apply the road selected during the preceding settlement stage.
+        if (state.Stage is TurnStage.PlaceFirstRoad or TurnStage.PlaceSecondRoad)
+        {
+            if (_pendingRoadEdge >= 0)
+            {
+                foreach (var ca in coreActions)
+                {
+                    var action = UnwrapCoreAction(ca);
+                    if (action is PlaceRoadAction road && road.EdgeIndex == _pendingRoadEdge)
+                    {
+                        _pendingRoadEdge = -1;
+                        return ApplyActionAndLog(state, road, aiControlled: true);
+                    }
+                }
+            }
+
+            // Fallback: pick randomly if pending road not found.
+            _pendingRoadEdge = -1;
+            var roll = UiRng.Next(coreActions.Length);
+            return ApplyActionAndLog(state, UnwrapCoreAction(coreActions[roll]), aiControlled: true);
+        }
+
+        // Settlement stage: evaluate all (settlement, road) composite actions.
+        var placementState = state.SerializePlacementPhaseCompact();
+        var compositeActions = new List<(int SettlementActionIndex, int RoadEdge, string ActionString)>();
+
+        for (var i = 0; i < coreActions.Length; i++)
+        {
+            var settlementAction = UnwrapCoreAction(coreActions[i]);
+            if (settlementAction is not PlaceSettlementAction placeSettlement)
+                continue;
+
+            var afterSettlement = (CatanState)placeSettlement.DoCoreAction();
+            var roadActions = afterSettlement.Actions();
+
+            foreach (var roadCoreAction in roadActions)
+            {
+                var roadAction = UnwrapCoreAction(roadCoreAction);
+                if (roadAction is not PlaceRoadAction placeRoad)
+                    continue;
+
+                var actionString = _actionSerializer!.Serialize(
+                    placeSettlement.VertexIndex, placeRoad.EdgeIndex);
+                compositeActions.Add((i, placeRoad.EdgeIndex, actionString));
+            }
+        }
+
+        if (compositeActions.Count == 0)
+        {
+            var roll = UiRng.Next(coreActions.Length);
+            return ApplyActionAndLog(state, UnwrapCoreAction(coreActions[roll]), aiControlled: true);
+        }
+
+        var states = new List<string>(compositeActions.Count);
+        var actions = new List<string>(compositeActions.Count);
+        foreach (var (_, _, actionString) in compositeActions)
+        {
+            states.Add(placementState);
+            actions.Add(actionString);
+        }
+
+        var buckets = _nnClient!.PredictPlacementAsync(states, actions).GetAwaiter().GetResult();
+
+        var bestIndex = 0;
+        var bestScore = float.NegativeInfinity;
+        for (var j = 0; j < compositeActions.Count; j++)
+        {
+            var score = j < buckets.Length
+                ? NnClient.ExpectedWinProbability(buckets[j])
+                : 0f;
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestIndex = j;
+            }
+        }
+
+        var (bestSettlementIdx, bestRoadEdge, _) = compositeActions[bestIndex];
+        _pendingRoadEdge = bestRoadEdge;
+
+        return ApplyActionAndLog(state, UnwrapCoreAction(coreActions[bestSettlementIdx]), aiControlled: true);
+    }
+
+    /// <summary>
+    /// Evaluates all actions via the value (state) model and applies the
+    /// best one.  Used for main-game decisions.
+    /// </summary>
+    private static CatanState ExecuteNnValueStep(CatanState current, int startingPlayer)
+    {
         var coreActions = current.Actions();
         var actingPlayer = current.CurrentPlayer;
 
@@ -381,27 +557,7 @@ internal static class Program
         }
 
         var bestAction = UnwrapCoreAction(coreActions[bestActionIndex]);
-        current = ApplyActionAndLog(current, bestAction, aiControlled: true);
-
-        // Continue applying forced actions on this player's turn.
-        while (current.WinnerPlayer == 0 && current.CurrentPlayer == startingPlayer)
-        {
-            var actions = current.Actions();
-            if (actions.Length != 1) break;
-
-            var catanAction = UnwrapCoreAction(actions[0]);
-            current = ApplyActionAndLog(current, catanAction, aiControlled: true);
-        }
-
-        // If the NN player still has a decision to make, recurse.
-        if (current.WinnerPlayer == 0
-            && current.CurrentPlayer == startingPlayer
-            && current.Actions().Length > 1)
-        {
-            return ExecuteNnStep(current);
-        }
-
-        return current;
+        return ApplyActionAndLog(current, bestAction, aiControlled: true);
     }
 
     private static CatanAction UnwrapCoreAction(CoreAction coreAction)
@@ -633,7 +789,18 @@ internal static class Program
     /// <summary>
     /// Computes NN win rates for a set of spatial placement actions and returns
     /// a dictionary mapping each candidate location index (vertex, edge, or tile)
-    /// to the predicted win probability. Returns null when the NN client is not connected.
+    /// to the predicted win probability.  Returns null when the NN client is not
+    /// connected.
+    ///
+    /// During initial placement stages (settlement/road), the placement model is
+    /// preferred when available.  For settlement stages each candidate is scored
+    /// by enumerating all (settlement, road) composites and taking the best road
+    /// score.  For road stages the already-placed settlement is inferred and each
+    /// road is evaluated as a composite action.
+    ///
+    /// Outside of placement stages — or when the placement model is not loaded —
+    /// the value (state) model is used instead.  If that endpoint is unavailable
+    /// (404) the method returns null so the UI simply omits annotations.
     /// </summary>
     private static Dictionary<int, float>? ComputeCandidateWinRates(
         CatanState state, CatanAction[] actions)
@@ -641,14 +808,191 @@ internal static class Program
         if (_nnClient is null || actions.Length == 0)
             return null;
 
-        var winRates = ComputeActionWinRates(state, actions);
-        var result = new Dictionary<int, float>(winRates.Count);
-        foreach (var (action, rate) in winRates)
+        var isPlacement = state.Stage is TurnStage.PlaceFirstSettlement
+                                       or TurnStage.PlaceFirstRoad
+                                       or TurnStage.PlaceSecondSettlement
+                                       or TurnStage.PlaceSecondRoad;
+
+        if (isPlacement && _actionSerializer is not null)
         {
-            result[action.TargetIndex] = rate;
+            if (state.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement)
+                return ComputePlacementSettlementWinRates(state, actions);
+
+            return ComputePlacementRoadWinRates(state, actions);
         }
-        return result;
+
+        return ComputeCandidateWinRatesViaStateModel(state, actions);
     }
+
+    /// <summary>
+    /// Falls back to the value (state) model for candidate win rates.
+    /// Returns null if the endpoint is unavailable (e.g. 404).
+    /// </summary>
+    private static Dictionary<int, float>? ComputeCandidateWinRatesViaStateModel(
+        CatanState state, CatanAction[] actions)
+    {
+        try
+        {
+            var winRates = ComputeActionWinRates(state, actions);
+            var result = new Dictionary<int, float>(winRates.Count);
+            foreach (var (action, rate) in winRates)
+            {
+                result[action.TargetIndex] = rate;
+            }
+            return result;
+        }
+        catch (HttpRequestException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Uses the placement model to score settlement candidates.  For each
+    /// candidate settlement vertex, all legal follow-up roads are enumerated
+    /// and the best composite score is used as the vertex's win rate.
+    /// </summary>
+    private static Dictionary<int, float>? ComputePlacementSettlementWinRates(
+        CatanState state, CatanAction[] actions)
+    {
+        var placementState = state.SerializePlacementPhaseCompact();
+        var composites = new List<(int VertexIndex, string ActionString)>();
+
+        foreach (var action in actions)
+        {
+            if (action is not PlaceSettlementAction placeSettlement)
+                continue;
+
+            var afterSettlement = (CatanState)placeSettlement.DoCoreAction();
+            var roadActions = afterSettlement.Actions();
+
+            foreach (var roadCoreAction in roadActions)
+            {
+                var roadAction = roadCoreAction.IsDeterministic
+                    ? (CatanAction)((CoreAction.Deterministic)roadCoreAction).Item
+                    : (CatanAction)((CoreAction.Stochastic)roadCoreAction).Item;
+                if (roadAction is not PlaceRoadAction placeRoad)
+                    continue;
+
+                var actionString = _actionSerializer!.Serialize(
+                    placeSettlement.VertexIndex, placeRoad.EdgeIndex);
+                composites.Add((placeSettlement.VertexIndex, actionString));
+            }
+        }
+
+        if (composites.Count == 0)
+            return null;
+
+        var states = new List<string>(composites.Count);
+        var actionStrings = new List<string>(composites.Count);
+        foreach (var (_, actionString) in composites)
+        {
+            states.Add(placementState);
+            actionStrings.Add(actionString);
+        }
+
+        try
+        {
+            var buckets = _nnClient!.PredictPlacementAsync(states, actionStrings)
+                .GetAwaiter().GetResult();
+
+            // Aggregate: best score per settlement vertex.
+            var result = new Dictionary<int, float>();
+            for (var i = 0; i < composites.Count; i++)
+            {
+                var score = i < buckets.Length
+                    ? NnClient.ExpectedWinProbability(buckets[i])
+                    : 0f;
+                var vertex = composites[i].VertexIndex;
+                if (!result.TryGetValue(vertex, out var existing) || score > existing)
+                    result[vertex] = score;
+            }
+            return result;
+        }
+        catch (HttpRequestException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Uses the placement model to score road candidates during placement.
+    /// The just-placed settlement vertex is inferred from the board (settlement
+    /// with no adjacent road for the current player).  Each candidate road is
+    /// evaluated as a (settlement, road) composite action.
+    /// </summary>
+    private static Dictionary<int, float>? ComputePlacementRoadWinRates(
+        CatanState state, CatanAction[] actions)
+    {
+        // Infer the settlement vertex that was just placed (no road yet).
+        var topology = state.Board.Topology;
+        int? settlementVertex = null;
+        for (var vi = 0; vi < topology.VertexCount; vi++)
+        {
+            var occ = state.Board.VertexOccupancy[vi];
+            if (occ.Building != BuildingType.Settlement || occ.Player != state.CurrentPlayer)
+                continue;
+
+            var hasOwnRoad = false;
+            foreach (var edge in topology.VertexEdges[vi])
+            {
+                if (state.Board.EdgeOccupancy[edge].Player == state.CurrentPlayer)
+                {
+                    hasOwnRoad = true;
+                    break;
+                }
+            }
+
+            if (!hasOwnRoad)
+            {
+                settlementVertex = vi;
+                break;
+            }
+        }
+
+        if (settlementVertex is null)
+            return null;
+
+        // The placement model expects the state before the composite action.
+        // Here the settlement is already placed, so the serialized state
+        // differs slightly from training data.  In practice the scores are
+        // still useful for ranking road candidates.
+        var placementState = state.SerializePlacementPhaseCompact();
+        var roadActions = actions.OfType<PlaceRoadAction>().ToArray();
+
+        if (roadActions.Length == 0)
+            return null;
+
+        var states = new List<string>(roadActions.Length);
+        var actionStrings = new List<string>(roadActions.Length);
+        foreach (var road in roadActions)
+        {
+            states.Add(placementState);
+            actionStrings.Add(_actionSerializer!.Serialize(
+                settlementVertex.Value, road.EdgeIndex));
+        }
+
+        try
+        {
+            var buckets = _nnClient!.PredictPlacementAsync(states, actionStrings)
+                .GetAwaiter().GetResult();
+
+            var result = new Dictionary<int, float>();
+            for (var i = 0; i < roadActions.Length; i++)
+            {
+                var score = i < buckets.Length
+                    ? NnClient.ExpectedWinProbability(buckets[i])
+                    : 0f;
+                result[roadActions[i].EdgeIndex] = score;
+            }
+            return result;
+        }
+        catch (HttpRequestException)
+        {
+            return null;
+        }
+    }
+
 
     /// <summary>
     /// Annotates menu entry labels with NN win rate information.
@@ -709,12 +1053,21 @@ internal static class Program
         var selectedIndex = 0;
 
         // Compute NN win rates for display if an inference server is connected.
-        var winRates = _nnClient is not null
-            ? ComputeActionWinRates(state, actions)
-            : null;
-        var currentWinRate = winRates is not null
-            ? ComputeCurrentStateWinRate(state)
-            : (float?)null;
+        // Gracefully skip if the state model endpoint is not available (404).
+        Dictionary<CatanAction, float>? winRates = null;
+        float? currentWinRate = null;
+        if (_nnClient is not null)
+        {
+            try
+            {
+                winRates = ComputeActionWinRates(state, actions);
+                currentWinRate = ComputeCurrentStateWinRate(state);
+            }
+            catch (HttpRequestException)
+            {
+                // State model endpoint not available — skip annotations.
+            }
+        }
         if (winRates is not null)
         {
             AnnotateMenuEntries(menuEntries, winRates);
@@ -1465,7 +1818,7 @@ internal static class Program
         {
             while (true)
             {
-                Console.Write($"Player {player} controller ([h]uman/[g]reedy/[m]cts/[n]n): ");
+                Console.Write($"Player {player} controller ([h]uman/[g]reedy/[m]cts/[n]n/nn-[v]alue): ");
                 var input = Console.ReadLine()?.Trim().ToLowerInvariant();
                 if (string.IsNullOrEmpty(input) || input is "h" or "human")
                 {
@@ -1491,7 +1844,13 @@ internal static class Program
                     break;
                 }
 
-                Console.WriteLine("Please enter 'h' for human, 'g' for greedy, 'm' for MCTS, or 'n' for NN.");
+                if (input is "v" or "nn-value" or "nn-v")
+                {
+                    controllers[player] = PlayerController.NNValue;
+                    break;
+                }
+
+                Console.WriteLine("Please enter 'h' for human, 'g' for greedy, 'm' for MCTS, 'n' for NN, or 'v' for NN-Value.");
             }
         }
 
@@ -2071,6 +2430,7 @@ internal enum PlayerController
     Greedy,
     MCTS,
     NN,
+    NNValue,
 }
 
 internal enum ActionMenuContext

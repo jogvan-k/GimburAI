@@ -6,8 +6,9 @@ namespace Gimbur;
 
 /// <summary>
 /// HTTP client for the Python GimburNet inference server.
-/// Sends serialized game state strings to <c>/predict</c> and returns
+/// Sends serialized game state strings to <c>/state/predict</c> and returns
 /// per-state win probability distributions (128 buckets).
+/// Placement requests go to <c>/placement/predict</c>.
 /// </summary>
 public sealed class NnClient : IDisposable
 {
@@ -41,7 +42,7 @@ public sealed class NnClient : IDisposable
     {
         var request = new PredictRequest { States = compactStates };
         var response = await SendWithRetryAsync(
-            () => _http.PostAsJsonAsync("predict", request, JsonOptions));
+            () => _http.PostAsJsonAsync("state/predict", request, JsonOptions));
         var result = await response.Content.ReadFromJsonAsync<PredictResponse>(JsonOptions);
         return result?.Probabilities ?? [];
     }
@@ -57,7 +58,7 @@ public sealed class NnClient : IDisposable
 
     /// <summary>
     /// Sends compact state strings together with target player numbers to
-    /// the <c>/predict-player</c> endpoint.  The server rotates each state
+    /// the <c>/state/predict-player</c> endpoint.  The server rotates each state
     /// so that the target player becomes player 1, runs inference, and
     /// returns a scalar expected win probability for each state.
     /// </summary>
@@ -73,7 +74,7 @@ public sealed class NnClient : IDisposable
     {
         var request = new PredictPlayerRequest { States = compactStates, Players = players };
         var response = await SendWithRetryAsync(
-            () => _http.PostAsJsonAsync("predict-player", request, JsonOptions));
+            () => _http.PostAsJsonAsync("state/predict-player", request, JsonOptions));
         var result = await response.Content.ReadFromJsonAsync<PredictPlayerResponse>(JsonOptions);
         return result?.WinProbabilities ?? [];
     }
@@ -89,7 +90,7 @@ public sealed class NnClient : IDisposable
 
     /// <summary>
     /// Sends compact placement state strings together with action strings to
-    /// the <c>/predict-placement</c> endpoint.  The server evaluates each
+    /// the <c>/placement/predict</c> endpoint.  The server evaluates each
     /// (state, action) pair and returns bucket probability distributions.
     /// </summary>
     /// <param name="compactStates">Compact serialized placement phase states.</param>
@@ -104,7 +105,7 @@ public sealed class NnClient : IDisposable
     {
         var request = new PredictPlacementRequest { States = compactStates, Actions = actions };
         var response = await SendWithRetryAsync(
-            () => _http.PostAsJsonAsync("predict-placement", request, JsonOptions));
+            () => _http.PostAsJsonAsync("placement/predict", request, JsonOptions));
         var result = await response.Content.ReadFromJsonAsync<PredictPlacementResponse>(JsonOptions);
         return result?.Probabilities ?? [];
     }

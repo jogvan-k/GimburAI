@@ -1,17 +1,36 @@
 """
 Inference server for GimburNet.
 
-Loads a trained model checkpoint and exposes an HTTP endpoint that
-accepts serialized board+state strings and returns win probability
-predictions.  The Kjarni MCTS engine can call this endpoint as a
-learned leaf evaluator.
+Loads trained model checkpoints and exposes HTTP endpoints for both state
+and placement models.  A single server can serve one or both model types.
 
-Usage::
+State-model endpoints live under ``/state/...`` and placement-model
+endpoints under ``/placement/...``.  The server registers whichever set
+of endpoints corresponds to the models that were provided.
+
+Usage (state model only)::
 
     python -m gimbur_nn.serve \
         --model model.pt \
         --game-config mini_2p \
         --model-config small \
+        --port 8000
+
+Usage (placement model only)::
+
+    python -m gimbur_nn.serve \
+        --placement-model placement.pt \
+        --game-config mini_2p \
+        --placement-model-config small \
+        --port 8000
+
+Usage (both models on a single server)::
+
+    python -m gimbur_nn.serve \
+        --model model.pt \
+        --game-config mini_2p \
+        --model-config small \
+        --placement-model placement.pt \
         --port 8000
 """
 
@@ -47,21 +66,21 @@ logger = logging.getLogger(__name__)
 
 
 class PredictRequest(BaseModel):
-    """Request body for the /predict endpoint."""
+    """Request body for the /state/predict endpoint."""
 
     states: list[str]
     """List of serialized game state strings (compact or human-readable)."""
 
 
 class PredictResponse(BaseModel):
-    """Response body for the /predict endpoint."""
+    """Response body for the /state/predict endpoint."""
 
     probabilities: list[list[float]]
     """Per-state bucket probabilities, shape (n_states, n_buckets)."""
 
 
 class PredictPlayerRequest(BaseModel):
-    """Request body for the /predict-player endpoint."""
+    """Request body for the /state/predict-player endpoint."""
 
     states: list[str]
     """Compact serialized game state strings."""
@@ -72,7 +91,7 @@ class PredictPlayerRequest(BaseModel):
 
 
 class PredictPlayerResponse(BaseModel):
-    """Response body for the /predict-player endpoint."""
+    """Response body for the /state/predict-player endpoint."""
 
     win_probabilities: list[float]
     """Scalar expected win probability for each target player."""
@@ -82,7 +101,7 @@ class PredictPlayerResponse(BaseModel):
 
 
 class PredictPlacementRequest(BaseModel):
-    """Request body for the /predict-placement endpoint."""
+    """Request body for the /placement/predict endpoint."""
 
     states: list[str]
     """Serialized placement phase state strings."""
@@ -92,7 +111,7 @@ class PredictPlacementRequest(BaseModel):
 
 
 class PredictPlacementResponse(BaseModel):
-    """Response body for the /predict-placement endpoint."""
+    """Response body for the /placement/predict endpoint."""
 
     probabilities: list[list[float]]
     """Per-(state,action) bucket probabilities, shape (n, n_buckets)."""
@@ -119,7 +138,7 @@ class PriorRequest(BaseModel):
 
 
 class PriorEnqueueRequest(BaseModel):
-    """Request body for /prior-enqueue."""
+    """Request body for /state/prior-enqueue."""
 
     requests: list[PriorRequest]
 
@@ -132,7 +151,7 @@ class PriorResponseItem(BaseModel):
 
 
 class PriorCollectResponse(BaseModel):
-    """Response body for /prior-collect."""
+    """Response body for /state/prior-collect and /placement/prior-collect."""
 
     responses: list[PriorResponseItem]
 
@@ -162,7 +181,7 @@ class PlacementPriorRequest(BaseModel):
 
 
 class PlacementPriorEnqueueRequest(BaseModel):
-    """Request body for /prior-placement-enqueue."""
+    """Request body for /placement/prior-enqueue."""
 
     requests: list[PlacementPriorRequest]
 
@@ -290,7 +309,8 @@ _CONFIG_KEY_MAP: dict[str, str] = {
     "model": "model",
     "gameConfig": "game_config",
     "modelConfig": "model_config",
-    "modelType": "model_type",
+    "placementModel": "placement_model",
+    "placementModelConfig": "placement_model_config",
     "port": "port",
     "host": "host",
     "logLevel": "log_level",
@@ -302,7 +322,8 @@ _ARG_DEFAULTS: dict[str, object] = {
     "model": None,
     "game_config": None,
     "model_config": None,
-    "model_type": "state",
+    "placement_model": None,
+    "placement_model_config": None,
     "port": 8000,
     "host": "127.0.0.1",
     "log_level": "info",
@@ -312,12 +333,14 @@ _ARG_DEFAULTS: dict[str, object] = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Serve GimburNet for inference.")
+
+    # ── State model args ──────────────────────────────────────────────────
     parser.add_argument(
         "--model",
         type=Path,
         required=False,
         default=None,
-        help="Path to trained model checkpoint.",
+        help="Path to trained state model checkpoint.",
     )
     parser.add_argument(
         "--game-config",
@@ -325,7 +348,7 @@ def parse_args() -> argparse.Namespace:
         required=False,
         default=None,
         choices=sorted(CONFIGS_BY_NAME),
-        help="Game configuration preset (must match the checkpoint).",
+        help="Game configuration preset for the state model.",
     )
     parser.add_argument(
         "--model-config",
@@ -333,17 +356,27 @@ def parse_args() -> argparse.Namespace:
         required=False,
         default=None,
         choices=sorted(MODEL_CONFIGS_BY_NAME),
-        help="Model size preset (must match the checkpoint).",
+        help="Model size preset for the state model.",
+    )
+
+    # ── Placement model args ──────────────────────────────────────────────
+    parser.add_argument(
+        "--placement-model",
+        type=Path,
+        required=False,
+        default=None,
+        help="Path to trained placement model checkpoint.",
     )
     parser.add_argument(
-        "--model-type",
+        "--placement-model-config",
         type=str,
-        default="state",
-        choices=["state", "placement"],
-        help=(
-            "Model type: 'state' for GimburTransformer, 'placement' for GimburPlacementTransformer."
-        ),
+        required=False,
+        default=None,
+        choices=sorted(MODEL_CONFIGS_BY_NAME),
+        help="Model size preset for the placement model.  Defaults to --model-config if omitted.",
     )
+
+    # ── Server args ───────────────────────────────────────────────────────
     parser.add_argument("--port", type=int, default=8000, help="HTTP port.")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Bind address.")
     parser.add_argument(
@@ -362,28 +395,38 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def create_app(
-    model: GimburTransformer | GimburPlacementTransformer,
-    device: torch.device,
-    game_cfg: GameConfig,
-    model_type: str = "state",
-) -> FastAPI:
-    """Build the FastAPI application with the model captured in closure."""
+def _expected_win_prob(probs: torch.Tensor) -> float:
+    """Compute expected win probability from a 1-D bucket distribution."""
+    n = probs.shape[0]
+    centres = torch.arange(n, dtype=probs.dtype, device=probs.device)
+    centres = (centres + 0.5) / n
+    return float((probs * centres).sum())
 
-    def _expected_win_prob(probs: torch.Tensor) -> float:
-        """Compute expected win probability from a 1-D bucket distribution."""
-        n = probs.shape[0]
-        centres = torch.arange(n, dtype=probs.dtype, device=probs.device)
-        centres = (centres + 0.5) / n
-        return float((probs * centres).sum())
+
+def create_app(
+    state_model: GimburTransformer | None = None,
+    state_device: torch.device | None = None,
+    state_game_cfg: GameConfig | None = None,
+    placement_model: GimburPlacementTransformer | None = None,
+    placement_device: torch.device | None = None,
+    placement_game_cfg: GameConfig | None = None,
+) -> FastAPI:
+    """Build the FastAPI application.
+
+    Registers ``/state/...`` endpoints when a state model is provided
+    and ``/placement/...`` endpoints when a placement model is provided.
+    Both can be active simultaneously.
+    """
 
     # Collect async worker coroutines to be started by the lifespan handler.
     _worker_coros: list[object] = []
 
-    # ── State-model endpoints (disabled for placement models) ─────────────
+    # ── State-model endpoints ─────────────────────────────────────────────
 
-    if model_type != "placement":
-        tokenizer = StateTokenizer(game_cfg)
+    if state_model is not None:
+        assert state_device is not None
+        assert state_game_cfg is not None
+        tokenizer = StateTokenizer(state_game_cfg)
         prior_queue: PriorQueue[PriorRequest] = PriorQueue()
 
         def _infer_prior_batch(batch: list[PriorRequest]) -> list[PriorResponseItem]:
@@ -395,7 +438,7 @@ def create_app(
                     continue
                 try:
                     rotated = [tokenizer.rotate_player_state(s, req.player) for s in req.states]
-                    token_ids = tokenizer.tokenize_batch(rotated).to(device)
+                    token_ids = tokenizer.tokenize_batch(rotated).to(state_device)
                 except (KeyError, ValueError):
                     # Bad state — return zeros so the MCTS falls back to uniform.
                     results.append(
@@ -407,7 +450,7 @@ def create_app(
                     continue
 
                 with torch.no_grad():
-                    logits = model(token_ids)
+                    logits = state_model(token_ids)
                     last_logits = logits[:, -1, :]
                     probs = F.softmax(last_logits, dim=-1)
 
@@ -432,8 +475,10 @@ def create_app(
 
         _worker_coros.append(_prior_worker)
 
-    if model_type == "placement":
-        placement_tokenizer = PlacementTokenizer(game_cfg)
+    if placement_model is not None:
+        assert placement_device is not None
+        assert placement_game_cfg is not None
+        placement_tokenizer = PlacementTokenizer(placement_game_cfg)
 
         placement_prior_queue: PriorQueue[PlacementPriorRequest] = PriorQueue()
 
@@ -469,9 +514,9 @@ def create_app(
             # Phase 2: Single batched forward pass.
             all_win_probs: torch.Tensor | None = None
             if all_tokens:
-                token_batch = torch.stack(all_tokens).to(device)
+                token_batch = torch.stack(all_tokens).to(placement_device)
                 with torch.no_grad():
-                    logits = model(token_batch)
+                    logits = placement_model(token_batch)
                     last_logits = logits[:, -1, :]
                     probs = F.softmax(last_logits, dim=-1)
 
@@ -549,31 +594,32 @@ def create_app(
 
     # ── State-model route registration ────────────────────────────────────
 
-    if model_type != "placement":
+    if state_model is not None:
 
-        @app.post("/predict", response_model=PredictResponse)
+        @app.post("/state/predict", response_model=PredictResponse)
         async def predict(request: PredictRequest) -> PredictResponse:
             if not request.states:
                 raise HTTPException(status_code=400, detail="states list must not be empty")
 
             try:
-                token_ids = tokenizer.tokenize_batch(request.states).to(device)
+                token_ids = tokenizer.tokenize_batch(request.states).to(state_device)
             except (KeyError, ValueError) as exc:
                 logger.error(
-                    "Tokenization failed in /predict: %s\n  First state (truncated): %.200s",
+                    "Tokenization failed in /state/predict: %s\n"
+                    "  First state (truncated): %.200s",
                     exc,
                     request.states[0] if request.states else "<empty>",
                 )
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
             with torch.no_grad():
-                logits = model(token_ids)  # (batch, seq_len, n_buckets)
+                logits = state_model(token_ids)  # (batch, seq_len, n_buckets)
                 last_logits = logits[:, -1, :]  # (batch, n_buckets)
                 probs = F.softmax(last_logits, dim=-1)
 
             return PredictResponse(probabilities=probs.cpu().tolist())
 
-        @app.post("/predict-player", response_model=PredictPlayerResponse)
+        @app.post("/state/predict-player", response_model=PredictPlayerResponse)
         async def predict_player(
             request: PredictPlayerRequest,
         ) -> PredictPlayerResponse:
@@ -602,10 +648,10 @@ def create_app(
                     tokenizer.rotate_player_state(s, p)
                     for s, p in zip(request.states, request.players)
                 ]
-                token_ids = tokenizer.tokenize_batch(rotated).to(device)
+                token_ids = tokenizer.tokenize_batch(rotated).to(state_device)
             except (KeyError, ValueError) as exc:
                 logger.error(
-                    "Tokenization failed in /predict-player: %s\n"
+                    "Tokenization failed in /state/predict-player: %s\n"
                     "  Players: %s\n  First state (truncated): %.200s",
                     exc,
                     request.players[:5],
@@ -614,7 +660,7 @@ def create_app(
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
             with torch.no_grad():
-                logits = model(token_ids)
+                logits = state_model(token_ids)
                 last_logits = logits[:, -1, :]
                 probs = F.softmax(last_logits, dim=-1)
 
@@ -623,7 +669,7 @@ def create_app(
 
         # ── Prior endpoints ───────────────────────────────────────────────────
 
-        @app.post("/prior-enqueue", status_code=202)
+        @app.post("/state/prior-enqueue", status_code=202)
         async def prior_enqueue(request: PriorEnqueueRequest) -> JSONResponse:
             """Accept a batch of prior requests into the priority queue."""
             accepted = 0
@@ -638,13 +684,13 @@ def create_app(
                 content={"accepted": accepted, "dropped": dropped},
             )
 
-        @app.post("/prior-collect", response_model=PriorCollectResponse)
+        @app.post("/state/prior-collect", response_model=PriorCollectResponse)
         async def prior_collect() -> PriorCollectResponse:
             """Return all completed prior inference results."""
             results = prior_queue.collect_results()
             return PriorCollectResponse(responses=results)
 
-        @app.post("/prior-flush")
+        @app.post("/state/prior-flush")
         async def prior_flush() -> dict[str, str]:
             """Clear the priority queue and discard pending results."""
             prior_queue.flush()
@@ -656,9 +702,9 @@ def create_app(
 
     # ── Placement endpoint ────────────────────────────────────────────────────
 
-    if model_type == "placement":
+    if placement_model is not None:
 
-        @app.post("/predict-placement", response_model=PredictPlacementResponse)
+        @app.post("/placement/predict", response_model=PredictPlacementResponse)
         async def predict_placement(
             request: PredictPlacementRequest,
         ) -> PredictPlacementResponse:
@@ -687,10 +733,10 @@ def create_app(
                         placement_tokenizer.tokenize_state_action(s, a)
                         for s, a in zip(request.states, request.actions)
                     ]
-                ).to(device)
+                ).to(placement_device)
             except (KeyError, ValueError) as exc:
                 logger.error(
-                    "Tokenization failed in /predict-placement: %s\n"
+                    "Tokenization failed in /placement/predict: %s\n"
                     "  First state (truncated): %.200s\n  First action: %s",
                     exc,
                     request.states[0] if request.states else "<empty>",
@@ -699,7 +745,7 @@ def create_app(
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
             with torch.no_grad():
-                logits = model(token_batch)
+                logits = placement_model(token_batch)
                 last_logits = logits[:, -1, :]
                 probs = F.softmax(last_logits, dim=-1)
 
@@ -707,7 +753,7 @@ def create_app(
 
         # ── Placement prior queue endpoints ──────────────────────────────────
 
-        @app.post("/prior-placement-enqueue", status_code=202)
+        @app.post("/placement/prior-enqueue", status_code=202)
         async def prior_placement_enqueue(
             request: PlacementPriorEnqueueRequest,
         ) -> JSONResponse:
@@ -724,13 +770,13 @@ def create_app(
                 content={"accepted": accepted, "dropped": dropped},
             )
 
-        @app.post("/prior-placement-collect", response_model=PriorCollectResponse)
+        @app.post("/placement/prior-collect", response_model=PriorCollectResponse)
         async def prior_placement_collect() -> PriorCollectResponse:
             """Return all completed placement prior inference results."""
             results = placement_prior_queue.collect_results()
             return PriorCollectResponse(responses=results)
 
-        @app.post("/prior-placement-flush")
+        @app.post("/placement/prior-flush")
         async def prior_placement_flush() -> dict[str, str]:
             """Clear the placement priority queue and discard pending results."""
             placement_prior_queue.flush()
@@ -756,41 +802,93 @@ def main() -> None:
             if current != default:
                 continue
             value = raw[json_key]
-            # Convert string path for --model.
-            if attr == "model":
+            # Convert string path for --model and --placement-model.
+            if attr in ("model", "placement_model"):
                 value = Path(value)
             setattr(args, attr, value)
 
-    # Validate required args (may have come from config file).
-    if args.model is None:
-        raise SystemExit("Error: --model is required (via CLI or config file).")
-    if args.game_config is None:
-        raise SystemExit("Error: --game-config is required (via CLI or config file).")
-    if args.model_config is None:
-        raise SystemExit("Error: --model-config is required (via CLI or config file).")
+    # Determine which models to load.
+    has_state = args.model is not None
+    has_placement = args.placement_model is not None
 
-    game_cfg = CONFIGS_BY_NAME[args.game_config]
-    model_cfg = MODEL_CONFIGS_BY_NAME[args.model_config]
+    if not has_state and not has_placement:
+        raise SystemExit(
+            "Error: at least one model must be specified.\n"
+            "  Use --model for a state model, --placement-model for a placement model, "
+            "or both."
+        )
+
+    # Validate state model args.
+    if has_state:
+        if args.game_config is None:
+            raise SystemExit("Error: --game-config is required when --model is specified.")
+        if args.model_config is None:
+            raise SystemExit("Error: --model-config is required when --model is specified.")
+
+    # Validate placement model args.
+    if has_placement:
+        if args.game_config is None:
+            raise SystemExit(
+                "Error: --game-config is required when --placement-model is specified."
+            )
+        # Default --placement-model-config to --model-config when omitted.
+        if args.placement_model_config is None:
+            if args.model_config is not None:
+                args.placement_model_config = args.model_config
+            else:
+                raise SystemExit(
+                    "Error: --placement-model-config (or --model-config) is required "
+                    "when --placement-model is specified."
+                )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # ── Select model class based on model_type ────────────────────────────
-    if args.model_type == "placement":
-        model = GimburPlacementTransformer(game_cfg, model_cfg)
-    else:
-        model = GimburTransformer(game_cfg, model_cfg)
+    # ── Load state model ──────────────────────────────────────────────────
+    loaded_state_model: GimburTransformer | None = None
+    state_game_cfg: GameConfig | None = None
+    if has_state:
+        state_game_cfg = CONFIGS_BY_NAME[args.game_config]
+        state_model_cfg = MODEL_CONFIGS_BY_NAME[args.model_config]
+        loaded_state_model = GimburTransformer(state_game_cfg, state_model_cfg)
+        loaded_state_model.load_state_dict(
+            torch.load(args.model, map_location=device, weights_only=True)
+        )
+        loaded_state_model.to(device)
+        loaded_state_model.eval()
+        param_count = sum(p.numel() for p in loaded_state_model.parameters())
+        print(
+            f"Loaded state model ({args.model_config}) for {args.game_config} "
+            f"({param_count:,} parameters) on {device}"
+        )
 
-    model.load_state_dict(torch.load(args.model, map_location=device, weights_only=True))
-    model.to(device)
-    model.eval()
+    # ── Load placement model ──────────────────────────────────────────────
+    loaded_placement_model: GimburPlacementTransformer | None = None
+    placement_game_cfg: GameConfig | None = None
+    if has_placement:
+        placement_game_cfg = CONFIGS_BY_NAME[args.game_config]
+        placement_model_cfg = MODEL_CONFIGS_BY_NAME[args.placement_model_config]
+        loaded_placement_model = GimburPlacementTransformer(
+            placement_game_cfg, placement_model_cfg
+        )
+        loaded_placement_model.load_state_dict(
+            torch.load(args.placement_model, map_location=device, weights_only=True)
+        )
+        loaded_placement_model.to(device)
+        loaded_placement_model.eval()
+        param_count = sum(p.numel() for p in loaded_placement_model.parameters())
+        print(
+            f"Loaded placement model ({args.placement_model_config}) for "
+            f"{args.game_config} ({param_count:,} parameters) on {device}"
+        )
 
-    param_count = sum(p.numel() for p in model.parameters())
-    print(
-        f"Loaded {args.model_config} {args.model_type} model for {args.game_config} "
-        f"({param_count:,} parameters) on {device}"
+    app = create_app(
+        state_model=loaded_state_model,
+        state_device=device if has_state else None,
+        state_game_cfg=state_game_cfg,
+        placement_model=loaded_placement_model,
+        placement_device=device if has_placement else None,
+        placement_game_cfg=placement_game_cfg,
     )
-
-    app = create_app(model, device, game_cfg, model_type=args.model_type)
     uvicorn.run(
         app,
         host=args.host,

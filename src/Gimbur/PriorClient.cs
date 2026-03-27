@@ -16,15 +16,15 @@ public enum PriorMode
     /// <summary>
     /// Game-state priors: serialize child states with
     /// <see cref="CatanStateSerializer.SerializeCompact"/> and call
-    /// <c>/prior-enqueue</c> on the state-model server.
+    /// <c>/state/prior-enqueue</c> on the inference server.
     /// </summary>
     State,
 
     /// <summary>
     /// Placement priors: serialize the parent placement state with
     /// <see cref="CatanState.SerializePlacementPhaseCompact"/> and enumerate
-    /// composite (settlement, road) actions.  Calls <c>/prior-placement-enqueue</c>
-    /// on the placement-model server.
+    /// composite (settlement, road) actions.  Calls <c>/placement/prior-enqueue</c>
+    /// on the inference server.
     /// </summary>
     Placement,
 }
@@ -115,7 +115,7 @@ public sealed class PriorClient : IPriorClient, IDisposable
 
     /// <summary>
     /// State-mode prior: serializes each child state via
-    /// <see cref="CatanStateSerializer.SerializeCompact"/> and POSTs to /prior-enqueue.
+    /// <see cref="CatanStateSerializer.SerializeCompact"/> and POSTs to /state/prior-enqueue.
     /// </summary>
     private void RequestStatePrior(long nodeId, ICoreState[] states, int actingPlayer, int depth)
     {
@@ -143,7 +143,7 @@ public sealed class PriorClient : IPriorClient, IDisposable
         {
             try
             {
-                await _http.PostAsJsonAsync("prior-enqueue", request, JsonOptions);
+                await _http.PostAsJsonAsync("state/prior-enqueue", request, JsonOptions);
             }
             catch
             {
@@ -157,7 +157,7 @@ public sealed class PriorClient : IPriorClient, IDisposable
     /// placement state and enumerates all composite (settlement, road) actions from
     /// child states. For each child (road-stage state), discovers the legal roads
     /// and constructs composite action strings. Sends all (state, action) pairs to
-    /// <c>/prior-placement-enqueue</c>. The response win probabilities are aggregated
+    /// <c>/placement/prior-enqueue</c>. The response win probabilities are aggregated
     /// per settlement (max across roads) before being returned.
     ///
     /// At road stages and non-placement stages, no prior is requested.
@@ -249,7 +249,7 @@ public sealed class PriorClient : IPriorClient, IDisposable
         {
             try
             {
-                await _http.PostAsJsonAsync("prior-placement-enqueue", request, JsonOptions);
+                await _http.PostAsJsonAsync("placement/prior-enqueue", request, JsonOptions);
             }
             catch
             {
@@ -280,7 +280,7 @@ public sealed class PriorClient : IPriorClient, IDisposable
     {
         try
         {
-            var endpoint = _mode == PriorMode.Placement ? "prior-placement-flush" : "prior-flush";
+            var endpoint = _mode == PriorMode.Placement ? "placement/prior-flush" : "state/prior-flush";
             _http.PostAsync(endpoint, null).GetAwaiter().GetResult();
         }
         catch
@@ -303,7 +303,7 @@ public sealed class PriorClient : IPriorClient, IDisposable
 
     private void PollLoop()
     {
-        var endpoint = _mode == PriorMode.Placement ? "prior-placement-collect" : "prior-collect";
+        var endpoint = _mode == PriorMode.Placement ? "placement/prior-collect" : "state/prior-collect";
 
         while (!_disposed)
         {
