@@ -10,10 +10,12 @@ Two token-size formulas are provided:
 
 Game state (compact form, no separators)::
 
-    (3*T + 2*V + E + P + 5) + 11*N
+    (3*T + 2*V + E + P + 5) + 11*N + 4
 
 where T = tiles, V = vertices, E = edges, P = ports, N = players.
 The constant 5 = robber(1) + current-turn(2) + awards(2).
+The trailing 4 = new dev cards purchased this turn (active player only,
+excluding victory points).
 
 Placement phase state::
 
@@ -100,7 +102,7 @@ class GameConfig:
 
 def _state_token_size(t: int, v: int, e: int, p: int, n: int) -> int:
     """Compute compact-form game state token sequence length."""
-    return (3 * t + 2 * v + e + p + 5) + 11 * n
+    return (3 * t + 2 * v + e + p + 5) + 11 * n + 4
 
 
 def _placement_token_size(t: int, v: int, e: int, p: int) -> int:

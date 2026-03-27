@@ -89,6 +89,8 @@ internal static class CatanStateSerializer
         }
 
         // Section 10: Per-Player Dev Cards (5 chars per player, '/' between players)
+        // For the current player, cards purchased this turn are excluded
+        // (they appear in section 11 instead).
         sb.Append('|');
         for (var player = 1; player <= state.PlayerCount; player++)
         {
@@ -99,8 +101,22 @@ internal static class CatanStateSerializer
 
             for (var card = 0; card < CatanState.DevCardCount; card++)
             {
-                sb.Append(CrockfordBase32.Encode(state._devCards[player, card]));
+                var count = state._devCards[player, card];
+                if (player == state.CurrentPlayer)
+                {
+                    count -= state._newDevCardsThisTurn[card];
+                }
+
+                sb.Append(CrockfordBase32.Encode(count));
             }
+        }
+
+        // Section 11: New Dev Cards This Turn (4 chars, active player only)
+        // Order: knight, roadBuilding, monopoly, yearOfPlenty (VP excluded).
+        sb.Append('|');
+        foreach (var cardType in CatanState.NewDevCardTypes)
+        {
+            sb.Append(CrockfordBase32.Encode(state._newDevCardsThisTurn[(int)cardType]));
         }
 
         return sb.ToString();
@@ -116,12 +132,12 @@ internal static class CatanStateSerializer
             throw new ArgumentException("Serialized state cannot be empty.", nameof(serialized));
         }
 
-        // Format: tiles|ports|robber|currentTurn|longestArmy|vertices|edges|resources|knights|devCards
+        // Format: tiles|ports|robber|currentTurn|longestArmy|vertices|edges|resources|knights|devCards|newDevCards
         var sections = serialized.Split('|');
-        if (sections.Length != 10)
+        if (sections.Length != 11)
         {
             throw new InvalidOperationException(
-                $"Serialized state has {sections.Length} sections, expected 10.");
+                $"Serialized state has {sections.Length} sections, expected 11.");
         }
 
         var topology = config.Map.Topology;
@@ -229,6 +245,8 @@ internal static class CatanStateSerializer
         }
 
         // Section 10: Per-Player Dev Cards (5 chars per player, '/' between players)
+        // For the current player, these counts exclude cards purchased this turn
+        // (which are in section 11).
         var devCardGroups = sections[9].Split('/');
         if (devCardGroups.Length != playerCount)
         {
@@ -244,6 +262,29 @@ internal static class CatanStateSerializer
             {
                 devCards[player, card] = CrockfordBase32.Decode(group[card]);
             }
+        }
+
+        // Section 11: New Dev Cards This Turn (4 chars, active player only)
+        // Order: knight, roadBuilding, monopoly, yearOfPlenty (VP excluded).
+        var newDevSection = sections[10];
+        if (newDevSection.Length != CatanState.NewDevCardSerializedCount)
+        {
+            throw new InvalidOperationException(
+                $"New dev card section has {newDevSection.Length} chars, expected {CatanState.NewDevCardSerializedCount}.");
+        }
+
+        var newDevCardsThisTurn = new int[CatanState.DevCardCount];
+        for (var i = 0; i < CatanState.NewDevCardSerializedCount; i++)
+        {
+            var cardType = CatanState.NewDevCardTypes[i];
+            newDevCardsThisTurn[(int)cardType] = CrockfordBase32.Decode(newDevSection[i]);
+        }
+
+        // Add new-this-turn cards back to the current player's hand
+        // (section 10 has them subtracted).
+        for (var card = 0; card < CatanState.DevCardCount; card++)
+        {
+            devCards[currentPlayer, card] += newDevCardsThisTurn[card];
         }
 
         var setup = new BoardSetup(topology, [.. tileResources], [.. tileNumbers], [.. ports], robberTile);
@@ -292,7 +333,7 @@ internal static class CatanStateSerializer
             knightsPlayed,
             devCards,
             deck,
-            new int[CatanState.DevCardCount],
+            newDevCardsThisTurn,
             new int[playerCount + 1],
             postDevCardStage: null,
             vertexPlacementRound: InferPlacementRounds(topology.VertexCount, vertices, stage));
@@ -422,6 +463,13 @@ internal static class CatanStateSerializer
             }
         }
 
+        // Section 11: New Dev Cards This Turn — 4 chars
+        sb.Append('|');
+        for (var i = 0; i < CatanState.NewDevCardSerializedCount; i++)
+        {
+            sb.Append(compact[pos++]);
+        }
+
         return DeserializeHumanReadable(config, playerCount, sb.ToString());
     }
 
@@ -454,20 +502,21 @@ internal static class CatanStateSerializer
     }
 
     /// <summary>
-    /// Serializes the turn-specific state (sections 3–7, 8–10) in human-readable
+    /// Serializes the turn-specific state (sections 3–7, 8–11) in human-readable
     /// form. This excludes tiles (section 1) and ports (section 2) which are
     /// board-invariant. Sections are separated by '|' and per-player groups
     /// within sections 8–10 are separated by '/'.
-    /// Layout: robber|playerStage|longestLargest|vertices|edges|resources|knights|devCards
+    /// Layout: robber|playerStage|longestLargest|vertices|edges|resources|knights|devCards|newDevCards
     /// </summary>
     public static string SerializeStateOnly(CatanState state)
     {
         var topology = state.Board.Topology;
         var playerCount = state.PlayerCount;
-        // Capacity: tokens + 7 section '|' separators + player '/' separators
+        // Capacity: tokens + 8 section '|' separators + player '/' separators
         var capacity = 1 + 2 + 2 + (topology.VertexCount * 2) + topology.EdgeCount
                        + (5 * playerCount) + playerCount + (5 * playerCount)
-                       + 7 + (3 * (playerCount - 1));
+                       + CatanState.NewDevCardSerializedCount
+                       + 8 + (3 * (playerCount - 1));
         var sb = new StringBuilder(capacity);
 
         // Section 3: Robber
@@ -528,6 +577,8 @@ internal static class CatanStateSerializer
         }
 
         // Section 10: Per-Player Dev Cards (5 chars per player, '/' between players)
+        // For the current player, cards purchased this turn are excluded
+        // (they appear in section 11 instead).
         sb.Append('|');
         for (var player = 1; player <= playerCount; player++)
         {
@@ -538,8 +589,22 @@ internal static class CatanStateSerializer
 
             for (var card = 0; card < CatanState.DevCardCount; card++)
             {
-                sb.Append(CrockfordBase32.Encode(state._devCards[player, card]));
+                var count = state._devCards[player, card];
+                if (player == state.CurrentPlayer)
+                {
+                    count -= state._newDevCardsThisTurn[card];
+                }
+
+                sb.Append(CrockfordBase32.Encode(count));
             }
+        }
+
+        // Section 11: New Dev Cards This Turn (4 chars, active player only)
+        // Order: knight, roadBuilding, monopoly, yearOfPlenty (VP excluded).
+        sb.Append('|');
+        foreach (var cardType in CatanState.NewDevCardTypes)
+        {
+            sb.Append(CrockfordBase32.Encode(state._newDevCardsThisTurn[(int)cardType]));
         }
 
         return sb.ToString();

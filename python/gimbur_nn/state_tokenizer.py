@@ -30,7 +30,7 @@ _PIP_SIDE = "lhn"
 _BUILDING_TYPE = ".vc"
 _PLAYER_ID_ALL = "_-+*^"
 _TURN_STAGE = "aefirxyt"
-_COUNT_REST = "6789ABCDEFGHJK"
+_COUNT_REST = "6789ABCDEFGHJKMNPQRSTVWXYZ"
 
 _STRIP = str.maketrans("", "", "|/")
 
@@ -172,6 +172,9 @@ class StateTokenizer:
            vertex owners, edge occupancy) are remapped via a cyclic shift.
         2. **Per-player data blocks** (resources, knights, dev cards) are
            reordered so the target player's block comes first.
+
+        Section 11 (new dev cards this turn) is always relative to the
+        current player and is left unchanged by rotation.
 
         Args:
             compact: Compact-form state string (no ``|``/``/`` separators).

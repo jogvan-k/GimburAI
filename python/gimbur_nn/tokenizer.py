@@ -33,16 +33,16 @@ if TYPE_CHECKING:
 # Building type:  . v c              (3)
 # Player ID:      _ - + * ^          (5)
 # Turn stage:     a e f i r x y t    (8)
-# Count (rest):   6 7 8 9 A B C D E F G H J K  (14)
-# Total: 46 unique characters.
+# Count (rest):   6 7 8 9 A B C D E F G H J K M N P Q R S T V X Y Z  (25)
+# Total: 57 unique characters (W shared with resource type).
 
-VOCAB_CHARS: str = "dwbsWog012345lhn.vc_-+*^aefirxyt6789ABCDEFGHJK"
+VOCAB_CHARS: str = "dwbsWog012345lhn.vc_-+*^aefirxyt6789ABCDEFGHJKMNPQRSTVXYZ"
 
 VOCAB: dict[str, int] = {ch: idx for idx, ch in enumerate(VOCAB_CHARS)}
 """Maps each token character to its integer id (0-based)."""
 
 VOCAB_SIZE: int = len(VOCAB)
-"""Number of unique token characters (46)."""
+"""Number of unique token characters (57)."""
 
 _STRIP = str.maketrans("", "", "|/")
 
@@ -130,6 +130,9 @@ def rotate_player_state(
        vertex owners, edge occupancy) are remapped via a cyclic shift.
     2. **Per-player data blocks** (resources, knights, dev cards) are
        reordered so the target player's block comes first.
+
+    Section 11 (new dev cards this turn) is always relative to the
+    current player and is left unchanged by rotation.
 
     Args:
         compact: Compact-form state string (no ``|`` / ``/`` separators).

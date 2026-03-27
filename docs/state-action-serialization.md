@@ -41,7 +41,7 @@ These alphabets apply to the **state** tokenizer (Parts I and II). The **action*
 
 ## Serialization Layout
 
-Tokens are emitted in the order below. All counts are fixed-length. Major sections are separated by `|`. Within per-player sections (resources, knights, dev cards) individual players are separated by `/`. Tile tokens are concatenated directly without separators.
+Tokens are emitted in the order below. All counts are fixed-length. Major sections are separated by `|`. Within per-player sections (resources, knights, dev cards) individual players are separated by `/`. Tile tokens are concatenated directly without separators. Section 11 (new dev cards this turn) is a fixed-length block for the active player only.
 
 Let `T` = number of tiles, `V` = number of vertices, `E` = number of edges, `P` = number of ports, `N` = number of players.
 
@@ -184,11 +184,25 @@ Order: `[knight, victoryPoint, roadBuilding, monopoly, yearOfPlenty]`
 For each player (1..N):
 - `devCards[5]` — **count** (Crockford base-32; `0`=0 .. `E`=14)
 
+For the **current player**, cards purchased this turn are excluded from these counts — they appear in [section 11](#11-new-dev-cards-this-turn) instead. This lets the model distinguish playable cards from newly purchased ones.
+
 Each player's 5 dev-card tokens are concatenated; players are separated by `/`.
 
 Pip count digits and count digits share the same characters (`0`–`5`). These appear at structurally distinct positions, so positional embeddings disambiguate.
 
 **Tokens**: `5 * N` — mini: 10, small: 10–15, standard: 15–20.
+
+### 11) New Dev Cards This Turn (active player only)
+
+Order: `[knight, roadBuilding, monopoly, yearOfPlenty]` (victory points excluded — they are never "played" and always count toward VP immediately)
+
+- `newDevCards[4]` — **count** (Crockford base-32; typically `0` or `1`)
+
+These are the development cards purchased by the **current player** during their current turn. Per Catan rules, dev cards bought on the current turn cannot be played until the next turn. Victory point cards are excluded because they take effect immediately and are never "played" as an action.
+
+This section is not per-player — it always represents the active player's newly purchased cards. During [player rotation](#player-rotation-invariance), these tokens are left unchanged (they are always relative to the current player).
+
+**Tokens**: 4 (fixed, player-count-independent).
 
 ## Game State Examples
 
@@ -208,10 +222,11 @@ Board state:
 - **Player 2 resources**: wood=0, brick=0, sheep=1, wheat=3, ore=0
 - **Knights played**: 0 / 0
 - **Dev cards**: none / none
+- **New dev cards this turn**: none
 
 Full serialized (sections separated by `|`):
 ```
-w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t|__|._._._._._._v-._._._._._._._v+._._._._._._._._._|_____-_______+________________|21010/00130|0/0|00000/00000
+w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t|__|._._._._._._v-._._._._._._._v+._._._._._._._._._|_____-_______+________________|21010/00130|0/0|00000/00000|0000
 ```
 
 ### Small Map (2 players, early game)
@@ -230,10 +245,11 @@ Board state:
 - **Player 2 resources**: wood=0, brick=0, sheep=1, wheat=0, ore=0
 - **Knights played**: 0 / 0
 - **Dev cards**: none / none
+- **New dev cards this turn**: none
 
 Full serialized (sections separated by `|`):
 ```
-W2lb3ls4lw3hb2hw1ho5lW4hs5hd0n|gwWgsb|9|+r|__|v-v+v+._._._._v-._._._._._._._._._._._._._._._._._._._._._._._._|-_+_+_-__________________________________|10010/00100|0/0|00000/00000
+W2lb3ls4lw3hb2hw1ho5lW4hs5hd0n|gwWgsb|9|+r|__|v-v+v+._._._._v-._._._._._._._._._._._._._._._._._._._._._._._._|-_+_+_-__________________________________|10010/00100|0/0|00000/00000|0000
 ```
 
 ### Standard Map (3 players, mid-game)
@@ -253,10 +269,11 @@ Board state:
 - **Player 3 resources**: wood=1, brick=0, sheep=3, wheat=2, ore=0
 - **Knights played**: 2 / 0 / 1
 - **Dev cards (knight/vp/roadBuild/monopoly/yearOfPlenty)**: 1/0/0/0/0 / 0/1/0/1/0 / 0/0/1/0/0
+- **New dev cards this turn**: none (player 2 bought no cards this turn)
 
 Full serialized:
 ```
-w4lo1lb5lW2lw5hs3hW4ho1hs2hw3lb5hs3hW4ho3ls4lb5lw2lW2hd0n|ggwgbsWog|5|+t|_-|._._._._._._._._v-._._._._._._._._._c+._._._._._v*._._._._._._v*._._._v-._._._._._._._._v+._._._._._._._._._|______-_________-________+______+_**_____-*_____*-_____+_____+__________|31201/02143/10320|2/0/1|10000/01010/00100
+w4lo1lb5lW2lw5hs3hW4ho1hs2hw3lb5hs3hW4ho3ls4lb5lw2lW2hd0n|ggwgbsWog|5|+t|_-|._._._._._._._._v-._._._._._._._._._c+._._._._._v*._._._._._._v*._._._v-._._._._._._._._v+._._._._._._._._._|______-_________-________+______+_**_____-*_____*-_____+_____+__________|31201/02143/10320|2/0/1|10000/01010/00100|0000
 ```
 
 ## Player Rotation Invariance
@@ -313,18 +330,20 @@ Affected sections:
 - **Knights played** ([section 9](#9-per-player-knights-played)): `N` blocks of 1 token each.
 - **Dev cards** ([section 10](#10-per-player-dev-cards-in-hand-5-per-player)): `N` blocks of 5 tokens each.
 
+**Not affected**: Section 11 (new dev cards this turn) is always relative to the current player and is left unchanged by rotation.
+
 ### Rotation Example
 
 Using the mini map game state example (2 players, player 1's turn):
 
 **Original (human-readable):**
 ```
-w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t|__|._._._._._._v-._._._._._._._v+._._._._._._._._._|_____-_______+________________|21010/00130|0/0|00000/00000
+w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t|__|._._._._._._v-._._._._._._._v+._._._._._._._._._|_____-_______+________________|21010/00130|0/0|00000/00000|0000
 ```
 
 **Rotated for player 2** (R = 1, N = 2 — player 1 and player 2 swap):
 ```
-w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|+t|__|._._._._._._v+._._._._._._._v-._._._._._._._._._|_____+_______-________________|00130/21010|0/0|00000/00000
+w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|+t|__|._._._._._._v+._._._._._._._v-._._._._._._._._._|_____+_______-________________|00130/21010|0/0|00000/00000|0000
 ```
 
 Changes:
@@ -334,6 +353,7 @@ Changes:
 - Resources: `21010/00130` reordered to `00130/21010`
 - Knights: `0/0` reordered (no visible change since both are `0`)
 - Dev cards: `00000/00000` reordered (no visible change)
+- New dev cards this turn: `0000` unchanged (always current-player relative)
 
 ### Implementation
 
@@ -526,11 +546,11 @@ Compact form: strip all `/` and `|` separators from the human-readable form. The
 ## Game State
 
 ```
-(3*T) + P + 1 + 2 + 2 + (2*V) + E + (5*N) + (1*N) + (5*N)
-= (3*T + 2*V + E + P + 5) + 11*N
+(3*T) + P + 1 + 2 + 2 + (2*V) + E + (5*N) + (1*N) + (5*N) + 4
+= (3*T + 2*V + E + P + 5) + 11*N + 4
 ```
 
-The constant 5 = robber(1) + current-turn(2) + awards(2).
+The constant 5 = robber(1) + current-turn(2) + awards(2). The trailing 4 = new dev cards this turn (section 11, active player only, excluding victory points).
 
 ## Placement Phase State
 
@@ -544,9 +564,9 @@ Player-count-independent: player information is embedded in vertex/edge tokens, 
 
 | Map | Players | Placement Phase State | Game State |
 |-----|---------|----------------------|------------|
-| Mini (T=7, V=24, E=30, P=6) | 2 | 105 | 132 |
-| Small (T=10, V=32, E=41, P=6) | 2 | 141 | 168 |
-| Small (T=10, V=32, E=41, P=6) | 3 | 141 | 179 |
-| Standard (T=19, V=54, E=72, P=9) | 2 | 246 | 273 |
-| Standard (T=19, V=54, E=72, P=9) | 3 | 246 | 284 |
-| Standard (T=19, V=54, E=72, P=9) | 4 | 246 | 295 |
+| Mini (T=7, V=24, E=30, P=6) | 2 | 105 | 136 |
+| Small (T=10, V=32, E=41, P=6) | 2 | 141 | 172 |
+| Small (T=10, V=32, E=41, P=6) | 3 | 141 | 183 |
+| Standard (T=19, V=54, E=72, P=9) | 2 | 246 | 277 |
+| Standard (T=19, V=54, E=72, P=9) | 3 | 246 | 288 |
+| Standard (T=19, V=54, E=72, P=9) | 4 | 246 | 299 |

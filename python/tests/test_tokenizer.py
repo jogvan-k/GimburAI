@@ -31,6 +31,7 @@ MINI_STATE = (
     "|21010/00130"
     "|0/0"
     "|00000/00000"
+    "|0000"
 )
 
 SMALL_STATE = (
@@ -44,6 +45,7 @@ SMALL_STATE = (
     "|10010/00100"
     "|0/0"
     "|00000/00000"
+    "|0000"
 )
 
 STANDARD_STATE = (
@@ -57,6 +59,7 @@ STANDARD_STATE = (
     "|31201/02143/10320"
     "|2/0/1"
     "|10000/01010/00100"
+    "|0000"
 )
 
 # fmt: off
@@ -75,6 +78,7 @@ MINI_EXPECTED = [
     9, 8, 7, 8, 7, 7, 7, 8, 10, 7,
     7, 7,
     7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+    7, 7, 7, 7,
 ]
 
 SMALL_EXPECTED = [
@@ -88,6 +92,7 @@ SMALL_EXPECTED = [
     8, 7, 7, 8, 7, 7, 7, 8, 7, 7,
     7, 7,
     7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+    7, 7, 7, 7,
 ]
 
 STANDARD_EXPECTED = [
@@ -101,6 +106,7 @@ STANDARD_EXPECTED = [
     10, 8, 9, 7, 8, 7, 9, 8, 11, 10, 8, 7, 10, 9, 7,
     9, 7, 8,
     8, 7, 7, 7, 7, 7, 8, 7, 8, 7, 7, 7, 8, 7, 7,
+    7, 7, 7, 7,
 ]
 
 # fmt: on
@@ -113,13 +119,13 @@ STANDARD_EXPECTED = [
 
 class TestVocab:
     def test_game_state_vocab_sizes(self) -> None:
-        """Vocab size varies by player count: 2p=44, 3p=45, 4p=46."""
-        assert StateTokenizer(MINI_2P).vocab_size == 44
-        assert StateTokenizer(SMALL_2P).vocab_size == 44
-        assert StateTokenizer(SMALL_3P).vocab_size == 45
-        assert StateTokenizer(STANDARD_2P).vocab_size == 44
-        assert StateTokenizer(STANDARD_3P).vocab_size == 45
-        assert StateTokenizer(STANDARD_4P).vocab_size == 46
+        """Vocab size varies by player count: 2p=55, 3p=56, 4p=57."""
+        assert StateTokenizer(MINI_2P).vocab_size == 55
+        assert StateTokenizer(SMALL_2P).vocab_size == 55
+        assert StateTokenizer(SMALL_3P).vocab_size == 56
+        assert StateTokenizer(STANDARD_2P).vocab_size == 55
+        assert StateTokenizer(STANDARD_3P).vocab_size == 56
+        assert StateTokenizer(STANDARD_4P).vocab_size == 57
 
     def test_placement_state_vocab_sizes(self) -> None:
         """Placement state vocab (chars only): 2p=21, 3p=22, 4p=23."""
@@ -165,7 +171,7 @@ class TestMiniMap:
     def test_full_tensor(self) -> None:
         tok = StateTokenizer(MINI_2P)
         t = tok.tokenize(MINI_STATE)
-        assert t.shape == (132,)
+        assert t.shape == (136,)
         assert t.dtype == torch.int32
         assert t.tolist() == MINI_EXPECTED
 
@@ -174,7 +180,7 @@ class TestSmallMap:
     def test_full_tensor(self) -> None:
         tok = StateTokenizer(SMALL_2P)
         t = tok.tokenize(SMALL_STATE)
-        assert t.shape == (168,)
+        assert t.shape == (172,)
         assert t.dtype == torch.int32
         assert t.tolist() == SMALL_EXPECTED
 
@@ -183,7 +189,7 @@ class TestStandardMap:
     def test_full_tensor(self) -> None:
         tok = StateTokenizer(STANDARD_3P)
         t = tok.tokenize(STANDARD_STATE)
-        assert t.shape == (284,)
+        assert t.shape == (288,)
         assert t.dtype == torch.int32
         assert t.tolist() == STANDARD_EXPECTED
 
@@ -212,7 +218,7 @@ class TestBatch:
     def test_same_map_batch(self) -> None:
         tok = StateTokenizer(MINI_2P)
         t = tok.tokenize_batch([MINI_STATE, MINI_STATE])
-        assert t.shape == (2, 132)
+        assert t.shape == (2, 136)
         assert t.dtype == torch.int32
 
     def test_batch_matches_single(self) -> None:
@@ -339,13 +345,13 @@ class TestRotatePlayerState:
             "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t|__|"
             "._._._._._._v-._._._._._._._v+._._._._._._._._._|"
             "_____-_______+________________|"
-            "21010/00130|0/0|00000/00000"
+            "21010/00130|0/0|00000/00000|0000"
         )
         expected_hr = (
             "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|+t|__|"
             "._._._._._._v+._._._._._._._v-._._._._._._._._._|"
             "_____+_______-________________|"
-            "00130/21010|0/0|00000/00000"
+            "00130/21010|0/0|00000/00000|0000"
         )
         original = original_hr.translate(_STRIP)
         expected = expected_hr.translate(_STRIP)
