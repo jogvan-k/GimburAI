@@ -12,6 +12,9 @@ serve = [
     "uvicorn>=0.30",
     "fastapi>=0.115",
 ]
+pipeline = [
+    "matplotlib>=3.7",
+]
 dev = [
     "ruff>=0.11",
     "pytest>=8.0",

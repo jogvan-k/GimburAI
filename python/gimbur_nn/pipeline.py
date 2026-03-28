@@ -886,6 +886,76 @@ def _save_summary(cfg: PipelineConfig, all_results: dict[int, dict[str, Any]]) -
     print(f"Summary saved to {summary_path}")
 
 
+def _save_progress_chart(cfg: PipelineConfig, all_results: dict[int, dict[str, Any]]) -> None:
+    """Save a win-rate progress chart (PNG) covering all generations so far.
+
+    Plots the subject (first AI in each benchmark config) win rate on the
+    y-axis against generation on the x-axis.  All benchmark configs appear
+    as separate series on the same chart.  The file is overwritten after
+    every benchmark phase so it always reflects the latest state.
+
+    Requires ``matplotlib`` (optional ``pipeline`` dependency).  If not
+    installed, silently skips.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")  # non-interactive backend
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+
+    if not all_results:
+        return
+
+    # Build a lookup from benchmark name -> subject AI name (C# lowercase).
+    bench_subjects: dict[str, str] = {}
+    for bench in cfg.benchmarks:
+        subject = bench.ai[0].replace("-", "").lower()
+        bench_subjects[bench.name] = subject
+
+    # Collect series: bench_name -> [(gen, win_rate), ...]
+    series: dict[str, list[tuple[int, float]]] = {}
+    for gen in sorted(all_results):
+        for bench_name, data in all_results[gen].items():
+            rates = _normalize_win_rates(data)
+            subject = bench_subjects.get(bench_name)
+            if subject is None:
+                # Benchmark not in current config (leftover from earlier run);
+                # fall back to first key in rates dict.
+                subject = next(iter(rates), None)
+            rate = rates.get(subject)
+            if rate is not None:
+                series.setdefault(bench_name, []).append((gen, rate))
+
+    if not series:
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    for bench_name, points in sorted(series.items()):
+        gens = [g for g, _ in points]
+        rates = [r * 100 for _, r in points]
+        ax.plot(gens, rates, marker="o", markersize=4, linewidth=1.5, label=bench_name)
+
+    ax.set_xlabel("Generation")
+    ax.set_ylabel("Win Rate (%)")
+    ax.set_title("Benchmark Win Rate by Generation")
+    ax.set_ylim(-5, 105)
+
+    # Integer ticks on x-axis.
+    all_gens = sorted(all_results.keys())
+    ax.set_xticks(all_gens)
+
+    ax.legend(loc="best", fontsize="small")
+    ax.grid(True, alpha=0.3)
+
+    chart_path = Path(cfg.results_dir) / "progress.png"
+    chart_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(chart_path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Progress chart saved to {chart_path}")
+
+
 # ---------------------------------------------------------------------------
 # Combined pipeline generation
 # ---------------------------------------------------------------------------
@@ -976,6 +1046,7 @@ def _run_combined_generation(
             _print_generation_summary(gen, gen_results)
             all_results.setdefault(gen, {}).update(gen_results)
             _save_summary(cfg, all_results)
+            _save_progress_chart(cfg, all_results)
 
     # ---------------------------------------------------------------
     # Step 4: Simulate value states
@@ -1058,6 +1129,7 @@ def _run_combined_generation(
             _print_generation_summary(gen, gen_results)
             all_results.setdefault(gen, {}).update(gen_results)
             _save_summary(cfg, all_results)
+            _save_progress_chart(cfg, all_results)
 
 
 # ---------------------------------------------------------------------------
@@ -1163,6 +1235,7 @@ def _run_single_generation(
         _print_generation_summary(gen, gen_results)
         all_results[gen] = gen_results
         _save_summary(cfg, all_results)
+        _save_progress_chart(cfg, all_results)
 
 
 def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> None:
@@ -1217,6 +1290,7 @@ def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> Non
         server.stop()
         if all_results:
             _save_summary(cfg, all_results)
+            _save_progress_chart(cfg, all_results)
             print(f"\nPipeline stopped after {len(all_results)} generation(s).")
 
 
