@@ -512,8 +512,8 @@ public partial class BoardSymmetryTests
         {
             var permuted = BoardSymmetry.PermuteState(stateStr, perm);
             var sections = permuted.Split('|');
-            Assert.That(sections.Length, Is.EqualTo(8),
-                $"Permuted state should have 8 sections for {perm.Label}");
+            Assert.That(sections.Length, Is.EqualTo(9),
+                $"Permuted state should have 9 sections for {perm.Label}");
         }
     }
 
@@ -531,7 +531,7 @@ public partial class BoardSymmetryTests
             var permSections = permuted.Split('|');
 
             // Sections 1 (playerStage), 2 (longestLargest), 5 (resources),
-            // 6 (knights), 7 (devCards) should be unchanged.
+            // 6 (knights), 7 (devCards), 8 (newDevCards) should be unchanged.
             Assert.Multiple(() =>
             {
                 Assert.That(permSections[1], Is.EqualTo(originalSections[1]),
@@ -544,6 +544,8 @@ public partial class BoardSymmetryTests
                     $"Knights changed under {perm.Label}");
                 Assert.That(permSections[7], Is.EqualTo(originalSections[7]),
                     $"DevCards changed under {perm.Label}");
+                Assert.That(permSections[8], Is.EqualTo(originalSections[8]),
+                    $"NewDevCards changed under {perm.Label}");
             });
         }
     }
@@ -574,8 +576,8 @@ public partial class BoardSymmetryTests
         {
             var permuted = BoardSymmetry.PermuteState(stateStr, perm);
             var sections = permuted.Split('|');
-            Assert.That(sections.Length, Is.EqualTo(8),
-                $"Permuted state should have 8 sections for {perm.Label}");
+            Assert.That(sections.Length, Is.EqualTo(9),
+                $"Permuted state should have 9 sections for {perm.Label}");
         }
     }
 
@@ -604,6 +606,8 @@ public partial class BoardSymmetryTests
                     $"Knights changed under {perm.Label}");
                 Assert.That(permSections[7], Is.EqualTo(originalSections[7]),
                     $"DevCards changed under {perm.Label}");
+                Assert.That(permSections[8], Is.EqualTo(originalSections[8]),
+                    $"NewDevCards changed under {perm.Label}");
             });
         }
     }
@@ -617,8 +621,8 @@ public partial class BoardSymmetryTests
         var config = GameConfig.Mini;
         var state = CreateTestState(config, playerCount: 2);
 
-        // Serialize the full human-readable state (all 10 sections).
-        // New section order: tiles[0]|ports[1]|robber[2]|playerStage[3]|longestLargest[4]|vertices[5]|edges[6]|resources[7]|knights[8]|devCards[9]
+        // Serialize the full human-readable state (all 11 sections).
+        // Section order: tiles[0]|ports[1]|robber[2]|playerStage[3]|longestLargest[4]|vertices[5]|edges[6]|resources[7]|knights[8]|devCards[9]|newDevCards[10]
         var fullStr = state.SerializeHumanReadable();
         var fullSections = fullStr.Split('|');
 
@@ -631,15 +635,16 @@ public partial class BoardSymmetryTests
             var permBoard = BoardSymmetry.PermuteBoard(boardStr, perm);
             var permBoardSections = permBoard.Split('|');
 
-            // Permute state-only part (sections 2-9 → mapped to state-only sections 0-7).
+            // Permute state-only part (sections 2-10 → mapped to state-only sections 0-8).
             var stateOnlyStr = string.Join('|',
                 fullSections[2], fullSections[3], fullSections[4],
                 fullSections[5], fullSections[6],
-                fullSections[7], fullSections[8], fullSections[9]);
+                fullSections[7], fullSections[8], fullSections[9],
+                fullSections[10]);
             var permState = BoardSymmetry.PermuteState(stateOnlyStr, perm);
             var permStateSections = permState.Split('|');
 
-            // Reassemble full permuted string in 10-section format.
+            // Reassemble full permuted string in 11-section format.
             var permFull = string.Join('|',
                 permBoardSections[0],   // tiles
                 permBoardSections[1],   // ports
@@ -650,7 +655,8 @@ public partial class BoardSymmetryTests
                 permStateSections[4],   // edges
                 permStateSections[5],   // resources
                 permStateSections[6],   // knights
-                permStateSections[7]);  // devCards
+                permStateSections[7],   // devCards
+                permStateSections[8]);  // newDevCards
 
             // This should deserialize without error.
             Assert.DoesNotThrow(() =>
@@ -679,7 +685,8 @@ public partial class BoardSymmetryTests
             var stateOnlyStr = string.Join('|',
                 fullSections[2], fullSections[3], fullSections[4],
                 fullSections[5], fullSections[6],
-                fullSections[7], fullSections[8], fullSections[9]);
+                fullSections[7], fullSections[8], fullSections[9],
+                fullSections[10]);
             var permState = BoardSymmetry.PermuteState(stateOnlyStr, perm);
             var permStateSections = permState.Split('|');
 
@@ -693,7 +700,8 @@ public partial class BoardSymmetryTests
                 permStateSections[4],
                 permStateSections[5],
                 permStateSections[6],
-                permStateSections[7]);
+                permStateSections[7],
+                permStateSections[8]);
 
             Assert.DoesNotThrow(() =>
             {

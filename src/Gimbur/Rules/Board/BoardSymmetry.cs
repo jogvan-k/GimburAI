@@ -283,8 +283,8 @@ public static class BoardSymmetry
 
     /// <summary>
     /// Applies a symmetry permutation to a serialized state-only string.
-    /// State format: robber|playerStage|longestLargest|vertices|edges|resources|knights|devCards
-    /// (8 sections separated by '|').
+    /// State format: robber|playerStage|longestLargest|vertices|edges|resources|knights|devCards|newDevCards
+    /// (9 sections separated by '|').
     /// <para>
     /// Only the robber tile index (section 0), vertices (section 3), and edges (section 4)
     /// are position-dependent and need permutation. All other sections are scalar or
@@ -294,9 +294,9 @@ public static class BoardSymmetry
     public static string PermuteState(string stateSerialized, SymmetryPermutation perm)
     {
         var sections = stateSerialized.Split('|');
-        if (sections.Length != 8)
+        if (sections.Length != 9)
             throw new ArgumentException(
-                $"State string has {sections.Length} sections, expected 8.", nameof(stateSerialized));
+                $"State string has {sections.Length} sections, expected 9.", nameof(stateSerialized));
 
         var vertexCount = perm.Vertices.Length;
         var edgeCount = perm.Edges.Length;
@@ -344,13 +344,15 @@ public static class BoardSymmetry
             sb.Append(sections[4][edgeInv[ei]]);
         }
 
-        // Sections 5-7: Resources, Knights, DevCards — unchanged (per-player, not positional)
+        // Sections 5-8: Resources, Knights, DevCards, NewDevCards — unchanged (per-player, not positional)
         sb.Append('|');
         sb.Append(sections[5]);
         sb.Append('|');
         sb.Append(sections[6]);
         sb.Append('|');
         sb.Append(sections[7]);
+        sb.Append('|');
+        sb.Append(sections[8]);
 
         return sb.ToString();
     }
