@@ -152,7 +152,7 @@ internal sealed class MctsPlayer : IBenchmarkPlayer, INnStatsProvider
     /// <summary>Total prior requests across all MCTS decisions in this game.</summary>
     public int TotalPriorsRequested { get; private set; }
 
-    /// <summary>Total prior responses applied across all MCTS decisions in this game.</summary>
+    /// <summary>Total individual action states covered by applied priors across all MCTS decisions.</summary>
     public int TotalPriorsApplied { get; private set; }
 
     /// <summary>Total individual states evaluated by the NN server across all decisions.</summary>
@@ -290,7 +290,7 @@ internal record BenchmarkGameResult
     public int PriorsRequested { get; init; }
 
     /// <summary>
-    /// Total prior responses applied across all MCTS decisions in this game.
+    /// Total individual action states covered by applied priors across all MCTS decisions.
     /// </summary>
     public int PriorsApplied { get; init; }
 

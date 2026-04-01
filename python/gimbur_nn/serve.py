@@ -461,7 +461,7 @@ def create_app(
 
         async def _prior_worker() -> None:
             """Background task that continuously processes the prior queue."""
-            batch_size = 8
+            batch_size = 32
             while True:
                 batch = prior_queue.dequeue_batch(batch_size)
                 if batch:
@@ -564,7 +564,7 @@ def create_app(
 
         async def _placement_prior_worker() -> None:
             """Background task that continuously processes the placement prior queue."""
-            batch_size = 8
+            batch_size = 32
             while True:
                 batch = placement_prior_queue.dequeue_batch(batch_size)
                 if batch:
@@ -895,6 +895,7 @@ def main() -> None:
         port=args.port,
         log_level=args.log_level,
         access_log=args.log_level in ("debug", "info"),
+        limit_concurrency=200,
     )
 
 

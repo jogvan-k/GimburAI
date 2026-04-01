@@ -52,12 +52,32 @@ public sealed class PriorClient : IPriorClient, IDisposable
     private readonly PriorMode _mode;
     private readonly PlacementActionSerializer? _actionSerializer;
 
+    // ── Diagnostic counters (thread-safe via Interlocked) ────────────────
+    private long _pollSuccessCount;
+    private long _pollResponsesReceived;
+    private long _pollErrorCount;
+    private long _pollEmptyCount;
+    private long _enqueueFireCount;
+    private long _enqueueErrorCount;
+
+    /// <summary>
+    /// Limits the number of concurrent fire-and-forget HTTP enqueue requests
+    /// to prevent exhausting file descriptors when the MCTS engine expands
+    /// many nodes in parallel.
+    /// </summary>
+    private readonly SemaphoreSlim _enqueueThrottle = new(MaxConcurrentEnqueues);
+
+    /// <summary>
+    /// Maximum number of concurrent in-flight enqueue HTTP requests.
+    /// </summary>
+    private const int MaxConcurrentEnqueues = 20;
+
     /// <summary>
     /// Minimum interval between server polls (milliseconds).
     /// Prevents hammering the server when the MCTS loop calls
     /// CollectPriors on every iteration.
     /// </summary>
-    private const int PollIntervalMs = 20;
+    private const int PollIntervalMs = 5;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -139,15 +159,22 @@ public sealed class PriorClient : IPriorClient, IDisposable
             ],
         };
 
+        Interlocked.Increment(ref _enqueueFireCount);
         _ = Task.Run(async () =>
         {
+            await _enqueueThrottle.WaitAsync();
             try
             {
-                await _http.PostAsJsonAsync("state/prior-enqueue", request, JsonOptions);
+                using var response = await _http.PostAsJsonAsync("state/prior-enqueue", request, JsonOptions);
             }
             catch
             {
                 // Server unreachable — degrade gracefully (no priors for this node).
+                Interlocked.Increment(ref _enqueueErrorCount);
+            }
+            finally
+            {
+                _enqueueThrottle.Release();
             }
         });
     }
@@ -247,29 +274,42 @@ public sealed class PriorClient : IPriorClient, IDisposable
 
         _ = Task.Run(async () =>
         {
+            await _enqueueThrottle.WaitAsync();
             try
             {
-                await _http.PostAsJsonAsync("placement/prior-enqueue", request, JsonOptions);
+                using var response = await _http.PostAsJsonAsync("placement/prior-enqueue", request, JsonOptions);
             }
             catch
             {
                 // Server unreachable — degrade gracefully (no priors for this node).
             }
+            finally
+            {
+                _enqueueThrottle.Release();
+            }
         });
     }
 
     /// <summary>
-    /// Return all completed prior responses currently in the local mailbox.
-    /// The mailbox is fed by the background polling thread; this method
-    /// never makes HTTP calls itself and returns immediately.
+    /// Return completed prior responses whose NodeId is in the given set.
+    /// Responses for unknown node IDs are left in the mailbox so that other
+    /// concurrent callers (e.g. parallel games sharing this client) can
+    /// collect their own responses on a subsequent call.
     /// </summary>
-    public PriorResponse[] CollectPriors()
+    public PriorResponse[] CollectPriors(IReadOnlySet<long> knownNodeIds)
     {
         var results = new List<PriorResponse>();
+        var putBack = new List<PriorResponse>();
         while (_mailbox.TryDequeue(out var item))
         {
-            results.Add(item);
+            if (knownNodeIds.Contains(item.NodeId))
+                results.Add(item);
+            else
+                putBack.Add(item);
         }
+        // Re-enqueue responses that didn't match any known node ID.
+        foreach (var item in putBack)
+            _mailbox.Enqueue(item);
         return results.ToArray();
     }
 
@@ -281,7 +321,7 @@ public sealed class PriorClient : IPriorClient, IDisposable
         try
         {
             var endpoint = _mode == PriorMode.Placement ? "placement/prior-flush" : "state/prior-flush";
-            _http.PostAsync(endpoint, null).GetAwaiter().GetResult();
+            using var response = _http.PostAsync(endpoint, null).GetAwaiter().GetResult();
         }
         catch
         {
@@ -296,7 +336,20 @@ public sealed class PriorClient : IPriorClient, IDisposable
     {
         _disposed = true;
         _pollThread.Join(timeout: TimeSpan.FromSeconds(2));
+
+        // Print diagnostic summary to help debug prior delivery issues.
+        Console.WriteLine(
+            $"[PriorClient] mode={_mode} | " +
+            $"enqueued={Interlocked.Read(ref _enqueueFireCount)} " +
+            $"enqueueErrors={Interlocked.Read(ref _enqueueErrorCount)} | " +
+            $"pollSuccess={Interlocked.Read(ref _pollSuccessCount)} " +
+            $"pollEmpty={Interlocked.Read(ref _pollEmptyCount)} " +
+            $"pollErrors={Interlocked.Read(ref _pollErrorCount)} | " +
+            $"responsesReceived={Interlocked.Read(ref _pollResponsesReceived)} " +
+            $"mailboxSize={_mailbox.Count}");
+
         _http.Dispose();
+        _enqueueThrottle.Dispose();
     }
 
     // ── Background polling ───────────────────────────────────────────────────
@@ -309,7 +362,7 @@ public sealed class PriorClient : IPriorClient, IDisposable
         {
             try
             {
-                var response = _http.PostAsync(endpoint, null).GetAwaiter().GetResult();
+                using var response = _http.PostAsync(endpoint, null).GetAwaiter().GetResult();
                 if (response.IsSuccessStatusCode)
                 {
                     var result = response.Content
@@ -317,7 +370,9 @@ public sealed class PriorClient : IPriorClient, IDisposable
                         .GetAwaiter()
                         .GetResult();
 
-                    if (result?.Responses != null)
+                    Interlocked.Increment(ref _pollSuccessCount);
+
+                    if (result?.Responses != null && result.Responses.Length > 0)
                     {
                         foreach (var r in result.Responses)
                         {
@@ -327,14 +382,20 @@ public sealed class PriorClient : IPriorClient, IDisposable
                                 for (int i = 0; i < r.WinProbabilities.Length; i++)
                                     winProbs[i] = r.WinProbabilities[i];
                                 _mailbox.Enqueue(new PriorResponse(nodeId, winProbs));
+                                Interlocked.Increment(ref _pollResponsesReceived);
                             }
                         }
+                    }
+                    else
+                    {
+                        Interlocked.Increment(ref _pollEmptyCount);
                     }
                 }
             }
             catch
             {
                 // Server unreachable — will retry on next poll.
+                Interlocked.Increment(ref _pollErrorCount);
             }
 
             Thread.Sleep(PollIntervalMs);

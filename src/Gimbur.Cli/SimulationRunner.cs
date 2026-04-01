@@ -176,7 +176,7 @@ internal record StateRecord
     public int PriorsRequested { get; init; }
 
     /// <summary>
-    /// Number of prior responses successfully applied to tree nodes during this MCTS search.
+    /// Number of individual action states covered by successfully applied priors.
     /// </summary>
     public int PriorsApplied { get; init; }
 
@@ -266,7 +266,7 @@ internal record PlacementStateRecord
     public int PriorsRequested { get; init; }
 
     /// <summary>
-    /// Number of prior responses successfully applied to tree nodes during this MCTS search.
+    /// Number of individual action states covered by successfully applied priors.
     /// </summary>
     public int PriorsApplied { get; init; }
 
@@ -399,7 +399,7 @@ internal class SimulationRunner
                 Console.WriteLine("  Mode: placement-only (expansion guard active)");
             if (_options.ExportType == ExportType.InitialPlacement)
                 Console.WriteLine("  Export type: InitialPlacement");
-            Console.WriteLine($"  Parallelism: {Environment.ProcessorCount} cores");
+            Console.WriteLine($"  Parallelism: {(_options.Prior ? Math.Min(4, Environment.ProcessorCount) : Environment.ProcessorCount)} cores");
             if (_options.ExportPath is not null && _options.ExportFormat != ExportFormat.None)
             {
                 Console.WriteLine($"  Export: {_options.ExportPath.FullName} ({_options.ExportFormat.ToString().ToLowerInvariant()})");
@@ -467,7 +467,12 @@ internal class SimulationRunner
         {
             Parallel.For(0, (int)_options.NumberOfGames, new ParallelOptions
             {
-                MaxDegreeOfParallelism = Environment.ProcessorCount,
+                // When NN priors are active the inference server is the bottleneck;
+                // limit parallelism to avoid OOM from too many concurrent MCTS
+                // trees blocking on root-prior waits.
+                MaxDegreeOfParallelism = priorClient is not null
+                    ? Math.Min(4, Environment.ProcessorCount)
+                    : Environment.ProcessorCount,
             }, gameIndex =>
             {
                 // Each game gets a deterministic seed derived from the base seed + game index.
@@ -960,6 +965,12 @@ internal class SimulationRunner
 
                 var compositeActions = new List<PlacementActionRecord>();
                 var totalSimulations = 0;
+                var totalPriorsRequested = 0;
+                var totalPriorsApplied = 0;
+                var totalPriorStatesEvaluated = 0;
+                var totalPriorsSkipped = 0;
+                var totalPriorStatesNotFound = 0;
+                Dictionary<int, int>? totalPriorStatesPerDepth = null;
 
                 // Create a per-action MCTS config: simulation-limited, no time limit.
                 var perActionMctsConfig = new Kjarni.MCTSConfig(
@@ -999,6 +1010,23 @@ internal class SimulationRunner
                         var actionRoot = new Kjarni.MCTS.Types.MCTSState(postPlacementState);
                         perActionMcts.RunSimulation(actionRoot);
 
+                        // Accumulate prior stats from this per-action MCTS run.
+                        var actionLogInfo = perActionMcts.LatestLogInfo();
+                        totalPriorsRequested += actionLogInfo.priorStatesRequested;
+                        totalPriorsApplied += actionLogInfo.priorsApplied;
+                        totalPriorStatesEvaluated += actionLogInfo.priorStatesEvaluated;
+                        totalPriorsSkipped += actionLogInfo.priorsSkipped;
+                        totalPriorStatesNotFound += actionLogInfo.stateNotFound;
+                        if (actionLogInfo.priorStatesPerDepth is { Count: > 0 })
+                        {
+                            totalPriorStatesPerDepth ??= new Dictionary<int, int>();
+                            foreach (var (depth, count) in actionLogInfo.priorStatesPerDepth)
+                            {
+                                totalPriorStatesPerDepth.TryGetValue(depth, out var existing);
+                                totalPriorStatesPerDepth[depth] = existing + count;
+                            }
+                        }
+
                         var wins = actionRoot.WinCounts is { Length: > 0 }
                             ? (double[])actionRoot.WinCounts.Clone()
                             : Array.Empty<double>();
@@ -1034,6 +1062,12 @@ internal class SimulationRunner
                     SerializedState = serializedState,
                     Simulations = totalSimulations,
                     ElapsedMs = (int)timer.Elapsed.TotalMilliseconds,
+                    PriorsRequested = totalPriorsRequested,
+                    PriorsApplied = totalPriorsApplied,
+                    PriorStatesEvaluated = totalPriorStatesEvaluated,
+                    PriorStatesNotFound = totalPriorStatesNotFound,
+                    PriorStatesPerDepth = totalPriorStatesPerDepth,
+                    PriorsSkipped = totalPriorsSkipped,
                     Actions = compositeActions,
                 });
 

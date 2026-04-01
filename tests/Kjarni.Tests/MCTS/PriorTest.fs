@@ -73,10 +73,12 @@ type MockPriorClient() =
         member _.RequestPrior(nodeId, parentState, states, actingPlayer, depth) =
             _requests.Add((nodeId, parentState, states, actingPlayer, depth))
 
-        member _.CollectPriors() =
-            let results = _responses |> Seq.toArray
+        member _.CollectPriors(knownNodeIds: IReadOnlySet<int64>) =
+            let matched = _responses |> Seq.filter (fun r -> knownNodeIds.Contains(r.NodeId)) |> Seq.toArray
+            let remaining = _responses |> Seq.filter (fun r -> not (knownNodeIds.Contains(r.NodeId))) |> Seq.toList
             _responses.Clear()
-            results
+            for r in remaining do _responses.Enqueue(r)
+            matched
 
         member _.Flush() =
             _flushed <- true
@@ -100,10 +102,12 @@ type AutoRespondPriorClient(winProbFn: ICoreState[] -> float[]) =
             let winProbs = winProbFn states
             _responses.Enqueue(PriorResponse(nodeId, winProbs))
 
-        member _.CollectPriors() =
-            let results = _responses |> Seq.toArray
+        member _.CollectPriors(knownNodeIds: IReadOnlySet<int64>) =
+            let matched = _responses |> Seq.filter (fun r -> knownNodeIds.Contains(r.NodeId)) |> Seq.toArray
+            let remaining = _responses |> Seq.filter (fun r -> not (knownNodeIds.Contains(r.NodeId))) |> Seq.toList
             _responses.Clear()
-            results
+            for r in remaining do _responses.Enqueue(r)
+            matched
 
         member _.Flush() =
             _flushed <- true

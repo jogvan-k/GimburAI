@@ -55,6 +55,9 @@ type LogInfo =
         val mutable transpositionTableSize: int
         val mutable reachedTerminal: bool
         val mutable priorStatesRequested: int
+        /// Number of tree nodes that had prior policies successfully applied.
+        val mutable priorNodesApplied: int
+        /// Number of individual action states covered by applied priors.
         val mutable priorsApplied: int
         val mutable priorStatesEvaluated: int
         /// Per-depth count of prior states evaluated (depth → state count).

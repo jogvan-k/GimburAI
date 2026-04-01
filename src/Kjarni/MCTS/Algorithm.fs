@@ -3,6 +3,7 @@ module Kjarni.MCTS.Algorithm
 open System
 open System.Collections.Generic
 open System.Diagnostics
+open System.Threading
 open Kjarni
 open Kjarni.MCTS.Types
 
@@ -380,7 +381,10 @@ let computePriorPolicy (winProbs: float[]) (layout: int[]) (outcomeWeights: int[
 type PriorStats =
   struct
     val mutable priorStatesRequested: int
-    val mutable priorStatesApplied: int
+    /// Number of tree nodes that had prior policies successfully applied.
+    val mutable priorNodesApplied: int
+    /// Number of individual action states covered by successfully applied priors.
+    val mutable priorActionsApplied: int
     val mutable priorActionsEvaluated: int
     /// Per-depth count of prior states evaluated (depth → state count).
     val mutable priorStatesPerDepth: Dictionary<int, int>
@@ -490,7 +494,8 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
     let collectPriors () =
         match priorClient, nodeRegistry, layoutRegistry with
         | Some client, Some nodeReg, Some layoutReg ->
-            let responses = client.CollectPriors()
+            let knownIds = HashSet<int64>(nodeReg.Keys) :> IReadOnlySet<int64>
+            let responses = client.CollectPriors(knownIds)
             for resp in responses do
                 match nodeReg.TryGetValue(resp.NodeId) with
                 | true, node ->
@@ -498,7 +503,8 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                     | true, (layout, outcomeWeights) ->
                         let policy = computePriorPolicy resp.WinProbabilities layout outcomeWeights
                         node.Priors <- Some policy
-                        priorStats.priorStatesApplied <- priorStats.priorStatesApplied + 1
+                        priorStats.priorNodesApplied <- priorStats.priorNodesApplied + 1
+                        priorStats.priorActionsApplied <- priorStats.priorActionsApplied + resp.WinProbabilities.Length
                         // Remove from registries once applied
                         nodeReg.Remove(resp.NodeId) |> ignore
                         layoutReg.Remove(resp.NodeId) |> ignore
@@ -519,6 +525,24 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
         for node in stateHistory do
             requestPrior node depth
             depth <- depth - 1
+
+
+    // ── Root prior wait ──────────────────────────────────────────────────
+    // Proactively request the root node's prior and block briefly until
+    // it arrives.  The root prior is the single most valuable piece of NN
+    // guidance: it steers the very first action selection and every
+    // subsequent UCB comparison.  Without this wait the search typically
+    // finishes all rollouts before the HTTP round-trip completes.
+    let rootPriorWaitTimeoutMs = 50L
+    requestPrior root 0
+    if priorClient.IsSome && root.Priors.IsNone then
+        let waitStart = timer.ElapsedMilliseconds
+        while root.Priors.IsNone
+              && (timer.ElapsedMilliseconds - waitStart) < rootPriorWaitTimeoutMs do
+            collectPriors ()
+            Thread.Sleep(1)
+        // One final collection attempt after the sleep loop.
+        collectPriors ()
 
     while root.Rollouts < maxSimulationCount
           && (not evaluateUntil.IsSome
@@ -586,5 +610,9 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
             backPropagate (horizonState :: stateHistory) outcome
             priorStats.horizonSkips <- priorStats.horizonSkips + 1
             collectPriors ()
+
+    // Final collection: apply any priors that arrived during the last
+    // iterations of the search loop, before the caller flushes.
+    collectPriors ()
 
     (extractBestPath root |> List.toArray, priorStats)

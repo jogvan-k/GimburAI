@@ -36,7 +36,8 @@ type MonteCarloTreeSearch(config: MCTSConfig) =
         logInfo.elapsedTime <- timer.Elapsed
         logInfo.reachedTerminal <- isResolved root
         logInfo.priorStatesRequested <- priorStats.priorStatesRequested
-        logInfo.priorsApplied <- priorStats.priorStatesApplied
+        logInfo.priorNodesApplied <- priorStats.priorNodesApplied
+        logInfo.priorsApplied <- priorStats.priorActionsApplied
         logInfo.priorStatesEvaluated <- priorStats.priorActionsEvaluated
         logInfo.priorStatesPerDepth <- priorStats.priorStatesPerDepth
         logInfo.horizonSkips <- priorStats.horizonSkips

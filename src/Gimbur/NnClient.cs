@@ -41,7 +41,7 @@ public sealed class NnClient : IDisposable
     public async Task<float[][]> PredictAsync(IReadOnlyList<string> compactStates)
     {
         var request = new PredictRequest { States = compactStates };
-        var response = await SendWithRetryAsync(
+        using var response = await SendWithRetryAsync(
             () => _http.PostAsJsonAsync("state/predict", request, JsonOptions));
         var result = await response.Content.ReadFromJsonAsync<PredictResponse>(JsonOptions);
         return result?.Probabilities ?? [];
@@ -73,7 +73,7 @@ public sealed class NnClient : IDisposable
         IReadOnlyList<int> players)
     {
         var request = new PredictPlayerRequest { States = compactStates, Players = players };
-        var response = await SendWithRetryAsync(
+        using var response = await SendWithRetryAsync(
             () => _http.PostAsJsonAsync("state/predict-player", request, JsonOptions));
         var result = await response.Content.ReadFromJsonAsync<PredictPlayerResponse>(JsonOptions);
         return result?.WinProbabilities ?? [];
@@ -104,7 +104,7 @@ public sealed class NnClient : IDisposable
         IReadOnlyList<string> actions)
     {
         var request = new PredictPlacementRequest { States = compactStates, Actions = actions };
-        var response = await SendWithRetryAsync(
+        using var response = await SendWithRetryAsync(
             () => _http.PostAsJsonAsync("placement/predict", request, JsonOptions));
         var result = await response.Content.ReadFromJsonAsync<PredictPlacementResponse>(JsonOptions);
         return result?.Probabilities ?? [];
@@ -202,7 +202,7 @@ public sealed class NnClient : IDisposable
     {
         try
         {
-            var response = await _http.GetAsync("health");
+            using var response = await _http.GetAsync("health");
             return response.IsSuccessStatusCode;
         }
         catch

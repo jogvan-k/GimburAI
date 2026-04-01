@@ -1059,7 +1059,8 @@ def _run_combined_generation(
         # state simulation (dual-model prior).
         state_model_kwargs: dict[str, Any] = {}
         prev_state = _model_path(cfg, gen - 1, "state")
-        if prev_state.exists():
+        has_state_model = prev_state.exists()
+        if has_state_model:
             state_model_kwargs["state_model_path"] = prev_state
             state_model_kwargs["state_model_config"] = cfg.model_config
 
@@ -1073,24 +1074,14 @@ def _run_combined_generation(
             cwd=project_root,
             **state_model_kwargs,
         )
-        gen_nn_url = nn_url
-    elif not sim_state_done and placement_model.exists():
-        # Gen 0: serve just the placement model (just trained) so the
-        # state simulation benefits from a smarter placement prior.
-        server.start(
-            serve_cfg=cfg.serve,
-            game_config=cfg.game_config,
-            python_module=cfg.python_module,
-            placement_model_path=placement_model,
-            placement_model_config=effective_placement_model_config,
-            pipeline_cfg=cfg,
-            cwd=project_root,
-        )
-        gen_nn_url = nn_url
-
+        # Only enable state priors when a state model is actually loaded;
+        # without one the /state/ endpoints don't exist on the server and
+        # prior requests would silently 404.
+        if has_state_model:
+            gen_nn_url = nn_url
     _step_simulate(cfg, gen, project_root, gen_nn_url, model_type="state")
 
-    if not sim_state_done:
+    if gen > 0 and not sim_state_done:
         server.stop()
 
     # ---------------------------------------------------------------
