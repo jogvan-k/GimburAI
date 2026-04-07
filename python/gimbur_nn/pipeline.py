@@ -62,6 +62,8 @@ class TrainConfig:
     test_split: float = 0.0
     log_interval: int = 50
     checkpoint_dir: bool = True
+    loss: str = "hard"
+    loss_sigma: float = 2.0
     resume_from_previous: bool = True
 
 
@@ -116,6 +118,9 @@ class PipelineConfig:
 
     # How many generations to run.
     generations: int = 10
+
+    # Skip generations before this threshold (treat them as complete).
+    skip_until_gen: int | None = None
 
     # Paths to the CLI tools (relative to project root).
     dotnet_project: str = "src/Gimbur.Cli"
@@ -180,6 +185,7 @@ def _load_config(path: Path) -> PipelineConfig:
         "generations",
         "dotnet_project",
         "python_module",
+        "skip_until_gen",
     ):
         json_key = _to_camel(attr)
         if json_key in raw:
@@ -207,7 +213,21 @@ def _to_camel(snake: str) -> str:
 
 
 def _load_section(cls: type, data: dict[str, Any]) -> Any:
-    """Instantiate a dataclass from a camelCase JSON dict."""
+    """Instantiate a dataclass from a camelCase JSON dict.
+
+    Warns on unrecognised keys so config typos don't silently use defaults.
+    """
+    known_keys = {_to_camel(f) for f in cls.__dataclass_fields__}
+    unknown = set(data.keys()) - known_keys
+    if unknown:
+        import warnings
+
+        warnings.warn(
+            f"Unknown key(s) in {cls.__name__} config: {', '.join(sorted(unknown))}. "
+            f"Valid keys: {', '.join(sorted(known_keys))}",
+            stacklevel=2,
+        )
+
     kwargs: dict[str, Any] = {}
     for f_name in cls.__dataclass_fields__:
         json_key = _to_camel(f_name)
@@ -280,12 +300,32 @@ def _write_config(cfg: PipelineConfig, name: str, data: dict[str, Any]) -> Path:
 # ---------------------------------------------------------------------------
 
 
+def _effective_simulate(
+    cfg: PipelineConfig, model_type: str | None = None
+) -> SimulateConfig:
+    """Return the effective ``SimulateConfig`` for a pipeline step.
+
+    For combined pipelines with ``model_type="placement"``, returns
+    ``cfg.placement_simulate`` when set, otherwise ``cfg.simulate``.
+    """
+    if model_type == "placement" and cfg.placement_simulate is not None:
+        return cfg.placement_simulate
+    return cfg.simulate
+
+
 def _simulation_complete(cfg: PipelineConfig, gen: int, model_type: str | None = None) -> bool:
-    """True if the generation's data directory has enough game files."""
+    """True if the generation's data directory has enough game files.
+
+    When ``cfg.skip_until_gen`` is set and *gen* is below that
+    threshold, the generation is considered complete (i.e. skipped).
+    """
+    if cfg.skip_until_gen is not None and gen < cfg.skip_until_gen:
+        return True
+    sim = _effective_simulate(cfg, model_type)
     data_dir = _data_path(cfg, gen, model_type)
     if not data_dir.is_dir():
         return False
-    return _count_json_files(data_dir) >= cfg.simulate.games
+    return _count_json_files(data_dir) >= sim.games
 
 
 def _training_complete(cfg: PipelineConfig, gen: int, model_type: str | None = None) -> bool:
@@ -553,7 +593,12 @@ def _step_simulate(
     out_dir = _data_path(cfg, gen, model_type)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    sim = sim_override or cfg.simulate
+    # Skip if this generation is below the skip threshold.
+    if cfg.skip_until_gen is not None and gen < cfg.skip_until_gen:
+        print(f"  Simulate: gen {gen} < skipUntilGen {cfg.skip_until_gen}, skipping.")
+        return
+
+    sim = sim_override or _effective_simulate(cfg, model_type)
     target_games = sim.games
     existing = _count_json_files(out_dir)
 
@@ -719,6 +764,8 @@ def _step_train(
         "valSplit": tr.val_split,
         "testSplit": tr.test_split,
         "logInterval": tr.log_interval,
+        "loss": tr.loss,
+        "lossSigma": tr.loss_sigma,
     }
 
     # Enable per-epoch checkpointing if configured.
@@ -1007,7 +1054,7 @@ def _run_combined_generation(
 
     _step_simulate(
         cfg, gen, project_root, gen_nn_url,
-        model_type="placement", sim_override=cfg.placement_simulate,
+        model_type="placement",
     )
 
     if not sim_placement_done:

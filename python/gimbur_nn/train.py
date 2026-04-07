@@ -3,7 +3,8 @@ Training loop for GimburTransformer and GimburPlacementTransformer.
 
 Reads data exported by ``gimbur simulate --export``, expands states via
 symmetry permutations and player rotation, and trains the model to predict
-a win-probability bucket distribution via cross-entropy loss.
+a win-probability bucket distribution.  The loss function is
+configurable — see ``--loss`` and :mod:`gimbur_nn.loss_config`.
 
 ``--data`` may point to a single ``.jsonl`` file, a single ``.json``
 file, **or** a directory containing any mix of ``.jsonl`` and ``.json``
@@ -46,6 +47,7 @@ from torch.utils.data import DataLoader
 
 from .data_loader import PlacementDataset, SimulationDataset, load_games, split_games
 from .game_config import CONFIGS_BY_NAME
+from .loss_config import LOSS_MODES, LossConfig, LossFn, build_loss_fn
 from .transformer_model import (
     MODEL_CONFIGS_BY_NAME,
     GimburPlacementTransformer,
@@ -107,6 +109,8 @@ _CONFIG_KEYS: dict[str, str] = {
     "testSplit": "test_split",
     "logInterval": "log_interval",
     "checkpointDir": "checkpoint_dir",
+    "loss": "loss",
+    "lossSigma": "loss_sigma",
 }
 
 # Attributes whose CLI type is Path.
@@ -185,6 +189,19 @@ def parse_args() -> argparse.Namespace:
         help="Model type: 'state' (default) or 'placement'.",
     )
     parser.add_argument(
+        "--loss",
+        type=str,
+        default="hard",
+        choices=sorted(LOSS_MODES),
+        help="Loss function mode (default: hard).",
+    )
+    parser.add_argument(
+        "--loss-sigma",
+        type=float,
+        default=2.0,
+        help="Gaussian sigma for label smoothing (only used with --loss=gaussian, default: 2.0).",
+    )
+    parser.add_argument(
         "--out",
         type=Path,
         default=Path("model.pt"),
@@ -257,6 +274,8 @@ _ARG_DEFAULTS: dict[str, object] = {
     "val_split": 0.1,
     "test_split": 0.0,
     "log_interval": 50,
+    "loss": "hard",
+    "loss_sigma": 2.0,
 }
 
 
@@ -327,6 +346,7 @@ def _run_epoch(
     log_interval: int,
     epoch: int,
     phase: str,
+    loss_fn: LossFn = F.cross_entropy,
 ) -> float:
     """Run one epoch (train or eval).
 
@@ -350,7 +370,7 @@ def _run_epoch(
             logits = model(token_ids)  # (batch, seq_len, n_buckets)
             last_logits = logits[:, -1, :]  # (batch, n_buckets)
 
-            loss = F.cross_entropy(last_logits, targets)
+            loss = loss_fn(last_logits, targets)
 
             if is_train:
                 assert optimizer is not None
@@ -408,6 +428,10 @@ def main() -> None:
     # ── Model ────────────────────────────────────────────────────────
     model = model_class(game_cfg, model_cfg)
 
+    # ── Loss function ────────────────────────────────────────────────
+    loss_cfg = LossConfig(mode=args.loss, sigma=args.loss_sigma)
+    loss_fn = build_loss_fn(loss_cfg, n_buckets=model_cfg.n_buckets)
+
     # ── Resume handling ──────────────────────────────────────────────
     start_epoch = 0
     best_val_loss = float("inf")
@@ -441,9 +465,10 @@ def main() -> None:
     model.to(device)
 
     param_count = sum(p.numel() for p in model.parameters())
+    loss_label = args.loss if args.loss == "hard" else f"{args.loss}(sigma={args.loss_sigma})"
     print(
         f"Model: {args.model_config} ({args.model_type}) for {args.game_config} "
-        f"({param_count:,} parameters) on {device}"
+        f"({param_count:,} parameters) on {device}, loss={loss_label}"
     )
 
     # ── Data ─────────────────────────────────────────────────────────
@@ -517,7 +542,8 @@ def main() -> None:
         t_start = time.monotonic()
 
         train_loss = _run_epoch(
-            model, train_loader, device, optimizer, args.log_interval, epoch, "train"
+            model, train_loader, device, optimizer, args.log_interval, epoch, "train",
+            loss_fn=loss_fn,
         )
 
         label = f"{epoch}/{max_epochs}" if max_epochs else str(epoch)
@@ -526,7 +552,9 @@ def main() -> None:
         is_best = False
         val_loss: float | None = None
         if val_loader is not None:
-            val_loss = _run_epoch(model, val_loader, device, None, 0, epoch, "val")
+            val_loss = _run_epoch(
+                model, val_loader, device, None, 0, epoch, "val", loss_fn=loss_fn,
+            )
             msg += f" | val loss {val_loss:.4f}"
 
             if val_loss < best_val_loss:
@@ -569,7 +597,9 @@ def main() -> None:
         )
         # Reload best checkpoint for test evaluation.
         model.load_state_dict(torch.load(args.out, map_location=device, weights_only=True))
-        test_loss = _run_epoch(model, test_loader, device, None, 0, 0, "test")
+        test_loss = _run_epoch(
+            model, test_loader, device, None, 0, 0, "test", loss_fn=loss_fn,
+        )
         print(f"Test loss: {test_loss:.4f}")
 
 

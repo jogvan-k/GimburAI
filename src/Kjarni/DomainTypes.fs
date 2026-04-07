@@ -1,6 +1,7 @@
 namespace Kjarni
 
 open System
+open System.Collections.Generic
 
 type Player =
     | Player1 = 0
@@ -62,8 +63,11 @@ type IPriorClient =
     /// depth — depth from root (lower = higher priority).
     abstract RequestPrior : nodeId: int64 * parentState: ICoreState * states: ICoreState[] * actingPlayer: int * depth: int -> unit
 
-    /// Drain all completed prior responses from the mailbox. Non-blocking.
-    abstract CollectPriors : unit -> PriorResponse[]
+    /// Collect completed prior responses matching the given set of node IDs.
+    /// Only responses whose NodeId is in knownNodeIds are returned; others
+    /// remain in the mailbox for subsequent calls (e.g. from other games
+    /// sharing the same client).
+    abstract CollectPriors : knownNodeIds: IReadOnlySet<int64> -> PriorResponse[]
 
     /// Clear the server queue and discard pending results.
     abstract Flush : unit -> unit
