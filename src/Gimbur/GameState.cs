@@ -17,7 +17,7 @@ public sealed class CatanState : ICoreState
     internal readonly int[,] _devCards;
     private readonly int[] _devDeckRemaining;
     internal readonly int[] _newDevCardsThisTurn;
-    private readonly int[] _pendingRoadBuildingPlacements;
+    internal readonly int[] _pendingRoadBuildingPlacements;
     internal TurnStage? _postDevCardStage;
     /// <summary>
     /// Per-vertex placement round: 0 = empty, 1 = placed during first round,

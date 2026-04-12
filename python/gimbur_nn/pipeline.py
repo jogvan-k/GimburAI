@@ -77,6 +77,15 @@ class ServeConfig:
 
 
 @dataclass
+class GimburServerConfig:
+    """Parameters for the C# Gimbur.Server (MCTS game server)."""
+
+    port: int = 5123
+    host: str = "127.0.0.1"
+    dotnet_project: str = "src/Gimbur.Server"
+
+
+@dataclass
 class BenchmarkConfig:
     """A single benchmark run.
 
@@ -95,6 +104,9 @@ class BenchmarkConfig:
     games: int = 100
     ai: list[str] = field(default_factory=lambda: ["nn", "greedy"])
     phase: str = "both"  # "placement", "combined", or "both"
+    search_time_ms: int | None = None
+    server_prior_mode: str | None = None
+    server_max_prior_depth: int | None = None
 
 
 @dataclass
@@ -131,6 +143,7 @@ class PipelineConfig:
     placement_simulate: SimulateConfig | None = None  # overrides simulate for placement phase
     train: TrainConfig = field(default_factory=TrainConfig)
     serve: ServeConfig = field(default_factory=ServeConfig)
+    gimbur_server: GimburServerConfig = field(default_factory=GimburServerConfig)
     benchmarks: list[BenchmarkConfig] = field(
         default_factory=lambda: [
             BenchmarkConfig(name="nn-vs-greedy", games=100, ai=["nn", "greedy"]),
@@ -200,6 +213,8 @@ def _load_config(path: Path) -> PipelineConfig:
         cfg.train = _load_section(TrainConfig, raw["train"])
     if "serve" in raw:
         cfg.serve = _load_section(ServeConfig, raw["serve"])
+    if "gimburServer" in raw:
+        cfg.gimbur_server = _load_section(GimburServerConfig, raw["gimburServer"])
     if "benchmarks" in raw:
         cfg.benchmarks = [_load_section(BenchmarkConfig, b) for b in raw["benchmarks"]]
 
@@ -566,6 +581,94 @@ class _ServerProcess:
         raise RuntimeError(f"Inference server did not become healthy within {timeout}s")
 
 
+class _GimburServerProcess:
+    """Manages the lifecycle of the C# Gimbur.Server subprocess."""
+
+    def __init__(self) -> None:
+        self._proc: subprocess.Popen[bytes] | None = None
+
+    def start(
+        self,
+        *,
+        gimbur_server_cfg: GimburServerConfig,
+        cwd: Path | None = None,
+    ) -> None:
+        if self._proc is not None:
+            self.stop()
+
+        host = gimbur_server_cfg.host
+        port = gimbur_server_cfg.port
+        _ServerProcess._check_port_available(host, port)
+
+        args = [
+            "dotnet",
+            "run",
+            "-c",
+            "Release",
+            "--project",
+            gimbur_server_cfg.dotnet_project,
+            "--",
+            "--urls",
+            f"http://{host}:{port}",
+        ]
+        print(f"\n--- Starting Gimbur.Server: {' '.join(args)}")
+        self._proc = subprocess.Popen(
+            args,
+            cwd=cwd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        # Wait for health check.
+        url = f"http://{host}:{port}/health"
+        self._wait_for_health(url, timeout=60)
+
+    def stop(self) -> None:
+        if self._proc is None:
+            return
+        print("--- Stopping Gimbur.Server...")
+        self._proc.send_signal(signal.SIGINT)
+        try:
+            self._proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            print("--- Gimbur.Server did not exit, killing...")
+            self._proc.kill()
+            self._proc.wait()
+        self._proc = None
+
+    def _wait_for_health(self, url: str, timeout: float) -> None:
+        """Poll the /health endpoint until the server is ready."""
+        import urllib.error
+        import urllib.request
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._proc is not None and self._proc.poll() is not None:
+                raise RuntimeError(
+                    f"Gimbur.Server exited with code {self._proc.returncode} "
+                    f"before becoming healthy."
+                )
+            try:
+                with urllib.request.urlopen(url, timeout=2) as resp:
+                    if resp.status == 200:
+                        print(f"--- Gimbur.Server healthy at {url}")
+                        return
+            except (urllib.error.URLError, OSError):
+                pass
+            time.sleep(0.5)
+        raise RuntimeError(f"Gimbur.Server did not become healthy within {timeout}s")
+
+
+_SERVER_AI_KINDS = frozenset({"server-mcts", "server-mcts-nn"})
+
+
+def _benchmarks_need_game_server(benchmarks: list[BenchmarkConfig]) -> bool:
+    """Return True if any benchmark uses server-mcts or server-mcts-nn AI kinds."""
+    return any(
+        ai in _SERVER_AI_KINDS for bench in benchmarks for ai in bench.ai
+    )
+
+
 # ---------------------------------------------------------------------------
 # Pipeline steps
 # ---------------------------------------------------------------------------
@@ -800,6 +903,7 @@ def _step_benchmark(
     project_root: Path,
     nn_url: str,
     phase: str | None = None,
+    gimbur_server: _GimburServerProcess | None = None,
 ) -> dict[str, Any]:
     """Run benchmarks for a generation. Returns aggregated results.
 
@@ -812,6 +916,16 @@ def _step_benchmark(
     gen_results: dict[str, Any] = {}
 
     benchmarks = _benchmarks_for_phase(cfg, phase) if phase is not None else cfg.benchmarks
+
+    # Start the Gimbur.Server if any benchmark needs it.
+    started_game_server = False
+    if gimbur_server is not None and _benchmarks_need_game_server(benchmarks):
+        gimbur_server.start(
+            gimbur_server_cfg=cfg.gimbur_server,
+            cwd=project_root,
+        )
+        started_game_server = True
+
     for bench in benchmarks:
         out_path = _results_path(cfg, gen, bench.name)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -833,6 +947,15 @@ def _step_benchmark(
         }
         if cfg.seed is not None:
             bench_config["seed"] = cfg.seed + gen * 1000
+        if bench.search_time_ms is not None:
+            bench_config["searchTimeMs"] = bench.search_time_ms
+        if any(ai in _SERVER_AI_KINDS for ai in bench.ai):
+            gs = cfg.gimbur_server
+            bench_config["serverUrl"] = f"http://{gs.host}:{gs.port}"
+        if bench.server_prior_mode is not None:
+            bench_config["serverPriorMode"] = bench.server_prior_mode
+        if bench.server_max_prior_depth is not None:
+            bench_config["serverMaxPriorDepth"] = bench.server_max_prior_depth
 
         config_path = _write_config(cfg, f"benchmark_gen{gen}_{bench.name}", bench_config)
 
@@ -857,6 +980,10 @@ def _step_benchmark(
         if out_path.exists():
             results = json.loads(out_path.read_text())
             gen_results[bench.name] = results
+
+    # Stop the Gimbur.Server if we started it.
+    if started_game_server and gimbur_server is not None:
+        gimbur_server.stop()
 
     return gen_results
 
@@ -1015,6 +1142,7 @@ def _run_combined_generation(
     server: _ServerProcess,
     nn_url: str,
     all_results: dict[int, dict[str, Any]],
+    gimbur_server: _GimburServerProcess | None = None,
 ) -> None:
     """Run a single generation of the combined (placement + state) pipeline.
 
@@ -1084,7 +1212,7 @@ def _run_combined_generation(
                 cwd=project_root,
             )
 
-        gen_results = _step_benchmark(cfg, gen, project_root, nn_url, phase="placement")
+        gen_results = _step_benchmark(cfg, gen, project_root, nn_url, phase="placement", gimbur_server=gimbur_server)
 
         if not bench_done:
             server.stop()
@@ -1158,7 +1286,7 @@ def _run_combined_generation(
                 cwd=project_root,
             )
 
-        gen_results = _step_benchmark(cfg, gen, project_root, nn_url, phase="combined")
+        gen_results = _step_benchmark(cfg, gen, project_root, nn_url, phase="combined", gimbur_server=gimbur_server)
 
         if not bench_done:
             server.stop()
@@ -1182,6 +1310,7 @@ def _run_single_generation(
     server: _ServerProcess,
     nn_url: str,
     all_results: dict[int, dict[str, Any]],
+    gimbur_server: _GimburServerProcess | None = None,
 ) -> None:
     """Run a single generation of a single-model (state or placement) pipeline."""
     # Determine which model-type param to use for serve.
@@ -1263,7 +1392,7 @@ def _run_single_generation(
                 cwd=project_root,
             )
 
-    gen_results = _step_benchmark(cfg, gen, project_root, nn_url)
+    gen_results = _step_benchmark(cfg, gen, project_root, nn_url, gimbur_server=gimbur_server)
 
     if not bench_already_done:
         server.stop()
@@ -1286,6 +1415,7 @@ def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> Non
     ``"combined"``, otherwise runs the simpler single-model flow.
     """
     server = _ServerProcess()
+    gimbur_server = _GimburServerProcess()
     nn_url = f"http://{cfg.serve.host}:{cfg.serve.port}"
     all_results: dict[int, dict[str, Any]] = {}
 
@@ -1318,14 +1448,15 @@ def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> Non
             print(f"{'#' * 60}\n")
 
             if is_combined:
-                _run_combined_generation(cfg, gen, project_root, server, nn_url, all_results)
+                _run_combined_generation(cfg, gen, project_root, server, nn_url, all_results, gimbur_server=gimbur_server)
             else:
-                _run_single_generation(cfg, gen, project_root, server, nn_url, all_results)
+                _run_single_generation(cfg, gen, project_root, server, nn_url, all_results, gimbur_server=gimbur_server)
 
     except KeyboardInterrupt:
         print("\n\nPipeline interrupted by user.")
     finally:
         server.stop()
+        gimbur_server.stop()
         if all_results:
             _save_summary(cfg, all_results)
             _save_progress_chart(cfg, all_results)

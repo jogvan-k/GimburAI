@@ -512,8 +512,8 @@ public partial class BoardSymmetryTests
         {
             var permuted = BoardSymmetry.PermuteState(stateStr, perm);
             var sections = permuted.Split('|');
-            Assert.That(sections.Length, Is.EqualTo(9),
-                $"Permuted state should have 9 sections for {perm.Label}");
+            Assert.That(sections.Length, Is.EqualTo(10),
+                $"Permuted state should have 10 sections for {perm.Label}");
         }
     }
 
@@ -576,8 +576,8 @@ public partial class BoardSymmetryTests
         {
             var permuted = BoardSymmetry.PermuteState(stateStr, perm);
             var sections = permuted.Split('|');
-            Assert.That(sections.Length, Is.EqualTo(9),
-                $"Permuted state should have 9 sections for {perm.Label}");
+            Assert.That(sections.Length, Is.EqualTo(10),
+                $"Permuted state should have 10 sections for {perm.Label}");
         }
     }
 

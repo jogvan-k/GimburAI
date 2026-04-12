@@ -119,6 +119,16 @@ internal static class CatanStateSerializer
             sb.Append(CrockfordBase32.Encode(state._newDevCardsThisTurn[(int)cardType]));
         }
 
+
+        // Section 12: Dev Card Resolution State (2 chars)
+        // Char 1: pending road building placements for current player (0-2, CrockfordBase32)
+        // Char 2: post-dev-card return stage, or '_' for null
+        sb.Append('|');
+        sb.Append(CrockfordBase32.Encode(state._pendingRoadBuildingPlacements[state.CurrentPlayer]));
+        sb.Append(state._postDevCardStage.HasValue
+            ? StateToken.EncodeTurnStage(state._postDevCardStage.Value)
+            : '_');
+
         return sb.ToString();
     }
 
@@ -132,12 +142,12 @@ internal static class CatanStateSerializer
             throw new ArgumentException("Serialized state cannot be empty.", nameof(serialized));
         }
 
-        // Format: tiles|ports|robber|currentTurn|longestArmy|vertices|edges|resources|knights|devCards|newDevCards
+        // Format: tiles|ports|robber|currentTurn|longestArmy|vertices|edges|resources|knights|devCards|newDevCards[|devCardResolution]
         var sections = serialized.Split('|');
-        if (sections.Length != 11)
+        if (sections.Length is not (11 or 12))
         {
             throw new InvalidOperationException(
-                $"Serialized state has {sections.Length} sections, expected 11.");
+                $"Serialized state has {sections.Length} sections, expected 11 or 12.");
         }
 
         var topology = config.Map.Topology;
@@ -318,6 +328,16 @@ internal static class CatanStateSerializer
             }
         }
 
+        // Section 12: Dev Card Resolution State (optional, 2 chars)
+        var pendingRoadBuildingPlacements = new int[playerCount + 1];
+        TurnStage? postDevCardStage = null;
+        if (sections.Length >= 12)
+        {
+            var roadBuildingSection = sections[11];
+            pendingRoadBuildingPlacements[currentPlayer] = CrockfordBase32.Decode(roadBuildingSection[0]);
+            postDevCardStage = roadBuildingSection[1] == '_' ? null : StateToken.DecodeTurnStage(roadBuildingSection[1]);
+        }
+
         var state = new CatanState(
             config,
             board,
@@ -334,8 +354,8 @@ internal static class CatanStateSerializer
             devCards,
             deck,
             newDevCardsThisTurn,
-            new int[playerCount + 1],
-            postDevCardStage: null,
+            pendingRoadBuildingPlacements,
+            postDevCardStage,
             vertexPlacementRound: InferPlacementRounds(topology.VertexCount, vertices, stage));
 
         state.RefreshVictory();
@@ -467,6 +487,14 @@ internal static class CatanStateSerializer
         sb.Append('|');
         for (var i = 0; i < CatanState.NewDevCardSerializedCount; i++)
         {
+            sb.Append(compact[pos++]);
+        }
+
+        // Section 12: Dev Card Resolution State — 2 chars
+        if (pos < compact.Length)
+        {
+            sb.Append('|');
+            sb.Append(compact[pos++]);
             sb.Append(compact[pos++]);
         }
 
@@ -607,6 +635,13 @@ internal static class CatanStateSerializer
             sb.Append(CrockfordBase32.Encode(state._newDevCardsThisTurn[(int)cardType]));
         }
 
+
+        // Section 12: Dev Card Resolution State (2 chars)
+        sb.Append('|');
+        sb.Append(CrockfordBase32.Encode(state._pendingRoadBuildingPlacements[state.CurrentPlayer]));
+        sb.Append(state._postDevCardStage.HasValue
+            ? StateToken.EncodeTurnStage(state._postDevCardStage.Value)
+            : '_');
         return sb.ToString();
     }
 

@@ -101,8 +101,13 @@ class GameConfig:
 
 
 def _state_token_size(t: int, v: int, e: int, p: int, n: int) -> int:
-    """Compute compact-form game state token sequence length."""
-    return (3 * t + 2 * v + e + p + 5) + 11 * n + 4
+    """Compute compact-form game state token sequence length.
+
+    Sections: tiles (3*T) + ports (P) + robber (1) + currentTurn (2) +
+    longestLargest (2) + vertices (2*V) + edges (E) + resources (5*N) +
+    knights (N) + devCards (5*N) + newDevCards (4) + devCardResolution (2).
+    """
+    return (3 * t + 2 * v + e + p + 5) + 11 * n + 4 + 2
 
 
 def _placement_token_size(t: int, v: int, e: int, p: int) -> int:

@@ -41,7 +41,7 @@ These alphabets apply to the **state** tokenizer (Parts I and II). The **action*
 
 ## Serialization Layout
 
-Tokens are emitted in the order below. All counts are fixed-length. Major sections are separated by `|`. Within per-player sections (resources, knights, dev cards) individual players are separated by `/`. Tile tokens are concatenated directly without separators. Section 11 (new dev cards this turn) is a fixed-length block for the active player only.
+Tokens are emitted in the order below. All counts are fixed-length. Major sections are separated by `|`. Within per-player sections (resources, knights, dev cards) individual players are separated by `/`. Tile tokens are concatenated directly without separators. Section 11 (new dev cards this turn) is a fixed-length block for the active player only. Section 12 (dev card resolution state) captures mid-dev-card state that would otherwise be lost during serialization.
 
 Let `T` = number of tiles, `V` = number of vertices, `E` = number of edges, `P` = number of ports, `N` = number of players.
 
@@ -204,6 +204,17 @@ This section is not per-player — it always represents the active player's newl
 
 **Tokens**: 4 (fixed, player-count-independent).
 
+### 12) Dev Card Resolution State
+
+Two tokens capturing the state of an in-progress Road Building or Knight dev card play:
+
+- `pendingRoadBuildingPlacements` — **count** (Crockford base-32; `0`=0, `1`=1, `2`=2): how many free road placements the current player still owes after playing a Road Building card. When > 0, the only legal actions are `PlaceRoad`.
+- `postDevCardStage` — **turn stage** or `_`: the turn stage to return to after the dev card effect resolves. Set when a Knight or Road Building card is played during `PreRoll` (value `r`) or `BuildTrade` (value `t`). `_` = null (no dev card effect in progress).
+
+This section is not per-player — it always represents the current player's state. During [player rotation](#player-rotation-invariance), these tokens are left unchanged.
+
+**Tokens**: 2 (fixed, player-count-independent).
+
 ## Game State Examples
 
 ### Mini Map (2 players, early game)
@@ -226,7 +237,7 @@ Board state:
 
 Full serialized (sections separated by `|`):
 ```
-w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t|__|._._._._._._v-._._._._._._._v+._._._._._._._._._|_____-_______+________________|21010/00130|0/0|00000/00000|0000
+w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t|__|._._._._._._v-._._._._._._._v+._._._._._._._._._|_____-_______+________________|21010/00130|0/0|00000/00000|0000|0_
 ```
 
 ### Small Map (2 players, early game)
@@ -249,7 +260,7 @@ Board state:
 
 Full serialized (sections separated by `|`):
 ```
-W2lb3ls4lw3hb2hw1ho5lW4hs5hd0n|gwWgsb|9|+r|__|v-v+v+._._._._v-._._._._._._._._._._._._._._._._._._._._._._._._|-_+_+_-__________________________________|10010/00100|0/0|00000/00000|0000
+W2lb3ls4lw3hb2hw1ho5lW4hs5hd0n|gwWgsb|9|+r|__|v-v+v+._._._._v-._._._._._._._._._._._._._._._._._._._._._._._._|-_+_+_-__________________________________|10010/00100|0/0|00000/00000|0000|0_
 ```
 
 ### Standard Map (3 players, mid-game)
@@ -273,7 +284,7 @@ Board state:
 
 Full serialized:
 ```
-w4lo1lb5lW2lw5hs3hW4ho1hs2hw3lb5hs3hW4ho3ls4lb5lw2lW2hd0n|ggwgbsWog|5|+t|_-|._._._._._._._._v-._._._._._._._._._c+._._._._._v*._._._._._._v*._._._v-._._._._._._._._v+._._._._._._._._._|______-_________-________+______+_**_____-*_____*-_____+_____+__________|31201/02143/10320|2/0/1|10000/01010/00100|0000
+w4lo1lb5lW2lw5hs3hW4ho1hs2hw3lb5hs3hW4ho3ls4lb5lw2lW2hd0n|ggwgbsWog|5|+t|_-|._._._._._._._._v-._._._._._._._._._c+._._._._._v*._._._._._._v*._._._v-._._._._._._._._v+._._._._._._._._._|______-_________-________+______+_**_____-*_____*-_____+_____+__________|31201/02143/10320|2/0/1|10000/01010/00100|0000|0_
 ```
 
 ## Player Rotation Invariance
@@ -330,7 +341,7 @@ Affected sections:
 - **Knights played** ([section 9](#9-per-player-knights-played)): `N` blocks of 1 token each.
 - **Dev cards** ([section 10](#10-per-player-dev-cards-in-hand-5-per-player)): `N` blocks of 5 tokens each.
 
-**Not affected**: Section 11 (new dev cards this turn) is always relative to the current player and is left unchanged by rotation.
+**Not affected**: Section 11 (new dev cards this turn) and section 12 (dev card resolution state) are always relative to the current player and are left unchanged by rotation.
 
 ### Rotation Example
 
@@ -338,12 +349,12 @@ Using the mini map game state example (2 players, player 1's turn):
 
 **Original (human-readable):**
 ```
-w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t|__|._._._._._._v-._._._._._._._v+._._._._._._._._._|_____-_______+________________|21010/00130|0/0|00000/00000|0000
+w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t|__|._._._._._._v-._._._._._._._v+._._._._._._._._._|_____-_______+________________|21010/00130|0/0|00000/00000|0000|0_
 ```
 
 **Rotated for player 2** (R = 1, N = 2 — player 1 and player 2 swap):
 ```
-w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|+t|__|._._._._._._v+._._._._._._._v-._._._._._._._._._|_____+_______-________________|00130/21010|0/0|00000/00000|0000
+w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|+t|__|._._._._._._v+._._._._._._._v-._._._._._._._._._|_____+_______-________________|00130/21010|0/0|00000/00000|0000|0_
 ```
 
 Changes:
@@ -354,6 +365,7 @@ Changes:
 - Knights: `0/0` reordered (no visible change since both are `0`)
 - Dev cards: `00000/00000` reordered (no visible change)
 - New dev cards this turn: `0000` unchanged (always current-player relative)
+- Dev card resolution state: `0_` unchanged (always current-player relative)
 
 ### Implementation
 
@@ -546,11 +558,11 @@ Compact form: strip all `/` and `|` separators from the human-readable form. The
 ## Game State
 
 ```
-(3*T) + P + 1 + 2 + 2 + (2*V) + E + (5*N) + (1*N) + (5*N) + 4
-= (3*T + 2*V + E + P + 5) + 11*N + 4
+(3*T) + P + 1 + 2 + 2 + (2*V) + E + (5*N) + (1*N) + (5*N) + 4 + 2
+= (3*T + 2*V + E + P + 5) + 11*N + 6
 ```
 
-The constant 5 = robber(1) + current-turn(2) + awards(2). The trailing 4 = new dev cards this turn (section 11, active player only, excluding victory points).
+The constant 5 = robber(1) + current-turn(2) + awards(2). The trailing 6 = new dev cards this turn (4, section 11, active player only, excluding victory points) + dev card resolution state (2, section 12).
 
 ## Placement Phase State
 
@@ -564,9 +576,9 @@ Player-count-independent: player information is embedded in vertex/edge tokens, 
 
 | Map | Players | Placement Phase State | Game State |
 |-----|---------|----------------------|------------|
-| Mini (T=7, V=24, E=30, P=6) | 2 | 105 | 136 |
-| Small (T=10, V=32, E=41, P=6) | 2 | 141 | 172 |
-| Small (T=10, V=32, E=41, P=6) | 3 | 141 | 183 |
-| Standard (T=19, V=54, E=72, P=9) | 2 | 246 | 277 |
-| Standard (T=19, V=54, E=72, P=9) | 3 | 246 | 288 |
-| Standard (T=19, V=54, E=72, P=9) | 4 | 246 | 299 |
+| Mini (T=7, V=24, E=30, P=6) | 2 | 105 | 138 |
+| Small (T=10, V=32, E=41, P=6) | 2 | 141 | 174 |
+| Small (T=10, V=32, E=41, P=6) | 3 | 141 | 185 |
+| Standard (T=19, V=54, E=72, P=9) | 2 | 246 | 279 |
+| Standard (T=19, V=54, E=72, P=9) | 3 | 246 | 290 |
+| Standard (T=19, V=54, E=72, P=9) | 4 | 246 | 301 |

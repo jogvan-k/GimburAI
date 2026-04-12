@@ -17,7 +17,15 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
 app.MapPost("/choose-action", (ChooseActionRequest req) =>
 {
-    // 1. Select config preset.
+    // 1. Validate AI mode.
+    var aiMode = req.AiMode?.ToLowerInvariant() ?? "mcts-ai";
+    if (aiMode is not ("mcts-ai" or "mcts-nn-ai"))
+        return Results.BadRequest(new { error = $"Unknown aiMode: '{req.AiMode}'. Supported: mcts-ai, mcts-nn-ai" });
+
+    if (aiMode == "mcts-nn-ai" && string.IsNullOrWhiteSpace(req.NnUrl))
+        return Results.BadRequest(new { error = "nnUrl is required when aiMode is 'mcts-nn-ai'" });
+
+    // 2. Select config preset.
     var config = (req.Config?.ToLowerInvariant()) switch
     {
         "mini" => GameConfig.Mini,
@@ -25,7 +33,13 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
         _ => GameConfig.Standard,
     };
 
-    // 2. Deserialize the game state.
+    // 3. Resolve prior mode.
+    var priorModeStr = req.PriorMode?.ToLowerInvariant() ?? "state";
+    if (priorModeStr is not ("state" or "placement"))
+        return Results.BadRequest(new { error = $"Unknown priorMode: '{req.PriorMode}'. Supported: state, placement" });
+    var priorMode = priorModeStr == "placement" ? PriorMode.Placement : PriorMode.State;
+
+    // 4. Deserialize the game state.
     CatanState state;
     try
     {
@@ -36,12 +50,12 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
         return Results.BadRequest(new { error = "Failed to deserialize state", detail = ex.Message });
     }
 
-    // 3. Get legal actions.
+    // 5. Get legal actions.
     var actions = state.Actions();
     if (actions.Length == 0)
         return Results.BadRequest(new { error = "No legal actions available (game may be over)" });
 
-    // 4. If only one action, return it immediately (forced move).
+    // 6. If only one action, return it immediately (forced move).
     if (actions.Length == 1)
     {
         var forced = UnwrapCoreAction(actions[0]);
@@ -70,76 +84,93 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
         });
     }
 
-    // 5. Configure and run MCTS.
+    // 7. Configure MCTS with optional NN prior client.
     var searchTimeMs = req.SearchTimeMs ?? 1000;
     var maxRolloutDepth = req.MaxRolloutDepth ?? 500;
+    var maxPriorDepth = req.MaxPriorDepth ?? int.MaxValue;
 
-    var mctsConfig = new MCTSConfig(
-        searchTime.NewMilliSeconds(searchTimeMs),
-        maxSimulations: int.MaxValue,
-        maxRolloutDepth: maxRolloutDepth,
-        explorationConstant: Math.Sqrt(2.0),
-        actionRolloutLimit: int.MaxValue,
-        priorClient: null,
-        expansionGuard: null,
-        maxPriorDepth: int.MaxValue);
-
-    var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(mctsConfig);
-    var mctsRoot = new Kjarni.MCTS.Types.MCTSState((ICoreState)state);
-
-    var sw = Stopwatch.StartNew();
-    mcts.RunSimulation(mctsRoot);
-    sw.Stop();
-
-    // 6. Extract best action.
-    var bestPath = extractBestPath(mctsRoot);
-    if (bestPath.IsEmpty)
-        return Results.Problem("MCTS returned no result");
-
-    var bestActionIndex = bestPath.Head;
-    var bestAction = UnwrapCoreAction(actions[bestActionIndex]);
-    var playerIndex = (int)state.PlayerTurn;
-
-    // 7. Gather per-action statistics.
-    var allActions = new List<ActionInfo>();
-    for (var i = 0; i < actions.Length; i++)
+    PriorClient? priorClient = null;
+    try
     {
-        var catanAction = UnwrapCoreAction(actions[i]);
-        var (_, winRate, rollouts) = GetChildWinData(mctsRoot.Actions[i], playerIndex);
-        allActions.Add(new ActionInfo
+        if (aiMode == "mcts-nn-ai")
         {
-            TypeTag = catanAction.TypeTag,
-            Arg1 = catanAction.Arg1,
-            Arg2 = catanAction.Arg2,
-            ActionName = ActionName(catanAction.TypeTag),
-            Visits = rollouts,
-            WinRate = Math.Round(winRate, 4),
+            priorClient = new PriorClient(
+                req.NnUrl!,
+                priorMode,
+                PlacementActionSerializer.ForTopology(config.Map.Topology));
+        }
+
+        var mctsConfig = new MCTSConfig(
+            searchTime.NewMilliSeconds(searchTimeMs),
+            maxSimulations: int.MaxValue,
+            maxRolloutDepth: maxRolloutDepth,
+            explorationConstant: Math.Sqrt(2.0),
+            actionRolloutLimit: int.MaxValue,
+            priorClient: priorClient,
+            expansionGuard: null,
+            maxPriorDepth: maxPriorDepth);
+
+        var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(mctsConfig);
+        var mctsRoot = new Kjarni.MCTS.Types.MCTSState((ICoreState)state);
+
+        var sw = Stopwatch.StartNew();
+        mcts.RunSimulation(mctsRoot);
+        sw.Stop();
+
+        // 8. Extract best action.
+        var bestPath = extractBestPath(mctsRoot);
+        if (bestPath.IsEmpty)
+            return Results.Problem("MCTS returned no result");
+
+        var bestActionIndex = bestPath.Head;
+        var bestAction = UnwrapCoreAction(actions[bestActionIndex]);
+        var playerIndex = (int)state.PlayerTurn;
+
+        // 9. Gather per-action statistics.
+        var allActions = new List<ActionInfo>();
+        for (var i = 0; i < actions.Length; i++)
+        {
+            var catanAction = UnwrapCoreAction(actions[i]);
+            var (_, winRate, rollouts) = GetChildWinData(mctsRoot.Actions[i], playerIndex);
+            allActions.Add(new ActionInfo
+            {
+                TypeTag = catanAction.TypeTag,
+                Arg1 = catanAction.Arg1,
+                Arg2 = catanAction.Arg2,
+                ActionName = ActionName(catanAction.TypeTag),
+                Visits = rollouts,
+                WinRate = Math.Round(winRate, 4),
+            });
+        }
+
+        // Sort by visits descending for readability.
+        allActions.Sort((a, b) => b.Visits.CompareTo(a.Visits));
+
+        var logInfo = mcts.LatestLogInfo();
+
+        return Results.Ok(new ChooseActionResponse
+        {
+            TypeTag = bestAction.TypeTag,
+            Arg1 = bestAction.Arg1,
+            Arg2 = bestAction.Arg2,
+            ActionName = ActionName(bestAction.TypeTag),
+            Visits = allActions.First(a =>
+                a.TypeTag == bestAction.TypeTag &&
+                a.Arg1 == bestAction.Arg1 &&
+                a.Arg2 == bestAction.Arg2).Visits,
+            WinRate = allActions.First(a =>
+                a.TypeTag == bestAction.TypeTag &&
+                a.Arg1 == bestAction.Arg1 &&
+                a.Arg2 == bestAction.Arg2).WinRate,
+            TotalSimulations = logInfo.simulations,
+            ElapsedMs = (int)sw.ElapsedMilliseconds,
+            AllActions = allActions,
         });
     }
-
-    // Sort by visits descending for readability.
-    allActions.Sort((a, b) => b.Visits.CompareTo(a.Visits));
-
-    var logInfo = mcts.LatestLogInfo();
-
-    return Results.Ok(new ChooseActionResponse
+    finally
     {
-        TypeTag = bestAction.TypeTag,
-        Arg1 = bestAction.Arg1,
-        Arg2 = bestAction.Arg2,
-        ActionName = ActionName(bestAction.TypeTag),
-        Visits = allActions.First(a =>
-            a.TypeTag == bestAction.TypeTag &&
-            a.Arg1 == bestAction.Arg1 &&
-            a.Arg2 == bestAction.Arg2).Visits,
-        WinRate = allActions.First(a =>
-            a.TypeTag == bestAction.TypeTag &&
-            a.Arg1 == bestAction.Arg1 &&
-            a.Arg2 == bestAction.Arg2).WinRate,
-        TotalSimulations = logInfo.simulations,
-        ElapsedMs = (int)sw.ElapsedMilliseconds,
-        AllActions = allActions,
-    });
+        priorClient?.Dispose();
+    }
 });
 
 app.Run();
@@ -175,7 +206,7 @@ static string ActionName(byte tag) => tag switch
 
 /// <summary>
 /// Extracts win data from an MCTS child action node.
-/// Copied from SimulationRunner — handles deterministic, stochastic, and terminal actions.
+/// Handles deterministic, stochastic, and terminal actions.
 /// </summary>
 static (double[] Wins, double WinRate, int Rollouts) GetChildWinData(
     Kjarni.MCTS.Types.Action childAction, int playerIndex)
@@ -242,11 +273,43 @@ static (double[] Wins, double WinRate, int Rollouts) GetChildWinData(
 
 record ChooseActionRequest
 {
+    /// <summary>
+    /// AI mode: "mcts-ai" (pure MCTS, default) or "mcts-nn-ai" (MCTS with NN prior guidance).
+    /// </summary>
+    public string? AiMode { get; init; }
+
+    /// <summary>
+    /// Game config preset: "mini", "small", or "standard" (default).
+    /// </summary>
     public string? Config { get; init; }
+
+    /// <summary>Number of players in the game.</summary>
     public int PlayerCount { get; init; }
+
+    /// <summary>Human-readable serialized game state (11 pipe-delimited sections).</summary>
     public required string State { get; init; }
+
+    /// <summary>MCTS search time limit in milliseconds (default: 1000).</summary>
     public int? SearchTimeMs { get; init; }
+
+    /// <summary>Maximum rollout depth (default: 500).</summary>
     public int? MaxRolloutDepth { get; init; }
+
+    /// <summary>Maximum tree depth for NN prior requests (default: unlimited).</summary>
+    public int? MaxPriorDepth { get; init; }
+
+    /// <summary>
+    /// URL of the Python NN inference server. Required when aiMode is "mcts-nn-ai".
+    /// </summary>
+    public string? NnUrl { get; init; }
+
+    /// <summary>
+    /// Prior mode: "state" (default) for game-state priors, "placement" for
+    /// placement-phase-only priors. Only used when aiMode is "mcts-nn-ai".
+    /// In placement mode, NN priors are only requested during settlement
+    /// placement stages; the rest of the game uses pure MCTS.
+    /// </summary>
+    public string? PriorMode { get; init; }
 }
 
 record ChooseActionResponse

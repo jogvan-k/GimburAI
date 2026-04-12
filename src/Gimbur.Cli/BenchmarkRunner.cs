@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net.Http;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
@@ -25,6 +26,8 @@ internal enum AiKind
     NnPlacementRandom,
     NnState,
     NnStateRandom,
+    ServerMcts,
+    ServerMctsNn,
 }
 
 /// <summary>
@@ -68,6 +71,24 @@ internal record BenchmarkOptions
     /// Defaults to <c>http://localhost:8000</c>.
     /// </summary>
     public string NnUrl { get; init; } = "http://localhost:8000";
+
+    /// <summary>
+    /// Base URL for the Gimbur.Server (used by server-mcts and server-mcts-nn AI kinds).
+    /// Defaults to <c>http://localhost:5123</c>.
+    /// </summary>
+    public string ServerUrl { get; init; } = "http://localhost:5123";
+
+    /// <summary>
+    /// Prior mode for server-mcts-nn AI kind: "state" or "placement".
+    /// Defaults to "state".
+    /// </summary>
+    public string ServerPriorMode { get; init; } = "state";
+
+    /// <summary>
+    /// Maximum tree depth for NN prior requests (server-mcts-nn only).
+    /// Defaults to unlimited.
+    /// </summary>
+    public int? ServerMaxPriorDepth { get; init; }
 }
 
 /// <summary>
@@ -357,9 +378,31 @@ internal class BenchmarkRunner
             }
         }
 
+        if (UsesServer(_options.Players))
+        {
+            using var serverClient = new HttpClient();
+            try
+            {
+                var response = serverClient.GetAsync($"{_options.ServerUrl.TrimEnd('/')}/health")
+                    .GetAwaiter().GetResult();
+                if (!response.IsSuccessStatusCode)
+                {
+                    Console.Error.WriteLine($"Game server at {_options.ServerUrl} returned {(int)response.StatusCode}.");
+                    _nnClient?.Dispose();
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Game server at {_options.ServerUrl} is not reachable: {ex.Message}");
+                _nnClient?.Dispose();
+                return;
+            }
+        }
+
         // When NN is in use, limit parallelism to avoid overwhelming the
         // inference server with concurrent requests.
-        var maxParallelism = UsesNn(_options.Players)
+        var maxParallelism = (UsesNn(_options.Players) || UsesServer(_options.Players))
             ? Math.Min(4, Environment.ProcessorCount)
             : Environment.ProcessorCount;
 
@@ -379,6 +422,10 @@ internal class BenchmarkRunner
             if (UsesNn(_options.Players))
             {
                 Console.WriteLine($"  NN server: {_options.NnUrl}");
+            }
+            if (UsesServer(_options.Players))
+            {
+                Console.WriteLine($"  Game server: {_options.ServerUrl}");
             }
             Console.WriteLine();
         }
@@ -516,6 +563,13 @@ internal class BenchmarkRunner
                 _nnClient!, PlacementActionSerializer.ForTopology(config.Map.Topology), new RandomPlayer()),
             AiKind.NnState => new NnStatePlayer(_nnClient!),
             AiKind.NnStateRandom => new NnStatePlayer(_nnClient!, new RandomPlayer()),
+            AiKind.ServerMcts => new ServerPlayer(
+                _options.ServerUrl, "mcts-ai", _options.MapConfig ?? "standard",
+                _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth),
+            AiKind.ServerMctsNn => new ServerPlayer(
+                _options.ServerUrl, "mcts-nn-ai", _options.MapConfig ?? "standard",
+                _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth,
+                _options.NnUrl, _options.ServerPriorMode, _options.ServerMaxPriorDepth),
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, $"Unknown AI kind: {kind}"),
         };
     }
@@ -523,8 +577,14 @@ internal class BenchmarkRunner
     /// <summary>
     /// Returns true if any player in the array requires an NN inference server.
     /// </summary>
+    /// <summary>
+    /// Returns true if any player in the array requires a Gimbur.Server instance.
+    /// </summary>
+    private static bool UsesServer(AiKind[] players) =>
+        players.Any(ai => ai is AiKind.ServerMcts or AiKind.ServerMctsNn);
+
     private static bool UsesNn(AiKind[] players) =>
-        players.Any(ai => ai is AiKind.Nn or AiKind.NnPlacement or AiKind.NnPlacementRandom or AiKind.NnState or AiKind.NnStateRandom);
+        players.Any(ai => ai is AiKind.Nn or AiKind.NnPlacement or AiKind.NnPlacementRandom or AiKind.NnState or AiKind.NnStateRandom or AiKind.ServerMctsNn);
 
     private (int WinnerSeat, int Turns, int PriorsRequested, int PriorsApplied, int PriorStatesEvaluated, Dictionary<int, int>? PriorsCalculated) RunSingleGame(GameConfig config, Random rng, AiKind[] seatAssignment)
     {
