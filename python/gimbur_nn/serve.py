@@ -410,12 +410,24 @@ def create_app(
     placement_model: GimburPlacementTransformer | None = None,
     placement_device: torch.device | None = None,
     placement_game_cfg: GameConfig | None = None,
+    placement_target: str = "winrate",
 ) -> FastAPI:
     """Build the FastAPI application.
 
     Registers ``/state/...`` endpoints when a state model is provided
     and ``/placement/...`` endpoints when a placement model is provided.
     Both can be active simultaneously.
+
+    ``placement_target`` selects how per-(state, action) scalar outputs from
+    the placement model are aggregated into per-settlement-child priors:
+
+    * ``"winrate"`` — each pair's expected value is an independent win
+      probability for the (settlement, road) pair; aggregate as MAX across
+      road grandchildren of each settlement (best-case road).
+    * ``"policy"`` — each pair's expected value is its share of MCTS visits
+      among siblings; aggregate as SUM across road grandchildren (marginal
+      visit mass for placing this settlement). Together these sum to 1
+      across settlement children if the model is well-calibrated.
     """
 
     # Collect async worker coroutines to be started by the lifespan handler.
@@ -546,17 +558,23 @@ def create_app(
                 pair_win_probs = all_win_probs[offset : offset + n_pairs]
                 offset += n_pairs
 
-                # Aggregate per settlement child: max across roads.
+                # Aggregate per settlement child across its road grandchildren.
+                # MAX for winrate target (best-case road = settlement quality);
+                # SUM for policy target (marginal visit mass for the settlement).
                 child_win_probs: list[float] = []
                 boundaries = req.child_boundaries
                 for ci in range(len(boundaries) - 1):
                     start = boundaries[ci]
                     end = boundaries[ci + 1]
                     if start < end:
-                        child_max = float(pair_win_probs[start:end].max())
+                        slice_ = pair_win_probs[start:end]
+                        if placement_target == "policy":
+                            child_val = float(slice_.sum())
+                        else:
+                            child_val = float(slice_.max())
                     else:
-                        child_max = 0.0
-                    child_win_probs.append(child_max)
+                        child_val = 0.0
+                    child_win_probs.append(child_val)
 
                 results.append(PriorResponseItem(id=req.id, win_probabilities=child_win_probs))
 
@@ -864,21 +882,30 @@ def main() -> None:
     # ── Load placement model ──────────────────────────────────────────────
     loaded_placement_model: GimburPlacementTransformer | None = None
     placement_game_cfg: GameConfig | None = None
+    placement_target: str = "winrate"
     if has_placement:
         placement_game_cfg = CONFIGS_BY_NAME[args.game_config]
         placement_model_cfg = MODEL_CONFIGS_BY_NAME[args.placement_model_config]
         loaded_placement_model = GimburPlacementTransformer(
             placement_game_cfg, placement_model_cfg
         )
-        loaded_placement_model.load_state_dict(
-            torch.load(args.placement_model, map_location=device, weights_only=True)
-        )
+        # Accept both legacy bare-state_dict checkpoints and the new metadata
+        # dict format saved by train.py. Legacy files default to target='winrate'
+        # for backward compatibility.
+        raw_ckpt = torch.load(args.placement_model, map_location=device, weights_only=False)
+        if isinstance(raw_ckpt, dict) and "model_state_dict" in raw_ckpt:
+            loaded_placement_model.load_state_dict(raw_ckpt["model_state_dict"])
+            placement_target = str(raw_ckpt.get("target", "winrate"))
+        else:
+            loaded_placement_model.load_state_dict(raw_ckpt)
+            placement_target = "winrate"
         loaded_placement_model.to(device)
         loaded_placement_model.eval()
         param_count = sum(p.numel() for p in loaded_placement_model.parameters())
         print(
             f"Loaded placement model ({args.placement_model_config}) for "
-            f"{args.game_config} ({param_count:,} parameters) on {device}"
+            f"{args.game_config} ({param_count:,} parameters) on {device}, "
+            f"target={placement_target}"
         )
 
     app = create_app(
@@ -888,6 +915,7 @@ def main() -> None:
         placement_model=loaded_placement_model,
         placement_device=device if has_placement else None,
         placement_game_cfg=placement_game_cfg,
+        placement_target=placement_target,
     )
     uvicorn.run(
         app,

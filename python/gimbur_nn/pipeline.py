@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import signal
 import subprocess
 import sys
@@ -65,6 +66,7 @@ class TrainConfig:
     loss: str = "hard"
     loss_sigma: float = 2.0
     resume_from_previous: bool = True
+    target: str = "winrate"
 
 
 @dataclass
@@ -546,16 +548,117 @@ class _ServerProcess:
 
     @staticmethod
     def _check_port_available(host: str, port: int) -> None:
-        """Raise if another process is already listening on host:port."""
+        """Ensure no other process is listening on host:port.
+
+        If the port is occupied (typically by a leftover inference server
+        or Gimbur.Server from a previous pipeline run that was killed
+        before its cleanup ran), attempt to identify and terminate the
+        offending process automatically. Raises only if the port is still
+        in use after the cleanup attempt.
+        """
         import socket
 
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(1)
-            if sock.connect_ex((host, port)) == 0:
-                raise RuntimeError(
-                    f"Port {port} on {host} is already in use. "
-                    f"Kill the existing process before running the pipeline."
-                )
+        def _is_in_use() -> bool:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(1)
+                return sock.connect_ex((host, port)) == 0
+
+        if not _is_in_use():
+            return
+
+        # Try to find and kill the process holding the port.
+        pids = _ServerProcess._pids_listening_on(port)
+        if pids:
+            print(
+                f"--- Port {port} on {host} is in use by PID(s) {pids}; "
+                f"sending SIGTERM (leftover from a previous run)."
+            )
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    print(f"--- WARN: no permission to kill PID {pid}.")
+            # Give them a chance to exit gracefully, then escalate.
+            for _ in range(20):  # up to ~5s
+                time.sleep(0.25)
+                if not _is_in_use():
+                    print(f"--- Port {port} freed.")
+                    return
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            for _ in range(8):  # up to ~2s
+                time.sleep(0.25)
+                if not _is_in_use():
+                    print(f"--- Port {port} freed (SIGKILL).")
+                    return
+
+        raise RuntimeError(
+            f"Port {port} on {host} is already in use and could not be "
+            f"freed automatically. Kill the owning process and retry."
+        )
+
+    @staticmethod
+    def _pids_listening_on(port: int) -> list[int]:
+        """Return PIDs listening on TCP ``port`` using ss/lsof/fuser.
+
+        Returns an empty list if no tool is available or no process is
+        found.
+        """
+        # Try `ss` first (usually available on modern Linux distros).
+        try:
+            out = subprocess.run(
+                ["ss", "-lptn", f"sport = :{port}"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            pids: set[int] = set()
+            for line in out.stdout.splitlines():
+                # Lines look like: ... users:(("python",pid=12345,fd=7))
+                for token in line.split("pid=")[1:]:
+                    digits = ""
+                    for ch in token:
+                        if ch.isdigit():
+                            digits += ch
+                        else:
+                            break
+                    if digits:
+                        pids.add(int(digits))
+            if pids:
+                return sorted(pids)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+        # Fall back to `lsof`.
+        try:
+            out = subprocess.run(
+                ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return sorted({int(s) for s in out.stdout.split() if s.isdigit()})
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+        # Fall back to `fuser`.
+        try:
+            out = subprocess.run(
+                ["fuser", "-n", "tcp", str(port)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return sorted({int(s) for s in out.stdout.split() if s.isdigit()})
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+        return []
 
     def _wait_for_health(self, url: str, timeout: float) -> None:
         """Poll the /health endpoint until the server is ready."""
@@ -617,6 +720,7 @@ class _GimburServerProcess:
             cwd=cwd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            start_new_session=True,
         )
 
         # Wait for health check.
@@ -627,12 +731,20 @@ class _GimburServerProcess:
         if self._proc is None:
             return
         print("--- Stopping Gimbur.Server...")
-        self._proc.send_signal(signal.SIGINT)
+        # Send SIGINT to the entire process group so that both the
+        # 'dotnet run' wrapper and the child application process exit.
+        try:
+            os.killpg(os.getpgid(self._proc.pid), signal.SIGINT)
+        except (ProcessLookupError, OSError):
+            pass
         try:
             self._proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            print("--- Gimbur.Server did not exit, killing...")
-            self._proc.kill()
+            print("--- Gimbur.Server did not exit, killing process group...")
+            try:
+                os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                self._proc.kill()
             self._proc.wait()
         self._proc = None
 
@@ -659,7 +771,12 @@ class _GimburServerProcess:
         raise RuntimeError(f"Gimbur.Server did not become healthy within {timeout}s")
 
 
-_SERVER_AI_KINDS = frozenset({"server-mcts", "server-mcts-nn"})
+_SERVER_AI_KINDS = frozenset({
+    "server-mcts",
+    "server-mcts-nn",
+    "nn-mcts-placement",
+    "nn-mcts-placement-random",
+})
 
 
 def _benchmarks_need_game_server(benchmarks: list[BenchmarkConfig]) -> bool:
@@ -869,6 +986,7 @@ def _step_train(
         "logInterval": tr.log_interval,
         "loss": tr.loss,
         "lossSigma": tr.loss_sigma,
+        "target": tr.target,
     }
 
     # Enable per-epoch checkpointing if configured.
@@ -926,64 +1044,66 @@ def _step_benchmark(
         )
         started_game_server = True
 
-    for bench in benchmarks:
-        out_path = _results_path(cfg, gen, bench.name)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        for bench in benchmarks:
+            out_path = _results_path(cfg, gen, bench.name)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # If results already exist, load and skip.
-        if out_path.is_file():
-            print(f"  Benchmark '{bench.name}': results already exist, skipping.")
-            gen_results[bench.name] = json.loads(out_path.read_text())
-            continue
+            # If results already exist, load and skip.
+            if out_path.is_file():
+                print(f"  Benchmark '{bench.name}': results already exist, skipping.")
+                gen_results[bench.name] = json.loads(out_path.read_text())
+                continue
 
-        # Build config JSON for benchmark.
-        bench_config: dict[str, Any] = {
-            "games": bench.games,
-            "ai": bench.ai,
-            "mapConfig": cfg.map_config,
-            "output": str(out_path),
-            "nnUrl": nn_url,
-            "verbosity": "quiet",
-        }
-        if cfg.seed is not None:
-            bench_config["seed"] = cfg.seed + gen * 1000
-        if bench.search_time_ms is not None:
-            bench_config["searchTimeMs"] = bench.search_time_ms
-        if any(ai in _SERVER_AI_KINDS for ai in bench.ai):
-            gs = cfg.gimbur_server
-            bench_config["serverUrl"] = f"http://{gs.host}:{gs.port}"
-        if bench.server_prior_mode is not None:
-            bench_config["serverPriorMode"] = bench.server_prior_mode
-        if bench.server_max_prior_depth is not None:
-            bench_config["serverMaxPriorDepth"] = bench.server_max_prior_depth
+            # Build config JSON for benchmark.
+            bench_config: dict[str, Any] = {
+                "games": bench.games,
+                "ai": bench.ai,
+                "mapConfig": cfg.map_config,
+                "output": str(out_path),
+                "nnUrl": nn_url,
+                "verbosity": "quiet",
+            }
+            if cfg.seed is not None:
+                bench_config["seed"] = cfg.seed + gen * 1000
+            if bench.search_time_ms is not None:
+                bench_config["searchTimeMs"] = bench.search_time_ms
+            if any(ai in _SERVER_AI_KINDS for ai in bench.ai):
+                gs = cfg.gimbur_server
+                bench_config["serverUrl"] = f"http://{gs.host}:{gs.port}"
+            if bench.server_prior_mode is not None:
+                bench_config["serverPriorMode"] = bench.server_prior_mode
+            if bench.server_max_prior_depth is not None:
+                bench_config["serverMaxPriorDepth"] = bench.server_max_prior_depth
 
-        config_path = _write_config(cfg, f"benchmark_gen{gen}_{bench.name}", bench_config)
+            config_path = _write_config(cfg, f"benchmark_gen{gen}_{bench.name}", bench_config)
 
-        args = [
-            "dotnet",
-            "run",
-            "--project",
-            cfg.dotnet_project,
-            "--",
-            "benchmark",
-            "--config",
-            str(config_path),
-        ]
+            args = [
+                "dotnet",
+                "run",
+                "--project",
+                cfg.dotnet_project,
+                "--",
+                "benchmark",
+                "--config",
+                str(config_path),
+            ]
 
-        _run(
-            args,
-            label=f"Gen {gen}: Benchmark '{bench.name}' ({bench.games} games)",
-            cwd=project_root,
-        )
+            _run(
+                args,
+                label=f"Gen {gen}: Benchmark '{bench.name}' ({bench.games} games)",
+                cwd=project_root,
+            )
 
-        # Parse results.
-        if out_path.exists():
-            results = json.loads(out_path.read_text())
-            gen_results[bench.name] = results
+            # Parse results.
+            if out_path.exists():
+                results = json.loads(out_path.read_text())
+                gen_results[bench.name] = results
 
-    # Stop the Gimbur.Server if we started it.
-    if started_game_server and gimbur_server is not None:
-        gimbur_server.stop()
+    finally:
+        # Always stop the Gimbur.Server if we started it, even on error.
+        if started_game_server and gimbur_server is not None:
+            gimbur_server.stop()
 
     return gen_results
 

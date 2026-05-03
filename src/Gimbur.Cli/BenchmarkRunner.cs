@@ -28,6 +28,8 @@ internal enum AiKind
     NnStateRandom,
     ServerMcts,
     ServerMctsNn,
+    NnMctsPlacement,
+    NnMctsPlacementRandom,
 }
 
 /// <summary>
@@ -570,6 +572,18 @@ internal class BenchmarkRunner
                 _options.ServerUrl, "mcts-nn-ai", _options.MapConfig ?? "standard",
                 _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth,
                 _options.NnUrl, _options.ServerPriorMode, _options.ServerMaxPriorDepth),
+            AiKind.NnMctsPlacement => new NnMctsPlacementPlayer(
+                new ServerPlayer(
+                    _options.ServerUrl, "mcts-nn-ai", _options.MapConfig ?? "standard",
+                    _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth,
+                    _options.NnUrl, _options.ServerPriorMode ?? "placement", _options.ServerMaxPriorDepth),
+                new GreedyPlayer()),
+            AiKind.NnMctsPlacementRandom => new NnMctsPlacementPlayer(
+                new ServerPlayer(
+                    _options.ServerUrl, "mcts-nn-ai", _options.MapConfig ?? "standard",
+                    _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth,
+                    _options.NnUrl, _options.ServerPriorMode ?? "placement", _options.ServerMaxPriorDepth),
+                new RandomPlayer()),
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, $"Unknown AI kind: {kind}"),
         };
     }
@@ -581,10 +595,11 @@ internal class BenchmarkRunner
     /// Returns true if any player in the array requires a Gimbur.Server instance.
     /// </summary>
     private static bool UsesServer(AiKind[] players) =>
-        players.Any(ai => ai is AiKind.ServerMcts or AiKind.ServerMctsNn);
+        players.Any(ai => ai is AiKind.ServerMcts or AiKind.ServerMctsNn
+                              or AiKind.NnMctsPlacement or AiKind.NnMctsPlacementRandom);
 
     private static bool UsesNn(AiKind[] players) =>
-        players.Any(ai => ai is AiKind.Nn or AiKind.NnPlacement or AiKind.NnPlacementRandom or AiKind.NnState or AiKind.NnStateRandom or AiKind.ServerMctsNn);
+        players.Any(ai => ai is AiKind.Nn or AiKind.NnPlacement or AiKind.NnPlacementRandom or AiKind.NnState or AiKind.NnStateRandom or AiKind.ServerMctsNn or AiKind.NnMctsPlacement or AiKind.NnMctsPlacementRandom);
 
     private (int WinnerSeat, int Turns, int PriorsRequested, int PriorsApplied, int PriorStatesEvaluated, Dictionary<int, int>? PriorsCalculated) RunSingleGame(GameConfig config, Random rng, AiKind[] seatAssignment)
     {

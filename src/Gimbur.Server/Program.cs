@@ -90,16 +90,20 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
     var maxPriorDepth = req.MaxPriorDepth ?? int.MaxValue;
 
     PriorClient? priorClient = null;
+    if (aiMode == "mcts-nn-ai")
+    {
+        // Use a process-wide pool so the background poll thread stays warm
+        // across HTTP requests; per-request PriorClients were being created
+        // and disposed before any prior responses could be collected, leaving
+        // server-mcts-nn effectively running without NN guidance.
+        priorClient = PriorClientPool.Get(
+            req.NnUrl!,
+            priorMode,
+            PlacementActionSerializer.ForTopology(config.Map.Topology));
+    }
+
     try
     {
-        if (aiMode == "mcts-nn-ai")
-        {
-            priorClient = new PriorClient(
-                req.NnUrl!,
-                priorMode,
-                PlacementActionSerializer.ForTopology(config.Map.Topology));
-        }
-
         var mctsConfig = new MCTSConfig(
             searchTime.NewMilliSeconds(searchTimeMs),
             maxSimulations: int.MaxValue,
@@ -169,7 +173,8 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
     }
     finally
     {
-        priorClient?.Dispose();
+        // Pooled PriorClients are owned by PriorClientPool and must NOT be
+        // disposed here.
     }
 });
 

@@ -31,6 +31,13 @@ public sealed class PlacementActionSerializer
 
     public int VocabularySize => Vocabulary.Length;
 
+    /// <summary>
+    /// Stable string key identifying this serializer's underlying topology,
+    /// suitable for use as a pool/dictionary key. Distinguishes the three
+    /// canonical topologies (Mini/Small/Standard) by vocabulary size.
+    /// </summary>
+    public string TopologyKey => $"vocab{VocabularySize}";
+
     private PlacementActionSerializer(ImmutableArray<ActionEntry> vocabulary)
     {
         Vocabulary = vocabulary;

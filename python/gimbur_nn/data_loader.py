@@ -295,6 +295,7 @@ def expand_placement_games(
     *,
     n_buckets: int = 128,
     tokenizer: PlacementTokenizer | None = None,
+    target: str = "winrate",
 ) -> list[tuple[torch.Tensor, int]]:
     """Expand placement-phase game dicts into ``(token_ids, bucket)`` samples.
 
@@ -308,15 +309,23 @@ def expand_placement_games(
         cfg: Game configuration matching the exported data.
         n_buckets: Number of output buckets (must match the model).
         tokenizer: Optional pre-built tokenizer (avoids re-creation).
+        target: ``"winrate"`` (default — bucketize each action's winRate)
+            or ``"policy"`` (bucketize each action's share of total MCTS
+            visits within its sibling group). Policy targets sum to 1
+            across siblings of a single state, training the model to
+            predict normalised PUCT-style action priors instead of
+            independent expected win rates.
 
     Returns:
         A flat list of ``(token_ids, target_bucket)`` pairs.
     """
     if tokenizer is None:
         tokenizer = PlacementTokenizer(cfg)
+    if target not in ("winrate", "policy"):
+        raise ValueError(f"Unknown target: {target!r} (expected 'winrate' or 'policy').")
     samples: list[tuple[torch.Tensor, int]] = []
     for game in games:
-        _process_placement_game(game, n_buckets, samples, tokenizer)
+        _process_placement_game(game, n_buckets, samples, tokenizer, target)
     return samples
 
 
@@ -325,6 +334,7 @@ def _process_placement_game(
     n_buckets: int,
     samples: list[tuple[torch.Tensor, int]],
     tokenizer: PlacementTokenizer,
+    target: str = "winrate",
 ) -> None:
     """Expand one placement-phase game record into training samples."""
     for state_entry in game["states"]:
@@ -335,10 +345,24 @@ def _process_placement_game(
         # Each variant is already a full 4-section string (tiles|ports|vertices|edges).
         all_variants = [state_serialized, *state_permutations]
 
+        # For policy mode, precompute per-action target = visit_share within
+        # this state's sibling group. Visit counts are state-level (identical
+        # across symmetry variants), so we compute the normalisation once.
+        if target == "policy":
+            rollouts = [int(a.get("rollouts", 0)) for a in state_entry["actions"]]
+            total = sum(rollouts)
+            if total <= 0:
+                # Degenerate: no MCTS data for this state. Skip rather than
+                # train on a uniform-policy ghost target.
+                continue
+            visit_shares = [r / total for r in rollouts]
+        else:
+            visit_shares = None
+
         for variant_idx, state_str in enumerate(all_variants):
             compact = _compact(state_str)
 
-            for action_entry in state_entry["actions"]:
+            for action_idx, action_entry in enumerate(state_entry["actions"]):
                 # Select the correct action string for this variant.
                 if variant_idx == 0:
                     action_string = action_entry["action"]
@@ -346,7 +370,11 @@ def _process_placement_game(
                     action_string = action_entry["permutations"][variant_idx - 1]
 
                 token_ids = tokenizer.tokenize_state_action(compact, action_string)
-                prob: float = action_entry["winRate"]
+                if target == "policy":
+                    assert visit_shares is not None
+                    prob = visit_shares[action_idx]
+                else:
+                    prob = float(action_entry["winRate"])
                 bucket = _prob_to_bucket(prob, n_buckets)
                 samples.append((token_ids, bucket))
 
@@ -366,6 +394,10 @@ class PlacementDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         games: List of parsed placement game dicts (from :func:`load_games`).
         cfg: Game configuration matching the exported data.
         n_buckets: Number of output buckets (default 128).
+        target: ``"winrate"`` (default — bucketize each action's winRate)
+            or ``"policy"`` (bucketize each action's normalised share of
+            total MCTS visits within its sibling group). See
+            :func:`expand_placement_games`.
     """
 
     def __init__(
@@ -374,9 +406,12 @@ class PlacementDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         cfg: GameConfig,
         *,
         n_buckets: int = 128,
+        target: str = "winrate",
     ) -> None:
         tok = PlacementTokenizer(cfg)
-        raw = expand_placement_games(games, cfg, n_buckets=n_buckets, tokenizer=tok)
+        raw = expand_placement_games(
+            games, cfg, n_buckets=n_buckets, tokenizer=tok, target=target
+        )
         self._tokens = [t for t, _ in raw]
         self._targets = torch.tensor([b for _, b in raw], dtype=torch.long)
 

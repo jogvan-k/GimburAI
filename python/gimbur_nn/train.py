@@ -111,6 +111,7 @@ _CONFIG_KEYS: dict[str, str] = {
     "checkpointDir": "checkpoint_dir",
     "loss": "loss",
     "lossSigma": "loss_sigma",
+    "target": "target",
 }
 
 # Attributes whose CLI type is Path.
@@ -151,6 +152,24 @@ def _apply_config(args: argparse.Namespace, config: dict[str, object]) -> None:
 
 
 # ── Argument parsing ─────────────────────────────────────────────────
+
+
+def _build_dataset(
+    dataset_class: type,
+    games: list[dict],
+    game_cfg,
+    n_buckets: int,
+    args: argparse.Namespace,
+):
+    """Construct a dataset, forwarding the placement-specific ``target`` arg
+    only when training a placement model. The state dataset doesn't accept a
+    ``target`` keyword.
+    """
+    if args.model_type == "placement":
+        return dataset_class(
+            games, game_cfg, n_buckets=n_buckets, target=args.target
+        )
+    return dataset_class(games, game_cfg, n_buckets=n_buckets)
 
 
 def parse_args() -> argparse.Namespace:
@@ -200,6 +219,18 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=2.0,
         help="Gaussian sigma for label smoothing (only used with --loss=gaussian, default: 2.0).",
+    )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="winrate",
+        choices=["winrate", "policy"],
+        help=(
+            "Training target for placement models: 'winrate' (default — predict "
+            "per-action expected win probability) or 'policy' (predict each "
+            "action's normalised share of MCTS visits among its siblings, "
+            "yielding peaked PUCT-style action priors). Ignored for state models."
+        ),
     )
     parser.add_argument(
         "--out",
@@ -276,6 +307,7 @@ _ARG_DEFAULTS: dict[str, object] = {
     "log_interval": 50,
     "loss": "hard",
     "loss_sigma": 2.0,
+    "target": "winrate",
 }
 
 
@@ -313,6 +345,47 @@ def _save_epoch_checkpoint(
         },
         path,
     )
+
+
+def _save_final_model(
+    path: Path,
+    model: torch.nn.Module,
+    args: argparse.Namespace,
+) -> None:
+    """Save the final/best model checkpoint with metadata.
+
+    The on-disk format is a dict containing ``model_state_dict`` plus
+    metadata fields (``model_type``, ``model_config``, ``game_config``,
+    ``target``) that downstream consumers (training resume, the inference
+    server) need to interpret the model correctly. Existing checkpoints
+    saved as a bare ``state_dict()`` can still be loaded via
+    :func:`_load_model_state` for backward compatibility.
+    """
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "model_type": args.model_type,
+            "model_config": args.model_config,
+            "game_config": args.game_config,
+            "target": args.target,
+        },
+        path,
+    )
+
+
+def _load_model_state(path: Path, device: torch.device) -> dict:
+    """Load a checkpoint and normalise to the new dict format.
+
+    Accepts both:
+      * Legacy bare ``state_dict()`` files (returned with ``model_state_dict``
+        key only and ``target='winrate'`` for backward compatibility).
+      * New format dicts with ``model_state_dict`` and metadata keys.
+    """
+    raw = torch.load(path, map_location=device, weights_only=False)
+    if isinstance(raw, dict) and "model_state_dict" in raw:
+        return raw
+    # Legacy: bare state_dict.
+    return {"model_state_dict": raw, "target": "winrate"}
 
 
 def _append_epoch_stats(
@@ -458,8 +531,9 @@ def main() -> None:
                 f"(epoch {start_epoch}, best_val_loss {best_val_loss:.4f})"
             )
         else:
-            # .pt file: load model weights only.
-            model.load_state_dict(torch.load(resume_path, map_location=device, weights_only=True))
+            # .pt file: load model weights only (handles both legacy and new format).
+            ckpt = _load_model_state(resume_path, device)
+            model.load_state_dict(ckpt["model_state_dict"])
             print(f"Resumed model weights from {resume_path}")
 
     model.to(device)
@@ -487,17 +561,23 @@ def main() -> None:
         all_games, val=args.val_split, test=args.test_split
     )
 
-    train_dataset = dataset_class(train_games, game_cfg, n_buckets=model_cfg.n_buckets)
+    train_dataset = _build_dataset(
+        dataset_class, train_games, game_cfg, model_cfg.n_buckets, args
+    )
     print(f"Train: {len(train_games):,} games -> {len(train_dataset):,} samples")
 
     val_dataset: SimulationDataset | PlacementDataset | None = None
     if val_games:
-        val_dataset = dataset_class(val_games, game_cfg, n_buckets=model_cfg.n_buckets)
+        val_dataset = _build_dataset(
+            dataset_class, val_games, game_cfg, model_cfg.n_buckets, args
+        )
         print(f"Val:   {len(val_games):,} games -> {len(val_dataset):,} samples")
 
     test_dataset: SimulationDataset | PlacementDataset | None = None
     if test_games:
-        test_dataset = dataset_class(test_games, game_cfg, n_buckets=model_cfg.n_buckets)
+        test_dataset = _build_dataset(
+            dataset_class, test_games, game_cfg, model_cfg.n_buckets, args
+        )
         print(f"Test:  {len(test_games):,} games -> {len(test_dataset):,} samples")
 
     if len(train_dataset) == 0:
@@ -561,12 +641,12 @@ def main() -> None:
                 best_val_loss = val_loss
                 epochs_without_improvement = 0
                 is_best = True
-                torch.save(model.state_dict(), args.out)
+                _save_final_model(args.out, model, args)
                 msg += " (best, saved)"
             else:
                 epochs_without_improvement += 1
         else:
-            torch.save(model.state_dict(), args.out)
+            _save_final_model(args.out, model, args)
             is_best = True
 
         elapsed = time.monotonic() - t_start
@@ -595,8 +675,9 @@ def main() -> None:
             batch_size=args.batch_size,
             shuffle=False,
         )
-        # Reload best checkpoint for test evaluation.
-        model.load_state_dict(torch.load(args.out, map_location=device, weights_only=True))
+        # Reload best checkpoint for test evaluation (handles both legacy and new format).
+        ckpt = _load_model_state(args.out, device)
+        model.load_state_dict(ckpt["model_state_dict"])
         test_loss = _run_epoch(
             model, test_loader, device, None, 0, 0, "test", loss_fn=loss_fn,
         )

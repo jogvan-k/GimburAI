@@ -194,8 +194,20 @@ details.
 After expansion, if a prior client is configured, the search loop enqueues an
 asynchronous prior request for the newly expanded node. The request contains the
 serialized result state of every action from the expanded node — the NN evaluates
-each resulting position independently and returns win probabilities. This call is
-non-blocking; the search continues immediately with simulation. See
+each resulting position and returns one **prior score** per action. Depending on
+how the model was trained, those scores have one of two meanings:
+
+- **Win-rate prior** (legacy): each score is the predicted win probability of
+  the corresponding result state for the acting player. Scores are independent
+  per action and are not constrained to any particular sum.
+- **Policy prior** (placement model only, going forward): the scores form an
+  approximate policy distribution over the legal actions of the parent node and
+  approximately sum to 1.
+
+In both cases the prior client treats the returned values as raw scores and
+normalises them before they are stored on the parent node (see
+[Converting Prior Scores to Priors](#converting-prior-scores-to-priors)). The
+call is non-blocking; the search continues immediately with simulation. See
 [Asynchronous Neural Network Priors](#asynchronous-neural-network-priors) for
 the full request lifecycle.
 
@@ -348,9 +360,12 @@ terminated early because the root was fully resolved.
 
 After terminal propagation, if a prior client is configured, the search loop
 calls `collectPriors()` to drain any completed NN inference responses from the
-mailbox. For each response, the win probabilities are normalized into a prior
-policy and stored on the corresponding `MCTSState` node. This is non-blocking —
-if no responses are ready, the loop continues immediately.
+mailbox. For each response the per-action scores are normalised into a prior
+policy (sum-to-1 over the parent node's legal actions) and stored on the
+corresponding `MCTSState` node. This step is target-agnostic: it produces a
+valid policy whether the model was trained to emit win rates or policy logits.
+This is non-blocking — if no responses are ready, the loop continues
+immediately.
 
 Prior collection runs after terminal propagation so that priors are not applied
 to nodes that have just been collapsed into `Terminal` actions. See
@@ -607,26 +622,61 @@ This is necessary because the tree is advanced to a new root after each game
 move. Pending requests reference nodes in the old tree that are no longer
 relevant.
 
-### Converting Win Probabilities to Priors
+### Converting Prior Scores to Priors
 
-The NN returns a win probability for each action-result state. Kjarni converts
-these into a prior policy (probability distribution over actions) by normalizing:
+The NN returns one **score** per action-result state. The semantics of the
+score depend on which target the model was trained for (see
+[Prior Targets](#prior-targets) below), but Kjarni's conversion path is the
+same in both cases.
 
-```
-P(action_i) = winProb(action_i) / sum(winProb(action_j) for all j)
-```
-
-For **stochastic actions** with multiple outcomes, the action's win probability
-is the probability-weighted average across its outcomes:
+For **stochastic actions** with multiple outcomes, the action's score is the
+probability-weighted average across its outcomes:
 
 ```
-winProb(stochastic_action) = sum(weight_k * winProb(outcome_k)) / sum(weight_k)
+score(stochastic_action) = sum(weight_k * score(outcome_k)) / sum(weight_k)
 ```
 
-This collapses multiple outcome evaluations into a single value per action
-before normalization. The resulting prior policy is stored on the parent
-`MCTSState` node and used by `actionEvaluator` (see
-[Action Evaluation (PUCT)](#action-evaluation-puct)).
+This collapses multiple outcome evaluations into a single value per action.
+
+The resulting per-action scores are then **normalised** to a probability
+distribution over the parent node's legal actions:
+
+```
+P(action_i) = max(score(action_i), 0) / sum(max(score(action_j), 0) for all j)
+```
+
+If every score is non-positive (or the sum is otherwise zero), the prior falls
+back to the uniform distribution `1 / number_of_actions`. The resulting prior
+policy is stored on the parent `MCTSState` node and used by `actionEvaluator`
+(see [Action Evaluation (PUCT)](#action-evaluation-puct)).
+
+#### Prior Targets
+
+The score returned by the inference server depends on how the model was
+trained. The MCTS engine and prior client are agnostic to which target was
+used — the per-action normalisation above is what guarantees a valid policy.
+
+| Target              | Per-action score meaning                                                | Rough sum of raw scores | Used by         |
+|---------------------|-------------------------------------------------------------------------|-------------------------|-----------------|
+| `winrate` (legacy)  | Predicted win probability of the action-result state for the acting player. Each score is computed independently per action. | Unconstrained (typically not 1) | State model, legacy placement model |
+| `policy`            | Approximate posterior probability that the action is the best move at the parent state — the model's policy head output, softmaxed across the parent's legal actions. | ~1 by construction      | New placement model |
+
+Why both are supported:
+
+- The **`winrate` target** is what the existing simulation export already
+  contains as `winRate` per action. Models trained on this target produce
+  normalised priors that are nearly uniform when sibling win rates are similar
+  (e.g. `0.48, 0.49, 0.50, 0.51` → `~0.245, ~0.245, ~0.250, ~0.255`). The
+  resulting policy provides only weak guidance to PUCT.
+- The **`policy` target** is trained on MCTS visit-count distributions
+  (`rollouts[i] / sum(rollouts)`) — the search's own preference. This produces
+  a much more peaked distribution (e.g. `0.01, 0.04, 0.80, 0.15`) and therefore
+  much stronger PUCT guidance. The placement model is the first to adopt this
+  target; the state model continues to use `winrate` for now.
+
+Both targets share the same wire format (a list of per-action floats); the
+inference server tags each response with the target it was trained for, but the
+normalisation step above is what makes the engine indifferent.
 
 ### Prior Data Format
 
@@ -664,17 +714,23 @@ before normalization. The resulting prior policy is stored on the parent
     "responses": [
         {
             "id": "node-0x1a2b3c",
-            "win_probabilities": [0.62, 0.45, 0.38]
+            "win_probabilities": [0.62, 0.45, 0.38],
+            "target": "winrate"
         }
     ]
 }
 ```
 
 - `id` — matches the request ID.
-- `win_probabilities` — per-state win probability for the acting player, in the
-  same order as the request's `states` array. Kjarni maps these back to actions,
-  computes weighted averages for stochastic actions, and normalizes to produce
-  the prior policy.
+- `win_probabilities` — per-state prior score, in the same order as the
+  request's `states` array. The field name is preserved for backward
+  compatibility, but the values may be either win probabilities (`target =
+  "winrate"`) or policy probabilities (`target = "policy"`). Kjarni maps these
+  back to actions, computes weighted averages for stochastic actions, and
+  normalises to produce the prior policy (see
+  [Converting Prior Scores to Priors](#converting-prior-scores-to-priors)).
+- `target` — optional, identifies how the model was trained. Used for logging
+  and audits. The MCTS engine itself does not branch on this field.
 
 ### Server Endpoints
 
@@ -721,6 +777,9 @@ The system degrades gracefully when the inference server is slow or unavailable:
 - **Server slow**: Priors arrive late (after many rollouts have already visited
   the node). The NN policy still improves selection for remaining iterations,
   but the benefit diminishes as the node accumulates its own statistics.
+- **Degenerate scores**: If every per-action score is non-positive (or sums to
+  zero after the stochastic-action collapse), the prior falls back to the
+  uniform distribution rather than producing NaN or a one-hot artefact.
 - **Queue full**: Low-priority (deep) requests are dropped. Shallow nodes that
   matter most still receive priors.
 - **Stale responses**: After a flush, any late-arriving responses from the

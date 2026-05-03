@@ -52,6 +52,23 @@ public sealed class PriorClient : IPriorClient, IDisposable
     private readonly PriorMode _mode;
     private readonly PlacementActionSerializer? _actionSerializer;
 
+    /// <summary>
+    /// When true, this client is owned by a pool and shared across many MCTS
+    /// searches. Per-search <see cref="Flush"/> calls are suppressed because
+    /// they would discard pending priors for concurrently-running searches
+    /// sharing this client's local mailbox and the server-side queue.
+    /// </summary>
+    private readonly bool _pooled;
+
+    /// <summary>
+    /// Soft cap on the local mailbox size. When the mailbox grows beyond this,
+    /// <see cref="CollectPriors"/> opportunistically drops the oldest stale
+    /// entries (responses for NodeIds not in the active known set) to bound
+    /// memory growth from orphan responses left by completed searches.
+    /// Only relevant for pooled clients.
+    /// </summary>
+    private const int MailboxSoftCap = 4096;
+
     // ── Diagnostic counters (thread-safe via Interlocked) ────────────────
     private long _pollSuccessCount;
     private long _pollResponsesReceived;
@@ -85,17 +102,18 @@ public sealed class PriorClient : IPriorClient, IDisposable
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    public PriorClient(string baseUrl, PriorMode mode = PriorMode.State, PlacementActionSerializer? actionSerializer = null)
+    public PriorClient(string baseUrl, PriorMode mode = PriorMode.State, PlacementActionSerializer? actionSerializer = null, bool pooled = false)
     {
         _mode = mode;
         _actionSerializer = actionSerializer;
+        _pooled = pooled;
         _http = new HttpClient { BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/") };
 
         // Start background thread that polls the server for completed results.
         _pollThread = new Thread(PollLoop)
         {
             IsBackground = true,
-            Name = "PriorClient-Poll",
+            Name = pooled ? "PriorClient-Poll-Pooled" : "PriorClient-Poll",
         };
         _pollThread.Start();
     }
@@ -307,7 +325,17 @@ public sealed class PriorClient : IPriorClient, IDisposable
             else
                 putBack.Add(item);
         }
-        // Re-enqueue responses that didn't match any known node ID.
+
+        // Re-enqueue responses that didn't match any known node ID, but bound
+        // total mailbox size to prevent unbounded growth from orphan responses
+        // left by completed pooled-client searches.
+        if (_pooled && putBack.Count > MailboxSoftCap)
+        {
+            // Drop the oldest (front of the list, which corresponds to earlier
+            // dequeue order) and keep only the most recent MailboxSoftCap orphans.
+            putBack.RemoveRange(0, putBack.Count - MailboxSoftCap);
+        }
+
         foreach (var item in putBack)
             _mailbox.Enqueue(item);
         return results.ToArray();
@@ -315,9 +343,19 @@ public sealed class PriorClient : IPriorClient, IDisposable
 
     /// <summary>
     /// Clear the server queue and discard pending results.
+    ///
+    /// On pooled clients this is a NO-OP: a global flush would also discard
+    /// pending priors belonging to other concurrently-running MCTS searches
+    /// that share this client. Orphan responses for completed searches are
+    /// instead bounded by <see cref="CollectPriors"/>'s soft mailbox cap.
     /// </summary>
     public void Flush()
     {
+        if (_pooled)
+        {
+            return;
+        }
+
         try
         {
             var endpoint = _mode == PriorMode.Placement ? "placement/prior-flush" : "state/prior-flush";
@@ -357,6 +395,8 @@ public sealed class PriorClient : IPriorClient, IDisposable
     private void PollLoop()
     {
         var endpoint = _mode == PriorMode.Placement ? "placement/prior-collect" : "state/prior-collect";
+        var lastDiagnosticAt = DateTime.UtcNow;
+        var diagnosticInterval = TimeSpan.FromSeconds(30);
 
         while (!_disposed)
         {
@@ -396,6 +436,23 @@ public sealed class PriorClient : IPriorClient, IDisposable
             {
                 // Server unreachable — will retry on next poll.
                 Interlocked.Increment(ref _pollErrorCount);
+            }
+
+            // Periodic diagnostic dump for pooled clients (which are never disposed
+            // and so never reach the Dispose() summary). Helps verify the pool is
+            // actually delivering priors to active MCTS searches.
+            if (_pooled && DateTime.UtcNow - lastDiagnosticAt >= diagnosticInterval)
+            {
+                lastDiagnosticAt = DateTime.UtcNow;
+                Console.WriteLine(
+                    $"[PriorClient pooled] mode={_mode} | " +
+                    $"enqueued={Interlocked.Read(ref _enqueueFireCount)} " +
+                    $"enqueueErrors={Interlocked.Read(ref _enqueueErrorCount)} | " +
+                    $"pollSuccess={Interlocked.Read(ref _pollSuccessCount)} " +
+                    $"pollEmpty={Interlocked.Read(ref _pollEmptyCount)} " +
+                    $"pollErrors={Interlocked.Read(ref _pollErrorCount)} | " +
+                    $"responsesReceived={Interlocked.Read(ref _pollResponsesReceived)} " +
+                    $"mailboxSize={_mailbox.Count}");
             }
 
             Thread.Sleep(PollIntervalMs);
