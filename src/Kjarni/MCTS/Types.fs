@@ -12,6 +12,7 @@ type MCTSState(state: ICoreState) =
     let mutable _winCounts = Array.zeroCreate<float> state.NumberOfPlayers
     let mutable _actions = state.Actions() |> Array.map Unexplored
     let mutable _priors: float[] option = None
+    let mutable _valueEstimate: float = System.Double.NaN
     /// Unique identifier for this node, used to correlate prior responses.
     member _.NodeId = _nodeId
     member _.Rollouts
@@ -29,6 +30,11 @@ type MCTSState(state: ICoreState) =
     member _.Priors
       with get () = _priors
       and set value = _priors <- value
+    /// NN value estimate for this node's state (from the acting player's
+    /// perspective). NaN when no estimate is available.
+    member _.ValueEstimate
+      with get () = _valueEstimate
+      and set value = _valueEstimate <- value
 
 and Action =
     | Unexplored of CoreAction

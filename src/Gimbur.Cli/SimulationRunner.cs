@@ -317,6 +317,12 @@ internal record PlacementStateRecord
     /// Number of prior responses returned for nodes the search no longer tracks.
     /// </summary>
     public int PriorResponsesOrphaned { get; set; }
+
+    /// <summary>
+    /// NN value estimate for this state (from the acting player's perspective).
+    /// Null when no value estimate is available (non-combined model or no NN prior).
+    /// </summary>
+    public double? ModelValue { get; init; }
 }
 
 /// <summary>
@@ -1134,6 +1140,7 @@ internal class SimulationRunner
                     PriorInferencesPerDepth = totalPriorInferencesPerDepth,
                     PriorNodesSkipped = totalPriorNodesSkipped,
                     Actions = compositeActions,
+                    ModelValue = null,
                 });
 
                 // Apply the best settlement action and advance.
@@ -1222,6 +1229,7 @@ internal class SimulationRunner
                         : null,
                     PriorNodesSkipped = logInfo.priorNodesSkipped,
                     Actions = compositeActions,
+                    ModelValue = double.IsNaN(mctsRoot.ValueEstimate) ? null : mctsRoot.ValueEstimate,
                 });
 
                 // Apply the best action and advance.
@@ -1599,6 +1607,7 @@ internal class SimulationRunner
                 s.PriorActionsRequested,
                 s.PriorInferencesRequested,
                 s.PriorNodesSkipped,
+                s.ModelValue,
                 actions = s.Actions.Select(a => new
                 {
                     a.Action,

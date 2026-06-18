@@ -33,13 +33,15 @@ type IEvaluator =
 
 /// A completed prior response from the inference server.
 /// NodeId is an opaque identifier used to correlate the response back to the
-/// parent MCTSState. WinProbabilities contains per-action-state win probabilities
-/// in the same order as the request's states array.
+/// parent MCTSState. Priors contains per-action prior policy weights in the
+/// same order as the node's actions. ValueEstimate is a scalar value for the
+/// node's state from the acting player's perspective (NaN if unavailable).
 type PriorResponse =
   struct
     val NodeId: int64
-    val WinProbabilities: float[]
-    new(nodeId, winProbabilities) = { NodeId = nodeId; WinProbabilities = winProbabilities }
+    val Priors: float[]
+    val ValueEstimate: float
+    new(nodeId, priors, valueEstimate) = { NodeId = nodeId; Priors = priors; ValueEstimate = valueEstimate }
   end
 
 /// Asynchronous prior client for NN-guided MCTS search.

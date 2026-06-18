@@ -148,7 +148,11 @@ class PriorResponseItem(BaseModel):
     """A completed prior inference result for one tree node."""
 
     id: str
-    win_probabilities: list[float]
+    priors: list[float]
+    """Per-action prior policy weights. Empty if not available (e.g. state mode)."""
+
+    value_estimate: float | None = None
+    """Scalar value estimate for the node's state. None if not available."""
 
 
 class PriorCollectResponse(BaseModel):
@@ -460,7 +464,7 @@ def create_app(
             results: list[PriorResponseItem] = []
             for req in batch:
                 if not req.states:
-                    results.append(PriorResponseItem(id=req.id, win_probabilities=[]))
+                    results.append(PriorResponseItem(id=req.id, priors=[]))
                     continue
                 try:
                     rotated = [tokenizer.rotate_player_state(s, req.player) for s in req.states]
@@ -470,7 +474,7 @@ def create_app(
                     results.append(
                         PriorResponseItem(
                             id=req.id,
-                            win_probabilities=[0.0] * len(req.states),
+                            priors=[0.0] * len(req.states),
                         )
                     )
                     continue
@@ -481,7 +485,7 @@ def create_app(
                     probs = F.softmax(last_logits, dim=-1)
 
                 win_probs = [_expected_win_prob(probs[i]) for i in range(probs.shape[0])]
-                results.append(PriorResponseItem(id=req.id, win_probabilities=win_probs))
+                results.append(PriorResponseItem(id=req.id, priors=win_probs))
 
             return results
 
@@ -528,8 +532,12 @@ def create_app(
 
             Concatenates all (state, action) pairs from all requests into one
             big tensor, runs a single model forward pass, then splits results
-            back per request and aggregates per settlement child (max across
-            roads for each child).
+            back per request and aggregates per settlement child.
+
+            For combined models, both the policy head (for priors) and value
+            head (for value_estimate) are used.  The value estimate is computed
+            as the policy-weighted average of per-child value head outputs:
+            V(s) = sum_i prior[i] * value[i].
             """
             # Phase 1: Collect all tokenized pairs across all requests.
             all_tokens: list[torch.Tensor] = []
@@ -551,27 +559,33 @@ def create_app(
                     req_meta.append((ri, 0, True))
 
             # Phase 2: Single batched forward pass.
-            all_win_probs: torch.Tensor | None = None
+            all_prior_scalars: torch.Tensor | None = None
+            all_value_scalars: torch.Tensor | None = None
             if all_tokens:
                 token_batch = torch.stack(all_tokens).to(placement_device)
                 with torch.no_grad():
                     output = placement_model(token_batch)
-                    # For prior aggregation, use the head that matches the
-                    # target semantics.  Combined models use "value" head for
-                    # winrate target and "policy" head for policy target.
-                    if placement_output_mode == "combined":
-                        prior_head = (
-                            "policy" if placement_target == "policy" else "value"
-                        )
-                    else:
-                        prior_head = "value"
-                    last_logits = _extract_placement_logits(output, head=prior_head)
-                    probs = F.softmax(last_logits, dim=-1)
 
-                n_buckets = probs.shape[1]
-                centres = torch.arange(n_buckets, dtype=probs.dtype, device=probs.device)
+                    # Compute prior scalars (for PUCT policy).
+                    if placement_output_mode == "combined":
+                        prior_logits = _extract_placement_logits(output, head="policy")
+                    else:
+                        prior_logits = _extract_placement_logits(output, head="value")
+                    prior_probs = F.softmax(prior_logits, dim=-1)
+
+                n_buckets = prior_probs.shape[1]
+                centres = torch.arange(
+                    n_buckets, dtype=prior_probs.dtype, device=prior_probs.device
+                )
                 centres = (centres + 0.5) / n_buckets
-                all_win_probs = (probs * centres).sum(dim=-1)  # shape: (total_pairs,)
+                all_prior_scalars = (prior_probs * centres).sum(dim=-1)
+
+                # Compute value scalars from value head (combined models only).
+                if placement_output_mode == "combined":
+                    with torch.no_grad():
+                        value_logits = _extract_placement_logits(output, head="value")
+                        value_probs = F.softmax(value_logits, dim=-1)
+                    all_value_scalars = (value_probs * centres).sum(dim=-1)
 
             # Phase 3: Split results back per request and aggregate.
             results: list[PriorResponseItem] = []
@@ -583,36 +597,61 @@ def create_app(
                     results.append(
                         PriorResponseItem(
                             id=req.id,
-                            win_probabilities=[0.0] * n_children,
+                            priors=[0.0] * n_children,
                         )
                     )
                     continue
                 if n_pairs == 0:
-                    results.append(PriorResponseItem(id=req.id, win_probabilities=[]))
+                    results.append(PriorResponseItem(id=req.id, priors=[]))
                     continue
 
-                pair_win_probs = all_win_probs[offset : offset + n_pairs]
+                pair_priors = all_prior_scalars[offset : offset + n_pairs]
+                pair_values = (
+                    all_value_scalars[offset : offset + n_pairs]
+                    if all_value_scalars is not None
+                    else None
+                )
                 offset += n_pairs
 
                 # Aggregate per settlement child across its road grandchildren.
-                # MAX for winrate target (best-case road = settlement quality);
-                # SUM for policy target (marginal visit mass for the settlement).
-                child_win_probs: list[float] = []
+                # Priors: SUM across roads (marginal policy mass for the settlement).
+                # Values: MAX across roads (best-case road determines settlement value).
+                child_priors: list[float] = []
+                child_values: list[float] = []
                 boundaries = req.child_boundaries
                 for ci in range(len(boundaries) - 1):
                     start = boundaries[ci]
                     end = boundaries[ci + 1]
                     if start < end:
-                        slice_ = pair_win_probs[start:end]
-                        if placement_target == "policy":
-                            child_val = float(slice_.sum())
-                        else:
-                            child_val = float(slice_.max())
+                        prior_slice = pair_priors[start:end]
+                        child_priors.append(float(prior_slice.sum()))
+                        if pair_values is not None:
+                            value_slice = pair_values[start:end]
+                            child_values.append(float(value_slice.max()))
                     else:
-                        child_val = 0.0
-                    child_win_probs.append(child_val)
+                        child_priors.append(0.0)
+                        if pair_values is not None:
+                            child_values.append(0.0)
 
-                results.append(PriorResponseItem(id=req.id, win_probabilities=child_win_probs))
+                # Normalize priors to sum to 1.
+                prior_total = sum(child_priors)
+                if prior_total > 0:
+                    child_priors = [p / prior_total for p in child_priors]
+
+                # Value estimate: policy-weighted average of per-child values.
+                value_estimate: float | None = None
+                if child_values and prior_total > 0:
+                    value_estimate = sum(
+                        p * v for p, v in zip(child_priors, child_values)
+                    )
+
+                results.append(
+                    PriorResponseItem(
+                        id=req.id,
+                        priors=child_priors,
+                        value_estimate=value_estimate,
+                    )
+                )
 
             return results
 

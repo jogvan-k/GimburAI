@@ -428,10 +428,13 @@ public sealed class PriorClient : IPriorClient, IDisposable
                         {
                             if (long.TryParse(r.Id, out var nodeId))
                             {
-                                var winProbs = new double[r.WinProbabilities.Length];
-                                for (int i = 0; i < r.WinProbabilities.Length; i++)
-                                    winProbs[i] = r.WinProbabilities[i];
-                                _mailbox.Enqueue(new PriorResponse(nodeId, winProbs));
+                                var priors = new double[r.Priors.Length];
+                                for (int i = 0; i < r.Priors.Length; i++)
+                                    priors[i] = r.Priors[i];
+                                var valueEstimate = r.ValueEstimate.HasValue
+                                    ? (double)r.ValueEstimate.Value
+                                    : double.NaN;
+                                _mailbox.Enqueue(new PriorResponse(nodeId, priors, valueEstimate));
                                 Interlocked.Increment(ref _pollResponsesReceived);
                             }
                         }
@@ -517,7 +520,10 @@ public sealed class PriorClient : IPriorClient, IDisposable
     {
         public string Id { get; init; } = "";
 
-        [JsonPropertyName("win_probabilities")]
-        public float[] WinProbabilities { get; init; } = [];
+        [JsonPropertyName("priors")]
+        public float[] Priors { get; init; } = [];
+
+        [JsonPropertyName("value_estimate")]
+        public float? ValueEstimate { get; init; }
     }
 }

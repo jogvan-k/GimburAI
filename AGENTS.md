@@ -52,7 +52,7 @@
   - `transformer_model.py` — transformer-based model architecture; defines `OutputMode` enum (`value`, `policy`, `combined`) and `GimburTransformerConfig` with `output_mode` field controlling the output head topology (single bucket head or dual value + policy heads).
   - `pipeline.py` — training/evaluation pipeline utilities.
   - `train.py` — training loop; reads JSONL data exported by `gimbur simulate --export`.
-  - `serve.py` — HTTP inference server; loads a trained checkpoint and serves predictions for the MCTS engine.
+  - `serve.py` — HTTP inference server; loads a trained checkpoint and serves predictions for the MCTS engine. Prior collect responses include `priors` (per-action policy weights) and `value_estimate` (scalar state value from combined models).
 - Tests live under `python/tests/` using pytest:
   - `test_tokenizer.py` — tests for all tokenizer classes (game state, placement state, action vocab).
   - `test_data_loader.py` — tests for data loading, sample expansion, and dataset construction.

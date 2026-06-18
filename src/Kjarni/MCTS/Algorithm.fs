@@ -535,10 +535,13 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                 | true, node ->
                     match layoutReg.TryGetValue(resp.NodeId) with
                     | true, (layout, outcomeWeights) ->
-                        let policy = computePriorPolicy resp.WinProbabilities layout outcomeWeights
-                        node.Priors <- Some policy
+                        if resp.Priors.Length > 0 then
+                            let policy = computePriorPolicy resp.Priors layout outcomeWeights
+                            node.Priors <- Some policy
+                            priorStats.priorActionsApplied <- priorStats.priorActionsApplied + resp.Priors.Length
+                        if not (System.Double.IsNaN(resp.ValueEstimate)) then
+                            node.ValueEstimate <- resp.ValueEstimate
                         priorStats.priorNodesApplied <- priorStats.priorNodesApplied + 1
-                        priorStats.priorActionsApplied <- priorStats.priorActionsApplied + resp.WinProbabilities.Length
                         // Remove from registries once applied
                         nodeReg.Remove(resp.NodeId) |> ignore
                         layoutReg.Remove(resp.NodeId) |> ignore
