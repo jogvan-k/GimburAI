@@ -53,10 +53,11 @@ public sealed class PriorClient : IPriorClient, IDisposable
     private readonly PlacementActionSerializer? _actionSerializer;
 
     /// <summary>
-    /// When true, this client is owned by a pool and shared across many MCTS
-    /// searches. Per-search <see cref="Flush"/> calls are suppressed because
-    /// they would discard pending priors for concurrently-running searches
-    /// sharing this client's local mailbox and the server-side queue.
+    /// When true, this client is owned by a pool and shared across many
+    /// concurrent MCTS searches (typically one per HTTP request to
+    /// Gimbur.Server). Enables the orphan soft cap in <see cref="CollectPriors"/>
+    /// since a pooled client's mailbox can otherwise grow unboundedly
+    /// from stale responses owned by completed searches.
     /// </summary>
     private readonly bool _pooled;
 
@@ -138,24 +139,26 @@ public sealed class PriorClient : IPriorClient, IDisposable
     /// <summary>
     /// Enqueue an async prior request. Dispatches to either state-based or
     /// placement-based serialization depending on the configured <see cref="PriorMode"/>.
+    /// Returns the number of (state, action) inference pairs sent to the model.
     /// </summary>
-    public void RequestPrior(long nodeId, ICoreState parentState, ICoreState[] states, int actingPlayer, int depth)
+    public int RequestPrior(long nodeId, ICoreState parentState, ICoreState[] states, int actingPlayer, int depth)
     {
         if (_mode == PriorMode.Placement)
         {
-            RequestPlacementPrior(nodeId, parentState, states, actingPlayer, depth);
+            return RequestPlacementPrior(nodeId, parentState, states, actingPlayer, depth);
         }
         else
         {
-            RequestStatePrior(nodeId, states, actingPlayer, depth);
+            return RequestStatePrior(nodeId, states, actingPlayer, depth);
         }
     }
 
     /// <summary>
     /// State-mode prior: serializes each child state via
     /// <see cref="CatanStateSerializer.SerializeCompact"/> and POSTs to /state/prior-enqueue.
+    /// Returns the number of inference pairs sent (= states.Length).
     /// </summary>
-    private void RequestStatePrior(long nodeId, ICoreState[] states, int actingPlayer, int depth)
+    private int RequestStatePrior(long nodeId, ICoreState[] states, int actingPlayer, int depth)
     {
         var serialized = new string[states.Length];
         for (int i = 0; i < states.Length; i++)
@@ -195,6 +198,8 @@ public sealed class PriorClient : IPriorClient, IDisposable
                 _enqueueThrottle.Release();
             }
         });
+
+        return states.Length;
     }
 
     /// <summary>
@@ -206,20 +211,23 @@ public sealed class PriorClient : IPriorClient, IDisposable
     /// per settlement (max across roads) before being returned.
     ///
     /// At road stages and non-placement stages, no prior is requested.
+    /// Returns the number of (state, action) inference pairs sent to the model
+    /// (= total composite (settlement, road) pairs across all child states), or
+    /// 0 when the request was declined.
     /// </summary>
-    private void RequestPlacementPrior(long nodeId, ICoreState parentState, ICoreState[] states, int actingPlayer, int depth)
+    private int RequestPlacementPrior(long nodeId, ICoreState parentState, ICoreState[] states, int actingPlayer, int depth)
     {
         var parent = (CatanState)parentState;
 
         // Only provide priors at settlement decision points.
         if (parent.Stage is not (TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement))
         {
-            return;
+            return 0;
         }
 
         if (_actionSerializer is null)
         {
-            return;
+            return 0;
         }
 
         var placementState = parent.SerializePlacementPhaseCompact();
@@ -269,7 +277,7 @@ public sealed class PriorClient : IPriorClient, IDisposable
 
         if (allActions.Count == 0)
         {
-            return;
+            return 0;
         }
 
         // Add a sentinel to simplify boundary calculation.
@@ -290,6 +298,7 @@ public sealed class PriorClient : IPriorClient, IDisposable
             ],
         };
 
+        Interlocked.Increment(ref _enqueueFireCount);
         _ = Task.Run(async () =>
         {
             await _enqueueThrottle.WaitAsync();
@@ -300,12 +309,15 @@ public sealed class PriorClient : IPriorClient, IDisposable
             catch
             {
                 // Server unreachable — degrade gracefully (no priors for this node).
+                Interlocked.Increment(ref _enqueueErrorCount);
             }
             finally
             {
                 _enqueueThrottle.Release();
             }
         });
+
+        return allActions.Count;
     }
 
     /// <summary>
@@ -342,32 +354,30 @@ public sealed class PriorClient : IPriorClient, IDisposable
     }
 
     /// <summary>
-    /// Clear the server queue and discard pending results.
+    /// Drop pending responses belonging to a completed search, identified
+    /// by the node IDs the caller still tracks. Responses for unknown
+    /// node IDs (which may belong to other concurrent searches sharing
+    /// this client) are preserved in the mailbox.
     ///
-    /// On pooled clients this is a NO-OP: a global flush would also discard
-    /// pending priors belonging to other concurrently-running MCTS searches
-    /// that share this client. Orphan responses for completed searches are
-    /// instead bounded by <see cref="CollectPriors"/>'s soft mailbox cap.
+    /// Never clears the server-side queue: that queue is shared across
+    /// all concurrent callers and clearing it would discard pending
+    /// requests/responses owned by other searches.
     /// </summary>
-    public void Flush()
+    public void Flush(IReadOnlySet<long> knownNodeIds)
     {
-        if (_pooled)
+        var keep = new List<PriorResponse>();
+        while (_mailbox.TryDequeue(out var item))
         {
-            return;
+            if (!knownNodeIds.Contains(item.NodeId))
+            {
+                keep.Add(item);
+            }
         }
 
-        try
+        foreach (var item in keep)
         {
-            var endpoint = _mode == PriorMode.Placement ? "placement/prior-flush" : "state/prior-flush";
-            using var response = _http.PostAsync(endpoint, null).GetAwaiter().GetResult();
+            _mailbox.Enqueue(item);
         }
-        catch
-        {
-            // Server unreachable — nothing to flush.
-        }
-
-        // Clear local mailbox.
-        while (_mailbox.TryDequeue(out _)) { }
     }
 
     public void Dispose()

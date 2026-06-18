@@ -296,8 +296,8 @@ def expand_placement_games(
     n_buckets: int = 128,
     tokenizer: PlacementTokenizer | None = None,
     target: str = "winrate",
-) -> list[tuple[torch.Tensor, int]]:
-    """Expand placement-phase game dicts into ``(token_ids, bucket)`` samples.
+) -> list[tuple[torch.Tensor, int]] | list[tuple[torch.Tensor, int, int]]:
+    """Expand placement-phase game dicts into training samples.
 
     Each game's states are expanded via symmetry permutations.  Unlike
     :func:`expand_games`, there is no player rotation — each action
@@ -309,21 +309,25 @@ def expand_placement_games(
         cfg: Game configuration matching the exported data.
         n_buckets: Number of output buckets (must match the model).
         tokenizer: Optional pre-built tokenizer (avoids re-creation).
-        target: ``"winrate"`` (default — bucketize each action's winRate)
-            or ``"policy"`` (bucketize each action's share of total MCTS
-            visits within its sibling group). Policy targets sum to 1
-            across siblings of a single state, training the model to
-            predict normalised PUCT-style action priors instead of
-            independent expected win rates.
+        target: ``"winrate"`` (default — bucketize each action's winRate),
+            ``"policy"`` (bucketize each action's share of total MCTS
+            visits within its sibling group), or ``"combined"`` (return
+            both value and policy bucket targets per sample).
 
     Returns:
-        A flat list of ``(token_ids, target_bucket)`` pairs.
+        For ``"winrate"`` or ``"policy"``: a flat list of
+        ``(token_ids, target_bucket)`` pairs.
+
+        For ``"combined"``: a flat list of
+        ``(token_ids, value_bucket, policy_bucket)`` triples.
     """
     if tokenizer is None:
         tokenizer = PlacementTokenizer(cfg)
-    if target not in ("winrate", "policy"):
-        raise ValueError(f"Unknown target: {target!r} (expected 'winrate' or 'policy').")
-    samples: list[tuple[torch.Tensor, int]] = []
+    if target not in ("winrate", "policy", "combined"):
+        raise ValueError(
+            f"Unknown target: {target!r} (expected 'winrate', 'policy', or 'combined')."
+        )
+    samples: list = []
     for game in games:
         _process_placement_game(game, n_buckets, samples, tokenizer, target)
     return samples
@@ -332,7 +336,7 @@ def expand_placement_games(
 def _process_placement_game(
     game: dict,
     n_buckets: int,
-    samples: list[tuple[torch.Tensor, int]],
+    samples: list,
     tokenizer: PlacementTokenizer,
     target: str = "winrate",
 ) -> None:
@@ -345,15 +349,18 @@ def _process_placement_game(
         # Each variant is already a full 4-section string (tiles|ports|vertices|edges).
         all_variants = [state_serialized, *state_permutations]
 
-        # For policy mode, precompute per-action target = visit_share within
-        # this state's sibling group. Visit counts are state-level (identical
-        # across symmetry variants), so we compute the normalisation once.
-        if target == "policy":
+        # For policy or combined mode, precompute per-action visit shares.
+        need_policy = target in ("policy", "combined")
+        if need_policy:
             rollouts = [int(a.get("rollouts", 0)) for a in state_entry["actions"]]
             total = sum(rollouts)
             if total <= 0:
-                # Degenerate: no MCTS data for this state. Skip rather than
-                # train on a uniform-policy ghost target.
+                if target == "policy":
+                    # Degenerate: no MCTS data for this state. Skip rather than
+                    # train on a uniform-policy ghost target.
+                    continue
+                # Combined mode: skip policy but still emit value-only? No —
+                # combined requires both targets; skip the whole state.
                 continue
             visit_shares = [r / total for r in rollouts]
         else:
@@ -370,34 +377,51 @@ def _process_placement_game(
                     action_string = action_entry["permutations"][variant_idx - 1]
 
                 token_ids = tokenizer.tokenize_state_action(compact, action_string)
-                if target == "policy":
+
+                if target == "combined":
+                    assert visit_shares is not None
+                    value_prob = float(action_entry["winRate"])
+                    policy_prob = visit_shares[action_idx]
+                    value_bucket = _prob_to_bucket(value_prob, n_buckets)
+                    policy_bucket = _prob_to_bucket(policy_prob, n_buckets)
+                    samples.append((token_ids, value_bucket, policy_bucket))
+                elif target == "policy":
                     assert visit_shares is not None
                     prob = visit_shares[action_idx]
+                    bucket = _prob_to_bucket(prob, n_buckets)
+                    samples.append((token_ids, bucket))
                 else:
                     prob = float(action_entry["winRate"])
-                bucket = _prob_to_bucket(prob, n_buckets)
-                samples.append((token_ids, bucket))
+                    bucket = _prob_to_bucket(prob, n_buckets)
+                    samples.append((token_ids, bucket))
 
 
 # ── Placement Dataset ────────────────────────────────────────────────
 
 
-class PlacementDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
+class PlacementDataset(Dataset[tuple[torch.Tensor, ...]]):
     """PyTorch dataset for placement-phase training data.
 
     Expands placement games into samples on construction and holds them
-    in memory.  Each item is a ``(token_ids, target_bucket)`` pair where
-    ``token_ids`` is a 1-D ``int`` tensor (state + action tokens) and
-    ``target_bucket`` is a scalar ``long`` tensor.
+    in memory.
+
+    For ``target="winrate"`` or ``"policy"``, each item is a
+    ``(token_ids, target_bucket)`` pair where ``token_ids`` is a 1-D
+    ``int`` tensor (state + action tokens) and ``target_bucket`` is a
+    scalar ``long`` tensor.
+
+    For ``target="combined"``, each item is a
+    ``(token_ids, value_bucket, policy_bucket)`` triple.
 
     Args:
         games: List of parsed placement game dicts (from :func:`load_games`).
         cfg: Game configuration matching the exported data.
         n_buckets: Number of output buckets (default 128).
-        target: ``"winrate"`` (default — bucketize each action's winRate)
-            or ``"policy"`` (bucketize each action's normalised share of
-            total MCTS visits within its sibling group). See
-            :func:`expand_placement_games`.
+        target: ``"winrate"`` (default — bucketize each action's winRate),
+            ``"policy"`` (bucketize each action's normalised share of
+            total MCTS visits within its sibling group), or
+            ``"combined"`` (return both value and policy targets).
+            See :func:`expand_placement_games`.
     """
 
     def __init__(
@@ -412,11 +436,18 @@ class PlacementDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         raw = expand_placement_games(
             games, cfg, n_buckets=n_buckets, tokenizer=tok, target=target
         )
-        self._tokens = [t for t, _ in raw]
-        self._targets = torch.tensor([b for _, b in raw], dtype=torch.long)
+        self._combined = target == "combined"
+        self._tokens = [t[0] for t in raw]
+        if self._combined:
+            self._value_targets = torch.tensor([t[1] for t in raw], dtype=torch.long)
+            self._policy_targets = torch.tensor([t[2] for t in raw], dtype=torch.long)
+        else:
+            self._targets = torch.tensor([t[1] for t in raw], dtype=torch.long)
 
     def __len__(self) -> int:
         return len(self._tokens)
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, ...]:
+        if self._combined:
+            return self._tokens[idx], self._value_targets[idx], self._policy_targets[idx]
         return self._tokens[idx], self._targets[idx]

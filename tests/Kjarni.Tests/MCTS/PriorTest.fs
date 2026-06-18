@@ -72,6 +72,7 @@ type MockPriorClient() =
 
         member _.RequestPrior(nodeId, parentState, states, actingPlayer, depth) =
             _requests.Add((nodeId, parentState, states, actingPlayer, depth))
+            states.Length
 
         member _.CollectPriors(knownNodeIds: IReadOnlySet<int64>) =
             let matched = _responses |> Seq.filter (fun r -> knownNodeIds.Contains(r.NodeId)) |> Seq.toArray
@@ -80,7 +81,7 @@ type MockPriorClient() =
             for r in remaining do _responses.Enqueue(r)
             matched
 
-        member _.Flush() =
+        member _.Flush(_knownNodeIds: IReadOnlySet<int64>) =
             _flushed <- true
             _responses.Clear()
 
@@ -101,6 +102,7 @@ type AutoRespondPriorClient(winProbFn: ICoreState[] -> float[]) =
             _requests.Add((nodeId, parentState, states, actingPlayer, depth))
             let winProbs = winProbFn states
             _responses.Enqueue(PriorResponse(nodeId, winProbs))
+            states.Length
 
         member _.CollectPriors(knownNodeIds: IReadOnlySet<int64>) =
             let matched = _responses |> Seq.filter (fun r -> knownNodeIds.Contains(r.NodeId)) |> Seq.toArray
@@ -109,7 +111,7 @@ type AutoRespondPriorClient(winProbFn: ICoreState[] -> float[]) =
             for r in remaining do _responses.Enqueue(r)
             matched
 
-        member _.Flush() =
+        member _.Flush(_knownNodeIds: IReadOnlySet<int64>) =
             _flushed <- true
             _responses.Clear()
 
@@ -520,9 +522,9 @@ type PriorSearchIntegrationTests() =
         let logInfo = mcts.LatestLogInfo()
 
         // Priors should have been requested and applied
-        logInfo.priorStatesEvaluated |> should be (greaterThan 0)
-        logInfo.priorsApplied |> should be (greaterThan 0)
-        logInfo.priorStatesEvaluated |> should be (greaterThan 0)
+        logInfo.priorActionsRequested |> should be (greaterThan 0)
+        logInfo.priorActionsApplied |> should be (greaterThan 0)
+        logInfo.priorNodesApplied |> should be (greaterThan 0)
 
     [<Test>]
     member _.SearchWithoutPriorClient_PriorStatsAreZero() =
@@ -538,9 +540,9 @@ type PriorSearchIntegrationTests() =
         let _ = mcts.RunSimulation(mctsRoot)
         let logInfo = mcts.LatestLogInfo()
 
-        logInfo.priorStatesEvaluated |> should equal 0
-        logInfo.priorsApplied |> should equal 0
-        logInfo.priorStatesEvaluated |> should equal 0
+        logInfo.priorActionsRequested |> should equal 0
+        logInfo.priorActionsApplied |> should equal 0
+        logInfo.priorNodesApplied |> should equal 0
 
     [<Test>]
     member _.PriorRequest_IncludesCorrectActingPlayer() =

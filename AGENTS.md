@@ -49,7 +49,7 @@
   - `placement_tokenizer.py` — placement-phase tokenizer class (`PlacementTokenizer`); handles 4-section placement state strings and action vocabulary.
   - `data_loader.py` — loads JSONL training data exported by `gimbur simulate --export`, builds `SimulationDataset` for PyTorch `DataLoader`.
   - `model_config.py` — model hyperparameter configuration.
-  - `transformer_model.py` — transformer-based model architecture.
+  - `transformer_model.py` — transformer-based model architecture; defines `OutputMode` enum (`value`, `policy`, `combined`) and `GimburTransformerConfig` with `output_mode` field controlling the output head topology (single bucket head or dual value + policy heads).
   - `pipeline.py` — training/evaluation pipeline utilities.
   - `train.py` — training loop; reads JSONL data exported by `gimbur simulate --export`.
   - `serve.py` — HTTP inference server; loads a trained checkpoint and serves predictions for the MCTS engine.

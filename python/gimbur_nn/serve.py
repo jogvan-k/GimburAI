@@ -60,6 +60,7 @@ from .transformer_model import (
     MODEL_CONFIGS_BY_NAME,
     GimburPlacementTransformer,
     GimburTransformer,
+    _make_model_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -411,6 +412,7 @@ def create_app(
     placement_device: torch.device | None = None,
     placement_game_cfg: GameConfig | None = None,
     placement_target: str = "winrate",
+    placement_output_mode: str = "value",
 ) -> FastAPI:
     """Build the FastAPI application.
 
@@ -428,6 +430,12 @@ def create_app(
       among siblings; aggregate as SUM across road grandchildren (marginal
       visit mass for placing this settlement). Together these sum to 1
       across settlement children if the model is well-calibrated.
+
+    ``placement_output_mode`` controls which output head is used for
+    inference when the placement model has dual heads (``"combined"``).
+    For combined models, the value head provides win probabilities for
+    ``/placement/predict`` and settlement-child aggregation uses the
+    appropriate head based on ``placement_target``.
     """
 
     # Collect async worker coroutines to be started by the lifespan handler.
@@ -440,6 +448,12 @@ def create_app(
         assert state_game_cfg is not None
         tokenizer = StateTokenizer(state_game_cfg)
         prior_queue: PriorQueue[PriorRequest] = PriorQueue()
+
+        def _extract_state_logits(output: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
+            """Extract the value logits from model output (handles both single and combined)."""
+            if isinstance(output, dict):
+                return output["value"][:, -1, :]
+            return output[:, -1, :]
 
         def _infer_prior_batch(batch: list[PriorRequest]) -> list[PriorResponseItem]:
             """Run inference on a batch of prior requests and return results."""
@@ -462,8 +476,8 @@ def create_app(
                     continue
 
                 with torch.no_grad():
-                    logits = state_model(token_ids)
-                    last_logits = logits[:, -1, :]
+                    output = state_model(token_ids)
+                    last_logits = _extract_state_logits(output)
                     probs = F.softmax(last_logits, dim=-1)
 
                 win_probs = [_expected_win_prob(probs[i]) for i in range(probs.shape[0])]
@@ -493,6 +507,19 @@ def create_app(
         placement_tokenizer = PlacementTokenizer(placement_game_cfg)
 
         placement_prior_queue: PriorQueue[PlacementPriorRequest] = PriorQueue()
+
+        def _extract_placement_logits(
+            output: torch.Tensor | dict[str, torch.Tensor],
+            head: str = "value",
+        ) -> torch.Tensor:
+            """Extract last-token logits from placement model output.
+
+            For combined models, *head* selects which output head to use.
+            For single-head models, *head* is ignored.
+            """
+            if isinstance(output, dict):
+                return output[head][:, -1, :]
+            return output[:, -1, :]
 
         def _infer_placement_prior_batch(
             batch: list[PlacementPriorRequest],
@@ -528,8 +555,17 @@ def create_app(
             if all_tokens:
                 token_batch = torch.stack(all_tokens).to(placement_device)
                 with torch.no_grad():
-                    logits = placement_model(token_batch)
-                    last_logits = logits[:, -1, :]
+                    output = placement_model(token_batch)
+                    # For prior aggregation, use the head that matches the
+                    # target semantics.  Combined models use "value" head for
+                    # winrate target and "policy" head for policy target.
+                    if placement_output_mode == "combined":
+                        prior_head = (
+                            "policy" if placement_target == "policy" else "value"
+                        )
+                    else:
+                        prior_head = "value"
+                    last_logits = _extract_placement_logits(output, head=prior_head)
                     probs = F.softmax(last_logits, dim=-1)
 
                 n_buckets = probs.shape[1]
@@ -631,8 +667,8 @@ def create_app(
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
             with torch.no_grad():
-                logits = state_model(token_ids)  # (batch, seq_len, n_buckets)
-                last_logits = logits[:, -1, :]  # (batch, n_buckets)
+                output = state_model(token_ids)  # (batch, seq_len, n_buckets) or dict
+                last_logits = _extract_state_logits(output)  # (batch, n_buckets)
                 probs = F.softmax(last_logits, dim=-1)
 
             return PredictResponse(probabilities=probs.cpu().tolist())
@@ -678,8 +714,8 @@ def create_app(
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
             with torch.no_grad():
-                logits = state_model(token_ids)
-                last_logits = logits[:, -1, :]
+                output = state_model(token_ids)
+                last_logits = _extract_state_logits(output)
                 probs = F.softmax(last_logits, dim=-1)
 
             win_probs = [_expected_win_prob(probs[i]) for i in range(probs.shape[0])]
@@ -763,8 +799,8 @@ def create_app(
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
             with torch.no_grad():
-                logits = placement_model(token_batch)
-                last_logits = logits[:, -1, :]
+                output = placement_model(token_batch)
+                last_logits = _extract_placement_logits(output, head="value")
                 probs = F.softmax(last_logits, dim=-1)
 
             return PredictPlacementResponse(probabilities=probs.cpu().tolist())
@@ -883,29 +919,46 @@ def main() -> None:
     loaded_placement_model: GimburPlacementTransformer | None = None
     placement_game_cfg: GameConfig | None = None
     placement_target: str = "winrate"
+    placement_output_mode: str = "value"
     if has_placement:
         placement_game_cfg = CONFIGS_BY_NAME[args.game_config]
         placement_model_cfg = MODEL_CONFIGS_BY_NAME[args.placement_model_config]
+        # Accept both legacy bare-state_dict checkpoints and the new metadata
+        # dict format saved by train.py. Legacy files default to target='winrate'
+        # and output_mode='value' for backward compatibility.
+        raw_ckpt = torch.load(args.placement_model, map_location=device, weights_only=False)
+        if isinstance(raw_ckpt, dict) and "model_state_dict" in raw_ckpt:
+            placement_target = str(raw_ckpt.get("target", "winrate"))
+            placement_output_mode = str(raw_ckpt.get("output_mode", "value"))
+            state_dict = raw_ckpt["model_state_dict"]
+        else:
+            state_dict = raw_ckpt
+            placement_target = "winrate"
+            placement_output_mode = "value"
+
+        # Apply output_mode to the model config if it differs from the preset.
+        if placement_output_mode != getattr(placement_model_cfg, "output_mode", "value"):
+            placement_model_cfg = _make_model_config(
+                d_model=placement_model_cfg.d_model,
+                n_heads=placement_model_cfg.n_heads,
+                n_layers=placement_model_cfg.n_layers,
+                n_buckets=placement_model_cfg.n_buckets,
+                ffn_hidden_mult=placement_model_cfg.ffn_hidden_mult,
+                dropout=placement_model_cfg.dropout,
+                output_mode=placement_output_mode,
+            )
+
         loaded_placement_model = GimburPlacementTransformer(
             placement_game_cfg, placement_model_cfg
         )
-        # Accept both legacy bare-state_dict checkpoints and the new metadata
-        # dict format saved by train.py. Legacy files default to target='winrate'
-        # for backward compatibility.
-        raw_ckpt = torch.load(args.placement_model, map_location=device, weights_only=False)
-        if isinstance(raw_ckpt, dict) and "model_state_dict" in raw_ckpt:
-            loaded_placement_model.load_state_dict(raw_ckpt["model_state_dict"])
-            placement_target = str(raw_ckpt.get("target", "winrate"))
-        else:
-            loaded_placement_model.load_state_dict(raw_ckpt)
-            placement_target = "winrate"
+        loaded_placement_model.load_state_dict(state_dict)
         loaded_placement_model.to(device)
         loaded_placement_model.eval()
         param_count = sum(p.numel() for p in loaded_placement_model.parameters())
         print(
             f"Loaded placement model ({args.placement_model_config}) for "
             f"{args.game_config} ({param_count:,} parameters) on {device}, "
-            f"target={placement_target}"
+            f"target={placement_target}, output_mode={placement_output_mode}"
         )
 
     app = create_app(
@@ -916,6 +969,7 @@ def main() -> None:
         placement_device=device if has_placement else None,
         placement_game_cfg=placement_game_cfg,
         placement_target=placement_target,
+        placement_output_mode=placement_output_mode,
     )
     uvicorn.run(
         app,

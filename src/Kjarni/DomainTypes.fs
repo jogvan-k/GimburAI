@@ -61,7 +61,12 @@ type IPriorClient =
     ///          for serialization.
     /// actingPlayer — the player whose turn it is at the parent node.
     /// depth — depth from root (lower = higher priority).
-    abstract RequestPrior : nodeId: int64 * parentState: ICoreState * states: ICoreState[] * actingPlayer: int * depth: int -> unit
+    /// Returns the number of (state, action) inference pairs actually sent to
+    /// the model. In state mode this equals states.Length; in placement mode
+    /// it is the total number of (settlement, road) composite actions enqueued
+    /// across all child states. Returns 0 when the implementation declines
+    /// to send a request (e.g. non-placement stage in placement mode).
+    abstract RequestPrior : nodeId: int64 * parentState: ICoreState * states: ICoreState[] * actingPlayer: int * depth: int -> int
 
     /// Collect completed prior responses matching the given set of node IDs.
     /// Only responses whose NodeId is in knownNodeIds are returned; others
@@ -69,8 +74,13 @@ type IPriorClient =
     /// sharing the same client).
     abstract CollectPriors : knownNodeIds: IReadOnlySet<int64> -> PriorResponse[]
 
-    /// Clear the server queue and discard pending results.
-    abstract Flush : unit -> unit
+    /// Drop pending responses belonging to a completed search, identified
+    /// by the node IDs the caller still tracks. Entries whose NodeId is in
+    /// knownNodeIds are removed; all other entries (which may belong to
+    /// other concurrent searches sharing this client) are preserved.
+    /// Implementations must NOT clear server-side queues, since those are
+    /// shared with other concurrent callers.
+    abstract Flush : knownNodeIds: IReadOnlySet<int64> -> unit
 
 type SimulationResult = 
   struct

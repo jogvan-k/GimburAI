@@ -30,6 +30,8 @@ internal enum AiKind
     ServerMctsNn,
     NnMctsPlacement,
     NnMctsPlacementRandom,
+    MctsPlacement,
+    MctsPlacementRandom,
 }
 
 /// <summary>
@@ -172,21 +174,27 @@ internal sealed class MctsPlayer : IBenchmarkPlayer, INnStatsProvider
     private readonly Kjarni.MCTS.AI.MonteCarloTreeSearch _mcts;
     private Kjarni.MCTS.Types.MCTSState? _mctsRoot;
 
-    /// <summary>Total prior requests across all MCTS decisions in this game.</summary>
-    public int TotalPriorsRequested { get; private set; }
+    /// <summary>Total nodes for which a prior was requested across all MCTS decisions in this game.</summary>
+    public int TotalPriorNodesRequested { get; private set; }
 
-    /// <summary>Total individual action states covered by applied priors across all MCTS decisions.</summary>
-    public int TotalPriorsApplied { get; private set; }
+    /// <summary>Total individual action states whose priors were successfully applied across all MCTS decisions.</summary>
+    public int TotalPriorActionsApplied { get; private set; }
 
-    /// <summary>Total individual states evaluated by the NN server across all decisions.</summary>
-    public int TotalPriorStatesEvaluated { get; private set; }
+    /// <summary>Total MCTS-level action states sent to the prior client across all decisions.</summary>
+    public int TotalPriorActionsRequested { get; private set; }
 
-    /// <summary>Per-depth count of prior states evaluated across all MCTS decisions.</summary>
-    public Dictionary<int, int>? TotalPriorStatesPerDepth { get; private set; }
+    /// <summary>Total (state, action) inference pairs actually sent to the NN model across all decisions.</summary>
+    public int TotalPriorInferencesRequested { get; private set; }
 
-    // INnStatsProvider
-    int INnStatsProvider.TotalNnRequests => TotalPriorsRequested;
-    int INnStatsProvider.TotalNnStatesEvaluated => TotalPriorStatesEvaluated;
+    /// <summary>Per-depth count of MCTS-level action states sent to the client across all MCTS decisions.</summary>
+    public Dictionary<int, int>? TotalPriorActionsPerDepth { get; private set; }
+
+    /// <summary>Per-depth count of model inference pairs across all MCTS decisions.</summary>
+    public Dictionary<int, int>? TotalPriorInferencesPerDepth { get; private set; }
+
+    // INnStatsProvider — TotalNnStatesEvaluated reflects actual NN inference work.
+    int INnStatsProvider.TotalNnRequests => TotalPriorNodesRequested;
+    int INnStatsProvider.TotalNnStatesEvaluated => TotalPriorInferencesRequested;
 
     public MctsPlayer(MCTSConfig config)
     {
@@ -213,16 +221,26 @@ internal sealed class MctsPlayer : IBenchmarkPlayer, INnStatsProvider
 
         // Accumulate prior stats from this decision.
         var logInfo = _mcts.LatestLogInfo();
-        TotalPriorsRequested += logInfo.priorStatesRequested;
-        TotalPriorsApplied += logInfo.priorsApplied;
-        TotalPriorStatesEvaluated += logInfo.priorStatesEvaluated;
-        if (logInfo.priorStatesPerDepth is { Count: > 0 })
+        TotalPriorNodesRequested += logInfo.priorNodesRequested;
+        TotalPriorActionsApplied += logInfo.priorActionsApplied;
+        TotalPriorActionsRequested += logInfo.priorActionsRequested;
+        TotalPriorInferencesRequested += logInfo.priorInferencesRequested;
+        if (logInfo.priorActionsPerDepth is { Count: > 0 })
         {
-            TotalPriorStatesPerDepth ??= new Dictionary<int, int>();
-            foreach (var kv in logInfo.priorStatesPerDepth)
+            TotalPriorActionsPerDepth ??= new Dictionary<int, int>();
+            foreach (var kv in logInfo.priorActionsPerDepth)
             {
-                TotalPriorStatesPerDepth.TryGetValue(kv.Key, out var existing);
-                TotalPriorStatesPerDepth[kv.Key] = existing + kv.Value;
+                TotalPriorActionsPerDepth.TryGetValue(kv.Key, out var existing);
+                TotalPriorActionsPerDepth[kv.Key] = existing + kv.Value;
+            }
+        }
+        if (logInfo.priorInferencesPerDepth is { Count: > 0 })
+        {
+            TotalPriorInferencesPerDepth ??= new Dictionary<int, int>();
+            foreach (var kv in logInfo.priorInferencesPerDepth)
+            {
+                TotalPriorInferencesPerDepth.TryGetValue(kv.Key, out var existing);
+                TotalPriorInferencesPerDepth[kv.Key] = existing + kv.Value;
             }
         }
 
@@ -307,26 +325,37 @@ internal record BenchmarkGameResult
     public required TimeSpan Elapsed { get; init; }
 
     /// <summary>
-    /// Total prior requests across all MCTS decisions in this game.
+    /// Total nodes for which a prior was requested across all MCTS decisions in this game.
     /// Zero when no MCTS player uses priors.
     /// </summary>
-    public int PriorsRequested { get; init; }
+    public int PriorNodesRequested { get; init; }
 
     /// <summary>
-    /// Total individual action states covered by applied priors across all MCTS decisions.
+    /// Total individual action states whose priors were successfully applied across all MCTS decisions.
     /// </summary>
-    public int PriorsApplied { get; init; }
+    public int PriorActionsApplied { get; init; }
 
     /// <summary>
-    /// Total individual states evaluated by the NN server across all decisions.
+    /// Total individual action states sent to the NN server across all decisions.
     /// </summary>
-    public int PriorStatesEvaluated { get; init; }
+    public int PriorActionsRequested { get; init; }
 
     /// <summary>
-    /// Per-depth count of prior states evaluated across all MCTS decisions in this game.
+    /// Total (state, action) inference pairs actually sent to the NN model across all decisions.
+    /// </summary>
+    public int PriorInferencesRequested { get; init; }
+
+    /// <summary>
+    /// Per-depth count of action states sent to the NN across all MCTS decisions in this game.
     /// Null when no priors were used.
     /// </summary>
-    public Dictionary<int, int>? PriorsCalculated { get; init; }
+    public Dictionary<int, int>? PriorActionsPerDepth { get; init; }
+
+    /// <summary>
+    /// Per-depth count of model inference pairs across all MCTS decisions in this game.
+    /// Null when no priors were used.
+    /// </summary>
+    public Dictionary<int, int>? PriorInferencesPerDepth { get; init; }
 }
 
 /// <summary>
@@ -455,7 +484,7 @@ internal class BenchmarkRunner
             try
             {
                 var gameStopwatch = Stopwatch.StartNew();
-                var (winnerSeat, turns, priorsRequested, priorsApplied, priorStatesEvaluated, priorsCalculated) = RunSingleGame(config, rng, seatAssignment);
+                var (winnerSeat, turns, priorNodesRequested, priorActionsApplied, priorActionsRequested, priorInferencesRequested, priorActionsPerDepth, priorInferencesPerDepth) = RunSingleGame(config, rng, seatAssignment);
                 gameStopwatch.Stop();
 
                 AiKind? winnerAi = winnerSeat > 0 ? seatAssignment[winnerSeat - 1] : null;
@@ -469,10 +498,12 @@ internal class BenchmarkRunner
                     WinnerSeat = winnerSeat,
                     Turns = turns,
                     Elapsed = gameStopwatch.Elapsed,
-                    PriorsRequested = priorsRequested,
-                    PriorsApplied = priorsApplied,
-                    PriorStatesEvaluated = priorStatesEvaluated,
-                    PriorsCalculated = priorsCalculated,
+                    PriorNodesRequested = priorNodesRequested,
+                    PriorActionsApplied = priorActionsApplied,
+                    PriorActionsRequested = priorActionsRequested,
+                    PriorInferencesRequested = priorInferencesRequested,
+                    PriorActionsPerDepth = priorActionsPerDepth,
+                    PriorInferencesPerDepth = priorInferencesPerDepth,
                 };
 
                 gameResults.Add(result);
@@ -572,17 +603,27 @@ internal class BenchmarkRunner
                 _options.ServerUrl, "mcts-nn-ai", _options.MapConfig ?? "standard",
                 _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth,
                 _options.NnUrl, _options.ServerPriorMode, _options.ServerMaxPriorDepth),
-            AiKind.NnMctsPlacement => new NnMctsPlacementPlayer(
+            AiKind.NnMctsPlacement => new ServerPlacementPlayer(
                 new ServerPlayer(
                     _options.ServerUrl, "mcts-nn-ai", _options.MapConfig ?? "standard",
                     _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth,
                     _options.NnUrl, _options.ServerPriorMode ?? "placement", _options.ServerMaxPriorDepth),
                 new GreedyPlayer()),
-            AiKind.NnMctsPlacementRandom => new NnMctsPlacementPlayer(
+            AiKind.NnMctsPlacementRandom => new ServerPlacementPlayer(
                 new ServerPlayer(
                     _options.ServerUrl, "mcts-nn-ai", _options.MapConfig ?? "standard",
                     _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth,
                     _options.NnUrl, _options.ServerPriorMode ?? "placement", _options.ServerMaxPriorDepth),
+                new RandomPlayer()),
+            AiKind.MctsPlacement => new ServerPlacementPlayer(
+                new ServerPlayer(
+                    _options.ServerUrl, "mcts-ai", _options.MapConfig ?? "standard",
+                    _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth),
+                new GreedyPlayer()),
+            AiKind.MctsPlacementRandom => new ServerPlacementPlayer(
+                new ServerPlayer(
+                    _options.ServerUrl, "mcts-ai", _options.MapConfig ?? "standard",
+                    _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth),
                 new RandomPlayer()),
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, $"Unknown AI kind: {kind}"),
         };
@@ -596,12 +637,13 @@ internal class BenchmarkRunner
     /// </summary>
     private static bool UsesServer(AiKind[] players) =>
         players.Any(ai => ai is AiKind.ServerMcts or AiKind.ServerMctsNn
-                              or AiKind.NnMctsPlacement or AiKind.NnMctsPlacementRandom);
+                              or AiKind.NnMctsPlacement or AiKind.NnMctsPlacementRandom
+                              or AiKind.MctsPlacement or AiKind.MctsPlacementRandom);
 
     private static bool UsesNn(AiKind[] players) =>
         players.Any(ai => ai is AiKind.Nn or AiKind.NnPlacement or AiKind.NnPlacementRandom or AiKind.NnState or AiKind.NnStateRandom or AiKind.ServerMctsNn or AiKind.NnMctsPlacement or AiKind.NnMctsPlacementRandom);
 
-    private (int WinnerSeat, int Turns, int PriorsRequested, int PriorsApplied, int PriorStatesEvaluated, Dictionary<int, int>? PriorsCalculated) RunSingleGame(GameConfig config, Random rng, AiKind[] seatAssignment)
+    private (int WinnerSeat, int Turns, int PriorNodesRequested, int PriorActionsApplied, int PriorActionsRequested, int PriorInferencesRequested, Dictionary<int, int>? PriorActionsPerDepth, Dictionary<int, int>? PriorInferencesPerDepth) RunSingleGame(GameConfig config, Random rng, AiKind[] seatAssignment)
     {
         var playerCount = seatAssignment.Length;
         var state = new CatanState(config, playerCount, rng);
@@ -635,34 +677,49 @@ internal class BenchmarkRunner
         }
 
         // Aggregate NN stats from all players that use neural network inference.
-        var priorsRequested = 0;
-        var priorsApplied = 0;
-        var priorStatesEvaluated = 0;
-        Dictionary<int, int>? priorsCalculated = null;
+        var priorNodesRequested = 0;
+        var priorActionsApplied = 0;
+        var priorActionsRequested = 0;
+        var priorInferencesRequested = 0;
+        Dictionary<int, int>? priorActionsPerDepth = null;
+        Dictionary<int, int>? priorInferencesPerDepth = null;
         foreach (var player in players)
         {
-            if (player is INnStatsProvider nnStats)
-            {
-                priorsRequested += nnStats.TotalNnRequests;
-                priorStatesEvaluated += nnStats.TotalNnStatesEvaluated;
-            }
-
             if (player is MctsPlayer mctsPlayer)
             {
-                priorsApplied += mctsPlayer.TotalPriorsApplied;
-                if (mctsPlayer.TotalPriorStatesPerDepth is { Count: > 0 })
+                priorNodesRequested += mctsPlayer.TotalPriorNodesRequested;
+                priorActionsApplied += mctsPlayer.TotalPriorActionsApplied;
+                priorActionsRequested += mctsPlayer.TotalPriorActionsRequested;
+                priorInferencesRequested += mctsPlayer.TotalPriorInferencesRequested;
+                if (mctsPlayer.TotalPriorActionsPerDepth is { Count: > 0 })
                 {
-                    priorsCalculated ??= new Dictionary<int, int>();
-                    foreach (var kv in mctsPlayer.TotalPriorStatesPerDepth)
+                    priorActionsPerDepth ??= new Dictionary<int, int>();
+                    foreach (var kv in mctsPlayer.TotalPriorActionsPerDepth)
                     {
-                        priorsCalculated.TryGetValue(kv.Key, out var existing);
-                        priorsCalculated[kv.Key] = existing + kv.Value;
+                        priorActionsPerDepth.TryGetValue(kv.Key, out var existing);
+                        priorActionsPerDepth[kv.Key] = existing + kv.Value;
+                    }
+                }
+                if (mctsPlayer.TotalPriorInferencesPerDepth is { Count: > 0 })
+                {
+                    priorInferencesPerDepth ??= new Dictionary<int, int>();
+                    foreach (var kv in mctsPlayer.TotalPriorInferencesPerDepth)
+                    {
+                        priorInferencesPerDepth.TryGetValue(kv.Key, out var existing);
+                        priorInferencesPerDepth[kv.Key] = existing + kv.Value;
                     }
                 }
             }
+            else if (player is INnStatsProvider nnStats)
+            {
+                // Non-MCTS NN players: states-evaluated counts as inferences.
+                priorNodesRequested += nnStats.TotalNnRequests;
+                priorActionsRequested += nnStats.TotalNnStatesEvaluated;
+                priorInferencesRequested += nnStats.TotalNnStatesEvaluated;
+            }
         }
 
-        return (state.WinnerPlayer, state.TurnNumber, priorsRequested, priorsApplied, priorStatesEvaluated, priorsCalculated);
+        return (state.WinnerPlayer, state.TurnNumber, priorNodesRequested, priorActionsApplied, priorActionsRequested, priorInferencesRequested, priorActionsPerDepth, priorInferencesPerDepth);
     }
 
     private GameConfig ResolveGameConfig()
@@ -726,28 +783,31 @@ internal class BenchmarkRunner
         }
 
         // Prior stats (only shown when priors were used).
-        var totalPriorsRequested = stats.Games.Sum(g => g.PriorsRequested);
-        if (totalPriorsRequested > 0)
+        var totalPriorNodesRequested = stats.Games.Sum(g => g.PriorNodesRequested);
+        if (totalPriorNodesRequested > 0)
         {
-            var totalPriorsApplied = stats.Games.Sum(g => g.PriorsApplied);
-            var totalPriorStatesEvaluated = stats.Games.Sum(g => g.PriorStatesEvaluated);
+            var totalPriorActionsApplied = stats.Games.Sum(g => g.PriorActionsApplied);
+            var totalPriorActionsRequested = stats.Games.Sum(g => g.PriorActionsRequested);
+            var totalPriorInferencesRequested = stats.Games.Sum(g => g.PriorInferencesRequested);
             Console.WriteLine();
             Console.WriteLine("Prior stats:");
-            Console.WriteLine($"  Priors requested: {totalPriorsRequested}");
-            Console.WriteLine($"  Priors applied: {totalPriorsApplied}");
-            Console.WriteLine($"  Prior states evaluated: {totalPriorStatesEvaluated}");
+            Console.WriteLine($"  Prior nodes requested: {totalPriorNodesRequested}");
+            Console.WriteLine($"  Prior actions applied: {totalPriorActionsApplied}");
+            Console.WriteLine($"  Prior actions requested: {totalPriorActionsRequested}");
+            Console.WriteLine($"  Prior inferences requested: {totalPriorInferencesRequested}");
             if (stats.TotalGames > 0)
             {
-                Console.WriteLine($"  Avg requested/game: {(double)totalPriorsRequested / stats.TotalGames:F1}");
-                Console.WriteLine($"  Avg applied/game: {(double)totalPriorsApplied / stats.TotalGames:F1}");
+                Console.WriteLine($"  Avg nodes requested/game: {(double)totalPriorNodesRequested / stats.TotalGames:F1}");
+                Console.WriteLine($"  Avg actions applied/game: {(double)totalPriorActionsApplied / stats.TotalGames:F1}");
+                Console.WriteLine($"  Avg inferences requested/game: {(double)totalPriorInferencesRequested / stats.TotalGames:F1}");
             }
 
-            // Per-depth breakdown of prior states evaluated.
+            // Per-depth breakdown of action states sent to the NN.
             var aggregatedDepths = new SortedDictionary<int, int>();
             foreach (var game in stats.Games)
             {
-                if (game.PriorsCalculated is not { Count: > 0 }) continue;
-                foreach (var kv in game.PriorsCalculated)
+                if (game.PriorActionsPerDepth is not { Count: > 0 }) continue;
+                foreach (var kv in game.PriorActionsPerDepth)
                 {
                     aggregatedDepths.TryGetValue(kv.Key, out var existing);
                     aggregatedDepths[kv.Key] = existing + kv.Value;
@@ -757,7 +817,24 @@ internal class BenchmarkRunner
             if (aggregatedDepths.Count > 0)
             {
                 var depthParts = aggregatedDepths.Select(kv => $"{kv.Key}:{kv.Value}");
-                Console.WriteLine($"  Prior states by depth: {string.Join(", ", depthParts)}");
+                Console.WriteLine($"  Prior actions by depth: {string.Join(", ", depthParts)}");
+            }
+
+            var aggregatedInferenceDepths = new SortedDictionary<int, int>();
+            foreach (var game in stats.Games)
+            {
+                if (game.PriorInferencesPerDepth is not { Count: > 0 }) continue;
+                foreach (var kv in game.PriorInferencesPerDepth)
+                {
+                    aggregatedInferenceDepths.TryGetValue(kv.Key, out var existing);
+                    aggregatedInferenceDepths[kv.Key] = existing + kv.Value;
+                }
+            }
+
+            if (aggregatedInferenceDepths.Count > 0)
+            {
+                var depthParts = aggregatedInferenceDepths.Select(kv => $"{kv.Key}:{kv.Value}");
+                Console.WriteLine($"  Prior inferences by depth: {string.Join(", ", depthParts)}");
             }
         }
     }
@@ -798,11 +875,15 @@ internal class BenchmarkRunner
                 winnerSeat = g.WinnerSeat,
                 turns = g.Turns,
                 elapsedSeconds = Math.Round(g.Elapsed.TotalSeconds, 3),
-                priorsRequested = g.PriorsRequested,
-                priorsApplied = g.PriorsApplied,
-                priorStatesEvaluated = g.PriorStatesEvaluated,
-                priorsCalculated = g.PriorsCalculated != null
-                    ? g.PriorsCalculated.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
+                priorNodesRequested = g.PriorNodesRequested,
+                priorActionsApplied = g.PriorActionsApplied,
+                priorActionsRequested = g.PriorActionsRequested,
+                priorInferencesRequested = g.PriorInferencesRequested,
+                priorActionsPerDepth = g.PriorActionsPerDepth != null
+                    ? g.PriorActionsPerDepth.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
+                    : null,
+                priorInferencesPerDepth = g.PriorInferencesPerDepth != null
+                    ? g.PriorInferencesPerDepth.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
                     : null,
             }).ToArray(),
         };

@@ -8,6 +8,8 @@ beforehand in order to have the given player appear as player 1.
 
 from __future__ import annotations
 
+from enum import Enum
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -17,13 +19,37 @@ from .placement_tokenizer import PlacementTokenizer
 from .state_tokenizer import StateTokenizer
 
 
+class OutputMode(Enum):
+    """Controls the output head topology of the model.
+
+    * ``VALUE`` — single bucket head trained on win-probability targets.
+    * ``POLICY`` — single bucket head trained on visit-share targets.
+    * ``COMBINED`` — dual heads: one value bucket head and one policy
+      bucket head, trained simultaneously.
+    """
+
+    VALUE = "value"
+    """Single bucket head predicting win probability distribution."""
+
+    POLICY = "policy"
+    """Single bucket head predicting visit-share distribution."""
+
+    COMBINED = "combined"
+    """Dual heads: value bucket head + policy bucket head."""
+
+
+OUTPUT_MODES = tuple(m.value for m in OutputMode)
+"""Valid output mode strings for CLI / config validation."""
+
+
 class GimburTransformerConfig:
     d_model: int  # Embedding dimension
     n_heads: int  # Number of heads per layer
     n_layers: int  # Number of multi-head transformer layers
-    n_buckets: int  # Number of output value buckets
+    n_buckets: int  # Number of output value buckets (per head)
     ffn_hidden_mult: int  # Dimension multiplier in feed forward network in hidden layers
     dropout: float = 0.0
+    output_mode: str = "value"  # "value" | "policy" | "combined"
 
 
 def _make_model_config(
@@ -34,6 +60,7 @@ def _make_model_config(
     n_buckets: int,
     ffn_hidden_mult: int,
     dropout: float,
+    output_mode: str = "value",
 ) -> GimburTransformerConfig:
     cfg = GimburTransformerConfig()
     cfg.d_model = d_model
@@ -42,6 +69,7 @@ def _make_model_config(
     cfg.n_buckets = n_buckets
     cfg.ffn_hidden_mult = ffn_hidden_mult
     cfg.dropout = dropout
+    cfg.output_mode = output_mode
     return cfg
 
 
@@ -137,13 +165,22 @@ class GimburTransformer(nn.Module):
     """Neural network for evaluating Catan game states.
 
     Input:  tokenized state tensor (from tokenizer.tokenize_game).
-    Output: player 1 win probability
+    Output: bucket logits (value, policy, or both depending on output_mode).
+
+    When ``output_mode`` is ``"value"`` or ``"policy"``, the model has a
+    single ``bucket_head`` and ``forward()`` returns a tensor of shape
+    ``(batch, seq_len, n_buckets)``.
+
+    When ``output_mode`` is ``"combined"``, the model has two independent
+    heads (``value_head`` and ``policy_head``) and ``forward()`` returns a
+    dict ``{"value": Tensor, "policy": Tensor}`` with the same shape.
     """
 
     def __init__(self, game_cfg: GameConfig, model_cfg: GimburTransformerConfig) -> None:
         super().__init__()
         self.game_config = game_cfg
         self.model_config = model_cfg
+        self.output_mode = getattr(model_cfg, "output_mode", "value")
         assert model_cfg.d_model % model_cfg.n_heads == 0
 
         tok = StateTokenizer(game_cfg)
@@ -157,17 +194,27 @@ class GimburTransformer(nn.Module):
         )
         self.final_ln = nn.LayerNorm(model_cfg.d_model)
 
-        # Final bucketized output head
-        self.bucket_head = nn.Linear(model_cfg.d_model, model_cfg.n_buckets, bias=False)
+        # Output heads
+        if self.output_mode == "combined":
+            self.value_head = nn.Linear(model_cfg.d_model, model_cfg.n_buckets, bias=False)
+            self.policy_head = nn.Linear(model_cfg.d_model, model_cfg.n_buckets, bias=False)
+        else:
+            self.bucket_head = nn.Linear(model_cfg.d_model, model_cfg.n_buckets, bias=False)
 
-    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, token_ids: torch.Tensor
+    ) -> torch.Tensor | dict[str, torch.Tensor]:
         """Forward pass.
 
         Args:
-            x: Batch of tokenized game states, shape (batch, input_dim).
+            token_ids: Batch of tokenized game states, shape (batch, seq_len).
 
         Returns:
-            Win probabilities, shape (batch, win_chance_buckets).
+            For ``"value"`` or ``"policy"`` mode: logits tensor of shape
+            ``(batch, seq_len, n_buckets)``.
+
+            For ``"combined"`` mode: dict with keys ``"value"`` and
+            ``"policy"``, each a tensor of shape ``(batch, seq_len, n_buckets)``.
         """
         batch_size, seq_len = token_ids.shape
         positions = torch.arange(seq_len, device=token_ids.device).unsqueeze(0)  # [1, T]
@@ -178,25 +225,34 @@ class GimburTransformer(nn.Module):
         x = self.trf_blocks(x)
         x = self.final_ln(x)
 
-        # Only keep the last token for each batch
-        # [batch_size, emb_dimension]
-        # last_token = x[:, -1, :]
-
-        bucket_logits = self.bucket_head(x)
-        return bucket_logits
+        if self.output_mode == "combined":
+            return {
+                "value": self.value_head(x),
+                "policy": self.policy_head(x),
+            }
+        return self.bucket_head(x)
 
 
 class GimburPlacementTransformer(nn.Module):
     """Neural network for evaluating Catan placement actions.
 
     Input:  tokenized placement state + action (from PlacementTokenizer).
-    Output: win probability bucket logits for the action.
+    Output: bucket logits (value, policy, or both depending on output_mode).
+
+    When ``output_mode`` is ``"value"`` or ``"policy"``, the model has a
+    single ``bucket_head`` and ``forward()`` returns a tensor of shape
+    ``(batch, seq_len, n_buckets)``.
+
+    When ``output_mode`` is ``"combined"``, the model has two independent
+    heads (``value_head`` and ``policy_head``) and ``forward()`` returns a
+    dict ``{"value": Tensor, "policy": Tensor}`` with the same shape.
     """
 
     def __init__(self, game_cfg: GameConfig, model_cfg: GimburTransformerConfig) -> None:
         super().__init__()
         self.game_config = game_cfg
         self.model_config = model_cfg
+        self.output_mode = getattr(model_cfg, "output_mode", "value")
         assert model_cfg.d_model % model_cfg.n_heads == 0
 
         tok = PlacementTokenizer(game_cfg)
@@ -209,14 +265,27 @@ class GimburPlacementTransformer(nn.Module):
             *[TransformerBlock(model_cfg) for _ in range(model_cfg.n_layers)]
         )
         self.final_ln = nn.LayerNorm(model_cfg.d_model)
-        self.bucket_head = nn.Linear(model_cfg.d_model, model_cfg.n_buckets, bias=False)
 
-    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
+        # Output heads
+        if self.output_mode == "combined":
+            self.value_head = nn.Linear(model_cfg.d_model, model_cfg.n_buckets, bias=False)
+            self.policy_head = nn.Linear(model_cfg.d_model, model_cfg.n_buckets, bias=False)
+        else:
+            self.bucket_head = nn.Linear(model_cfg.d_model, model_cfg.n_buckets, bias=False)
+
+    def forward(
+        self, token_ids: torch.Tensor
+    ) -> torch.Tensor | dict[str, torch.Tensor]:
         batch_size, seq_len = token_ids.shape
         positions = torch.arange(seq_len, device=token_ids.device).unsqueeze(0)
         x = self.tok_embeddings(token_ids) + self.pos_embeddings(positions)
         x = self.embed_dropout(x)
         x = self.trf_blocks(x)
         x = self.final_ln(x)
-        bucket_logits = self.bucket_head(x)
-        return bucket_logits
+
+        if self.output_mode == "combined":
+            return {
+                "value": self.value_head(x),
+                "policy": self.policy_head(x),
+            }
+        return self.bucket_head(x)

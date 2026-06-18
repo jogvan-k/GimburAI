@@ -171,37 +171,48 @@ internal record StateRecord
     public bool ReachedTerminal { get; init; }
 
     /// <summary>
-    /// Number of prior requests sent to the NN inference server during this MCTS search.
+    /// Number of nodes for which a prior was requested during this MCTS search.
     /// </summary>
-    public int PriorsRequested { get; init; }
+    public int PriorNodesRequested { get; init; }
 
     /// <summary>
-    /// Number of individual action states covered by successfully applied priors.
+    /// Number of individual action states whose priors were successfully applied.
     /// </summary>
-    public int PriorsApplied { get; init; }
+    public int PriorActionsApplied { get; init; }
 
     /// <summary>
-    /// Number of individual states evaluated by the NN server during this MCTS search.
-    /// A single request may contain multiple states (one per action outcome).
+    /// Number of MCTS-level action states sent to the prior client during this MCTS search.
     /// </summary>
-    public int PriorStatesEvaluated { get; init; }
+    public int PriorActionsRequested { get; init; }
 
     /// <summary>
-    /// Per-depth count of prior states evaluated during this MCTS search.
-    /// Key is depth (0 = root), value is number of states evaluated at that depth.
+    /// Number of (state, action) inference pairs actually sent to the NN model during this MCTS search.
+    /// In placement mode this counts post-fan-out composite (settlement, road) pairs.
+    /// </summary>
+    public int PriorInferencesRequested { get; init; }
+
+    /// <summary>
+    /// Per-depth count of MCTS-level action states sent to the client during this MCTS search.
+    /// Key is depth (0 = root), value is number of action states at that depth.
     /// Null when no priors were used.
     /// </summary>
-    public Dictionary<int, int>? PriorStatesPerDepth { get; init; }
+    public Dictionary<int, int>? PriorActionsPerDepth { get; init; }
 
     /// <summary>
-    /// Number of nodes skipped by the ShouldRequestPrior pre-check during this MCTS search.
+    /// Per-depth count of model inference pairs during this MCTS search.
+    /// Null when no priors were used.
     /// </summary>
-    public int PriorsSkipped { get; init; }
+    public Dictionary<int, int>? PriorInferencesPerDepth { get; init; }
 
     /// <summary>
-    /// Number of prior states that could not be matched with their original state.
+    /// Number of nodes refused by the client's ShouldRequestPrior pre-check during this MCTS search.
     /// </summary>
-    public int PriorStatesNotFound { get; set; }
+    public int PriorNodesSkipped { get; init; }
+
+    /// <summary>
+    /// Number of prior responses returned for nodes the search no longer tracks.
+    /// </summary>
+    public int PriorResponsesOrphaned { get; set; }
 }
 
 /// <summary>
@@ -261,30 +272,41 @@ internal record PlacementStateRecord
     public int ElapsedMs { get; init; }
 
     /// <summary>
-    /// Number of prior requests sent to the NN inference server during this MCTS search.
+    /// Number of nodes for which a prior was requested during this MCTS search.
     /// </summary>
-    public int PriorsRequested { get; init; }
+    public int PriorNodesRequested { get; init; }
 
     /// <summary>
-    /// Number of individual action states covered by successfully applied priors.
+    /// Number of individual action states whose priors were successfully applied.
     /// </summary>
-    public int PriorsApplied { get; init; }
+    public int PriorActionsApplied { get; init; }
 
     /// <summary>
-    /// Number of individual states evaluated by the NN server during this MCTS search.
+    /// Number of MCTS-level action states sent to the prior client during this MCTS search.
     /// </summary>
-    public int PriorStatesEvaluated { get; init; }
+    public int PriorActionsRequested { get; init; }
 
     /// <summary>
-    /// Per-depth count of prior states evaluated during this MCTS search.
+    /// Number of (state, action) inference pairs actually sent to the NN model during this MCTS search.
+    /// </summary>
+    public int PriorInferencesRequested { get; init; }
+
+    /// <summary>
+    /// Per-depth count of MCTS-level action states sent to the client during this MCTS search.
     /// Null when no priors were used.
     /// </summary>
-    public Dictionary<int, int>? PriorStatesPerDepth { get; init; }
+    public Dictionary<int, int>? PriorActionsPerDepth { get; init; }
 
     /// <summary>
-    /// Number of nodes skipped by the ShouldRequestPrior pre-check during this MCTS search.
+    /// Per-depth count of model inference pairs during this MCTS search.
+    /// Null when no priors were used.
     /// </summary>
-    public int PriorsSkipped { get; init; }
+    public Dictionary<int, int>? PriorInferencesPerDepth { get; init; }
+
+    /// <summary>
+    /// Number of nodes refused by the client's ShouldRequestPrior pre-check during this MCTS search.
+    /// </summary>
+    public int PriorNodesSkipped { get; init; }
 
     /// <summary>
     /// All candidate composite actions with per-action MCTS statistics.
@@ -292,9 +314,9 @@ internal record PlacementStateRecord
     public required List<PlacementActionRecord> Actions { get; init; }
 
     /// <summary>
-    /// Number of prior states that could not be matched with their original state.
+    /// Number of prior responses returned for nodes the search no longer tracks.
     /// </summary>
-    public int PriorStatesNotFound { get; set; }
+    public int PriorResponsesOrphaned { get; set; }
 }
 
 /// <summary>
@@ -315,11 +337,17 @@ internal record GameResult
     public required List<StateRecord> States { get; init; }
 
     /// <summary>
-    /// Per-depth count of prior states evaluated across all MCTS decisions in this game.
-    /// Key is depth (0 = root), value is total number of states evaluated at that depth.
+    /// Per-depth count of MCTS-level action states sent to the client across all MCTS decisions in this game.
+    /// Key is depth (0 = root), value is total number of action states at that depth.
     /// Null when no priors were used.
     /// </summary>
-    public Dictionary<int, int>? PriorsCalculated { get; init; }
+    public Dictionary<int, int>? PriorActionsPerDepth { get; init; }
+
+    /// <summary>
+    /// Per-depth count of model inference pairs across all MCTS decisions in this game.
+    /// Null when no priors were used.
+    /// </summary>
+    public Dictionary<int, int>? PriorInferencesPerDepth { get; init; }
 }
 
 /// <summary>
@@ -339,10 +367,16 @@ internal record PlacementGameResult
     public required List<PlacementStateRecord> States { get; init; }
 
     /// <summary>
-    /// Per-depth count of prior states evaluated across all MCTS decisions in this game.
+    /// Per-depth count of MCTS-level action states sent to the client across all MCTS decisions in this game.
     /// Null when no priors were used.
     /// </summary>
-    public Dictionary<int, int>? PriorsCalculated { get; init; }
+    public Dictionary<int, int>? PriorActionsPerDepth { get; init; }
+
+    /// <summary>
+    /// Per-depth count of model inference pairs across all MCTS decisions in this game.
+    /// Null when no priors were used.
+    /// </summary>
+    public Dictionary<int, int>? PriorInferencesPerDepth { get; init; }
 }
 
 /// <summary>
@@ -841,14 +875,18 @@ internal class SimulationRunner
                     BestActionWins = bestActionWins,
                     BestActionRollouts = bestActionRollouts,
                     ReachedTerminal = logInfo.reachedTerminal,
-                    PriorsRequested = logInfo.priorStatesRequested,
-                    PriorStatesNotFound = logInfo.stateNotFound,
-                    PriorsApplied = logInfo.priorsApplied,
-                    PriorStatesEvaluated = logInfo.priorStatesEvaluated,
-                    PriorStatesPerDepth = logInfo.priorStatesPerDepth is { Count: > 0 }
-                        ? new Dictionary<int, int>(logInfo.priorStatesPerDepth)
+                    PriorNodesRequested = logInfo.priorNodesRequested,
+                    PriorResponsesOrphaned = logInfo.priorResponsesOrphaned,
+                    PriorActionsApplied = logInfo.priorActionsApplied,
+                    PriorActionsRequested = logInfo.priorActionsRequested,
+                    PriorInferencesRequested = logInfo.priorInferencesRequested,
+                    PriorActionsPerDepth = logInfo.priorActionsPerDepth is { Count: > 0 }
+                        ? new Dictionary<int, int>(logInfo.priorActionsPerDepth)
                         : null,
-                    PriorsSkipped = logInfo.priorsSkipped,
+                    PriorInferencesPerDepth = logInfo.priorInferencesPerDepth is { Count: > 0 }
+                        ? new Dictionary<int, int>(logInfo.priorInferencesPerDepth)
+                        : null,
+                    PriorNodesSkipped = logInfo.priorNodesSkipped,
                 });
 
                 // Apply the best action from MCTS and advance the tree.
@@ -878,15 +916,27 @@ internal class SimulationRunner
         }
 
         // Aggregate per-depth prior stats across all MCTS decisions.
-        Dictionary<int, int>? priorsCalculated = null;
+        Dictionary<int, int>? priorActionsPerDepth = null;
+        Dictionary<int, int>? priorInferencesPerDepth = null;
         foreach (var s in states)
         {
-            if (s.PriorStatesPerDepth is not { Count: > 0 }) continue;
-            priorsCalculated ??= new Dictionary<int, int>();
-            foreach (var (depth, count) in s.PriorStatesPerDepth)
+            if (s.PriorActionsPerDepth is { Count: > 0 })
             {
-                priorsCalculated.TryGetValue(depth, out var existing);
-                priorsCalculated[depth] = existing + count;
+                priorActionsPerDepth ??= new Dictionary<int, int>();
+                foreach (var (depth, count) in s.PriorActionsPerDepth)
+                {
+                    priorActionsPerDepth.TryGetValue(depth, out var existing);
+                    priorActionsPerDepth[depth] = existing + count;
+                }
+            }
+            if (s.PriorInferencesPerDepth is { Count: > 0 })
+            {
+                priorInferencesPerDepth ??= new Dictionary<int, int>();
+                foreach (var (depth, count) in s.PriorInferencesPerDepth)
+                {
+                    priorInferencesPerDepth.TryGetValue(depth, out var existing);
+                    priorInferencesPerDepth[depth] = existing + count;
+                }
             }
         }
 
@@ -903,7 +953,8 @@ internal class SimulationRunner
             ActionRolloutLimit = _options.ActionRolloutLimit,
             BoardSerialized = boardSerialized,
             States = states,
-            PriorsCalculated = priorsCalculated,
+            PriorActionsPerDepth = priorActionsPerDepth,
+            PriorInferencesPerDepth = priorInferencesPerDepth,
         };
     }
 
@@ -965,12 +1016,14 @@ internal class SimulationRunner
 
                 var compositeActions = new List<PlacementActionRecord>();
                 var totalSimulations = 0;
-                var totalPriorsRequested = 0;
-                var totalPriorsApplied = 0;
-                var totalPriorStatesEvaluated = 0;
-                var totalPriorsSkipped = 0;
-                var totalPriorStatesNotFound = 0;
-                Dictionary<int, int>? totalPriorStatesPerDepth = null;
+                var totalPriorNodesRequested = 0;
+                var totalPriorActionsApplied = 0;
+                var totalPriorActionsRequested = 0;
+                var totalPriorInferencesRequested = 0;
+                var totalPriorNodesSkipped = 0;
+                var totalPriorResponsesOrphaned = 0;
+                Dictionary<int, int>? totalPriorActionsPerDepth = null;
+                Dictionary<int, int>? totalPriorInferencesPerDepth = null;
 
                 // Create a per-action MCTS config: simulation-limited, no time limit.
                 var perActionMctsConfig = new Kjarni.MCTSConfig(
@@ -1012,18 +1065,28 @@ internal class SimulationRunner
 
                         // Accumulate prior stats from this per-action MCTS run.
                         var actionLogInfo = perActionMcts.LatestLogInfo();
-                        totalPriorsRequested += actionLogInfo.priorStatesRequested;
-                        totalPriorsApplied += actionLogInfo.priorsApplied;
-                        totalPriorStatesEvaluated += actionLogInfo.priorStatesEvaluated;
-                        totalPriorsSkipped += actionLogInfo.priorsSkipped;
-                        totalPriorStatesNotFound += actionLogInfo.stateNotFound;
-                        if (actionLogInfo.priorStatesPerDepth is { Count: > 0 })
+                        totalPriorNodesRequested += actionLogInfo.priorNodesRequested;
+                        totalPriorActionsApplied += actionLogInfo.priorActionsApplied;
+                        totalPriorActionsRequested += actionLogInfo.priorActionsRequested;
+                        totalPriorInferencesRequested += actionLogInfo.priorInferencesRequested;
+                        totalPriorNodesSkipped += actionLogInfo.priorNodesSkipped;
+                        totalPriorResponsesOrphaned += actionLogInfo.priorResponsesOrphaned;
+                        if (actionLogInfo.priorActionsPerDepth is { Count: > 0 })
                         {
-                            totalPriorStatesPerDepth ??= new Dictionary<int, int>();
-                            foreach (var (depth, count) in actionLogInfo.priorStatesPerDepth)
+                            totalPriorActionsPerDepth ??= new Dictionary<int, int>();
+                            foreach (var (depth, count) in actionLogInfo.priorActionsPerDepth)
                             {
-                                totalPriorStatesPerDepth.TryGetValue(depth, out var existing);
-                                totalPriorStatesPerDepth[depth] = existing + count;
+                                totalPriorActionsPerDepth.TryGetValue(depth, out var existing);
+                                totalPriorActionsPerDepth[depth] = existing + count;
+                            }
+                        }
+                        if (actionLogInfo.priorInferencesPerDepth is { Count: > 0 })
+                        {
+                            totalPriorInferencesPerDepth ??= new Dictionary<int, int>();
+                            foreach (var (depth, count) in actionLogInfo.priorInferencesPerDepth)
+                            {
+                                totalPriorInferencesPerDepth.TryGetValue(depth, out var existing);
+                                totalPriorInferencesPerDepth[depth] = existing + count;
                             }
                         }
 
@@ -1062,12 +1125,14 @@ internal class SimulationRunner
                     SerializedState = serializedState,
                     Simulations = totalSimulations,
                     ElapsedMs = (int)timer.Elapsed.TotalMilliseconds,
-                    PriorsRequested = totalPriorsRequested,
-                    PriorsApplied = totalPriorsApplied,
-                    PriorStatesEvaluated = totalPriorStatesEvaluated,
-                    PriorStatesNotFound = totalPriorStatesNotFound,
-                    PriorStatesPerDepth = totalPriorStatesPerDepth,
-                    PriorsSkipped = totalPriorsSkipped,
+                    PriorNodesRequested = totalPriorNodesRequested,
+                    PriorActionsApplied = totalPriorActionsApplied,
+                    PriorActionsRequested = totalPriorActionsRequested,
+                    PriorInferencesRequested = totalPriorInferencesRequested,
+                    PriorResponsesOrphaned = totalPriorResponsesOrphaned,
+                    PriorActionsPerDepth = totalPriorActionsPerDepth,
+                    PriorInferencesPerDepth = totalPriorInferencesPerDepth,
+                    PriorNodesSkipped = totalPriorNodesSkipped,
                     Actions = compositeActions,
                 });
 
@@ -1144,14 +1209,18 @@ internal class SimulationRunner
                     SerializedState = serializedState,
                     Simulations = logInfo.simulations,
                     ElapsedMs = (int)logInfo.elapsedTime.TotalMilliseconds,
-                    PriorsRequested = logInfo.priorStatesRequested,
-                    PriorsApplied = logInfo.priorsApplied,
-                    PriorStatesEvaluated = logInfo.priorStatesEvaluated,
-                    PriorStatesNotFound = logInfo.stateNotFound,
-                    PriorStatesPerDepth = logInfo.priorStatesPerDepth is { Count: > 0 }
-                        ? new Dictionary<int, int>(logInfo.priorStatesPerDepth)
+                    PriorNodesRequested = logInfo.priorNodesRequested,
+                    PriorActionsApplied = logInfo.priorActionsApplied,
+                    PriorActionsRequested = logInfo.priorActionsRequested,
+                    PriorInferencesRequested = logInfo.priorInferencesRequested,
+                    PriorResponsesOrphaned = logInfo.priorResponsesOrphaned,
+                    PriorActionsPerDepth = logInfo.priorActionsPerDepth is { Count: > 0 }
+                        ? new Dictionary<int, int>(logInfo.priorActionsPerDepth)
                         : null,
-                    PriorsSkipped = logInfo.priorsSkipped,
+                    PriorInferencesPerDepth = logInfo.priorInferencesPerDepth is { Count: > 0 }
+                        ? new Dictionary<int, int>(logInfo.priorInferencesPerDepth)
+                        : null,
+                    PriorNodesSkipped = logInfo.priorNodesSkipped,
                     Actions = compositeActions,
                 });
 
@@ -1193,15 +1262,27 @@ internal class SimulationRunner
         }
 
         // Aggregate per-depth prior stats across all MCTS decisions.
-        Dictionary<int, int>? priorsCalculated = null;
+        Dictionary<int, int>? priorActionsPerDepth = null;
+        Dictionary<int, int>? priorInferencesPerDepth = null;
         foreach (var s in placementStates)
         {
-            if (s.PriorStatesPerDepth is not { Count: > 0 }) continue;
-            priorsCalculated ??= new Dictionary<int, int>();
-            foreach (var (depth, count) in s.PriorStatesPerDepth)
+            if (s.PriorActionsPerDepth is { Count: > 0 })
             {
-                priorsCalculated.TryGetValue(depth, out var existing);
-                priorsCalculated[depth] = existing + count;
+                priorActionsPerDepth ??= new Dictionary<int, int>();
+                foreach (var (depth, count) in s.PriorActionsPerDepth)
+                {
+                    priorActionsPerDepth.TryGetValue(depth, out var existing);
+                    priorActionsPerDepth[depth] = existing + count;
+                }
+            }
+            if (s.PriorInferencesPerDepth is { Count: > 0 })
+            {
+                priorInferencesPerDepth ??= new Dictionary<int, int>();
+                foreach (var (depth, count) in s.PriorInferencesPerDepth)
+                {
+                    priorInferencesPerDepth.TryGetValue(depth, out var existing);
+                    priorInferencesPerDepth[depth] = existing + count;
+                }
             }
         }
 
@@ -1217,7 +1298,8 @@ internal class SimulationRunner
             SimulationsPerAction = _options.SimulationsPerAction,
             BoardSerialized = boardSerialized,
             States = placementStates,
-            PriorsCalculated = priorsCalculated,
+            PriorActionsPerDepth = priorActionsPerDepth,
+            PriorInferencesPerDepth = priorInferencesPerDepth,
         };
     }
 
@@ -1273,30 +1355,35 @@ internal class SimulationRunner
             }
 
             // Prior stats (only shown when prior evaluation was used).
-            var totalPriorsRequested = stats.Games
+            var totalPriorNodesRequested = stats.Games
                 .SelectMany(g => g.States)
-                .Sum(s => s.PriorsRequested);
-            if (totalPriorsRequested > 0)
+                .Sum(s => s.PriorNodesRequested);
+            if (totalPriorNodesRequested > 0)
             {
-                var totalPriorsApplied = stats.Games
+                var totalPriorActionsApplied = stats.Games
                     .SelectMany(g => g.States)
-                    .Sum(s => s.PriorsApplied);
-                var totalPriorStatesEvaluated = stats.Games
+                    .Sum(s => s.PriorActionsApplied);
+                var totalPriorActionsRequested = stats.Games
                     .SelectMany(g => g.States)
-                    .Sum(s => s.PriorStatesEvaluated);
-                var avgRequested = (double)totalPriorsRequested / mctsStates;
-                var avgApplied = (double)totalPriorsApplied / mctsStates;
-                var avgStatesEvaluated = (double)totalPriorStatesEvaluated / mctsStates;
-                Console.WriteLine($"Priors requested: {totalPriorsRequested} (avg {avgRequested:F1}/decision)");
-                Console.WriteLine($"Priors applied: {totalPriorsApplied} (avg {avgApplied:F1}/decision)");
-                Console.WriteLine($"Prior states evaluated: {totalPriorStatesEvaluated} (avg {avgStatesEvaluated:F1}/decision)");
+                    .Sum(s => s.PriorActionsRequested);
+                var totalPriorInferencesRequested = stats.Games
+                    .SelectMany(g => g.States)
+                    .Sum(s => s.PriorInferencesRequested);
+                var avgNodesRequested = (double)totalPriorNodesRequested / mctsStates;
+                var avgActionsApplied = (double)totalPriorActionsApplied / mctsStates;
+                var avgActionsRequested = (double)totalPriorActionsRequested / mctsStates;
+                var avgInferencesRequested = (double)totalPriorInferencesRequested / mctsStates;
+                Console.WriteLine($"Prior nodes requested: {totalPriorNodesRequested} (avg {avgNodesRequested:F1}/decision)");
+                Console.WriteLine($"Prior actions applied: {totalPriorActionsApplied} (avg {avgActionsApplied:F1}/decision)");
+                Console.WriteLine($"Prior actions requested: {totalPriorActionsRequested} (avg {avgActionsRequested:F1}/decision)");
+                Console.WriteLine($"Prior inferences requested: {totalPriorInferencesRequested} (avg {avgInferencesRequested:F1}/decision)");
 
-                // Per-depth breakdown of prior states evaluated.
+                // Per-depth breakdown of action states sent to the NN.
                 var aggregatedDepths = new SortedDictionary<int, int>();
                 foreach (var game in stats.Games)
                 {
-                    if (game.PriorsCalculated is not { Count: > 0 }) continue;
-                    foreach (var (depth, count) in game.PriorsCalculated)
+                    if (game.PriorActionsPerDepth is not { Count: > 0 }) continue;
+                    foreach (var (depth, count) in game.PriorActionsPerDepth)
                     {
                         aggregatedDepths.TryGetValue(depth, out var existing);
                         aggregatedDepths[depth] = existing + count;
@@ -1306,7 +1393,24 @@ internal class SimulationRunner
                 if (aggregatedDepths.Count > 0)
                 {
                     var depthParts = aggregatedDepths.Select(kv => $"{kv.Key}:{kv.Value}");
-                    Console.WriteLine($"Prior states by depth: {string.Join(", ", depthParts)}");
+                    Console.WriteLine($"Prior actions by depth: {string.Join(", ", depthParts)}");
+                }
+
+                var aggregatedInferenceDepths = new SortedDictionary<int, int>();
+                foreach (var game in stats.Games)
+                {
+                    if (game.PriorInferencesPerDepth is not { Count: > 0 }) continue;
+                    foreach (var (depth, count) in game.PriorInferencesPerDepth)
+                    {
+                        aggregatedInferenceDepths.TryGetValue(depth, out var existing);
+                        aggregatedInferenceDepths[depth] = existing + count;
+                    }
+                }
+
+                if (aggregatedInferenceDepths.Count > 0)
+                {
+                    var depthParts = aggregatedInferenceDepths.Select(kv => $"{kv.Key}:{kv.Value}");
+                    Console.WriteLine($"Prior inferences by depth: {string.Join(", ", depthParts)}");
                 }
             }
         }
@@ -1427,16 +1531,20 @@ internal class SimulationRunner
                 s.BestActionWins,
                 s.BestActionRollouts,
                 s.ReachedTerminal,
-                s.PriorsRequested,
-                s.PriorsApplied,
-                s.PriorStatesEvaluated,
-                s.PriorsSkipped,
+                s.PriorNodesRequested,
+                s.PriorActionsApplied,
+                s.PriorActionsRequested,
+                s.PriorInferencesRequested,
+                s.PriorNodesSkipped,
                 permutations = symmetryPerms.Length > 0
                     ? symmetryPerms.Select(p => BoardSymmetry.PermuteState(s.SerializedState, p)).ToArray()
                     : Array.Empty<string>(),
             }).ToArray(),
-            priorsCalculated = game.PriorsCalculated != null
-                ? game.PriorsCalculated.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
+            priorActionsPerDepth = game.PriorActionsPerDepth != null
+                ? game.PriorActionsPerDepth.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
+                : null,
+            priorInferencesPerDepth = game.PriorInferencesPerDepth != null
+                ? game.PriorInferencesPerDepth.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
                 : null,
         };
     }
@@ -1486,10 +1594,11 @@ internal class SimulationRunner
                 s.SerializedState,
                 s.Simulations,
                 s.ElapsedMs,
-                s.PriorsRequested,
-                s.PriorsApplied,
-                s.PriorStatesEvaluated,
-                s.PriorsSkipped,
+                s.PriorNodesRequested,
+                s.PriorActionsApplied,
+                s.PriorActionsRequested,
+                s.PriorInferencesRequested,
+                s.PriorNodesSkipped,
                 actions = s.Actions.Select(a => new
                 {
                     a.Action,
@@ -1506,8 +1615,11 @@ internal class SimulationRunner
                     ? symmetryPerms.Select(p => BoardSymmetry.PermutePlacementState(s.SerializedState, p)).ToArray()
                     : Array.Empty<string>(),
             }).ToArray(),
-            priorsCalculated = game.PriorsCalculated != null
-                ? game.PriorsCalculated.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
+            priorActionsPerDepth = game.PriorActionsPerDepth != null
+                ? game.PriorActionsPerDepth.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
+                : null,
+            priorInferencesPerDepth = game.PriorInferencesPerDepth != null
+                ? game.PriorInferencesPerDepth.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
                 : null,
         };
     }

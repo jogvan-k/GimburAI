@@ -377,22 +377,42 @@ let computePriorPolicy (winProbs: float[]) (layout: int[]) (outcomeWeights: int[
 
     rawPriors
 
-/// Stats tracked during prior request/collection in the search loop.
+/// Counts collected during prior request/application in the search loop.
+///
+/// Terminology:
+///   * "node" = an MCTS tree node where a prior was considered.
+///   * "action" = an MCTS-level child action (one per legal action enumerated
+///     by the engine; for stochastic actions, one per outcome).
+///   * "inference" = an individual (state, action) pair actually evaluated by
+///     the model. In state mode this equals the action count; in placement
+///     mode each MCTS child (settlement) fans out into multiple composite
+///     (settlement, road) inferences, so inferences > actions.
 type PriorStats =
   struct
-    val mutable priorStatesRequested: int
-    /// Number of tree nodes that had prior policies successfully applied.
+    /// Number of nodes for which a prior request was issued to the client.
+    val mutable priorNodesRequested: int
+    /// Number of MCTS-level action states sent to the client across all
+    /// requested nodes.
+    val mutable priorActionsRequested: int
+    /// Number of (state, action) inference pairs actually sent to the model.
+    /// Equals priorActionsRequested in state mode; in placement mode it counts
+    /// the post-fan-out composite (settlement, road) pairs.
+    val mutable priorInferencesRequested: int
+    /// Number of nodes whose prior policy was successfully attached.
     val mutable priorNodesApplied: int
-    /// Number of individual action states covered by successfully applied priors.
+    /// Number of action states whose prior probabilities were applied.
     val mutable priorActionsApplied: int
-    val mutable priorActionsEvaluated: int
-    /// Per-depth count of prior states evaluated (depth → state count).
-    val mutable priorStatesPerDepth: Dictionary<int, int>
+    /// Per-depth count of MCTS-level action states sent to the client (depth → count).
+    val mutable priorActionsPerDepth: Dictionary<int, int>
+    /// Per-depth count of model inference pairs (depth → count). Differs from
+    /// priorActionsPerDepth in placement mode where each MCTS child fans out.
+    val mutable priorInferencesPerDepth: Dictionary<int, int>
+    /// Number of nodes refused by the client's ShouldRequestPrior pre-check.
+    val mutable priorNodesSkipped: int
+    /// Number of responses returned for nodes the search no longer tracks.
+    val mutable priorResponsesOrphaned: int
+    /// Number of selection paths that hit the maxPriorDepth horizon.
     val mutable horizonSkips: int
-    /// Number of nodes skipped by the ShouldRequestPrior pre-check.
-    val mutable priorsSkipped: int
-    /// Number of states not found when trying to apply prior response
-    val mutable stateNotFound: int
   end
 
 /// Walk the selection path bottom-up, replacing actions with Terminal when
@@ -464,7 +484,8 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
         | None -> None
 
     let mutable priorStats = PriorStats()
-    priorStats.priorStatesPerDepth <- Dictionary<int, int>()
+    priorStats.priorActionsPerDepth <- Dictionary<int, int>()
+    priorStats.priorInferencesPerDepth <- Dictionary<int, int>()
 
     /// Fire a prior request for the given node (non-blocking).
     /// Skips if the node already has priors or is already registered
@@ -474,20 +495,33 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
         | Some client, Some nodeReg, Some layoutReg ->
             if depth <= maxPriorDepth && not (Array.isEmpty node.Actions) && node.Priors.IsNone && not (nodeReg.ContainsKey(node.NodeId)) then
                 if not (client.ShouldRequestPrior(node.State)) then
-                    priorStats.priorsSkipped <- priorStats.priorsSkipped + 1
+                    priorStats.priorNodesSkipped <- priorStats.priorNodesSkipped + 1
                 else
                     let (actionStates, layout, outcomeWeights) = collectActionStates node
                     if actionStates.Length > 0 then
                         nodeReg.[node.NodeId] <- node
                         layoutReg.[node.NodeId] <- (layout, outcomeWeights)
-                        client.RequestPrior(node.NodeId, node.State, actionStates, int node.State.PlayerTurn + 1, depth)
-                        priorStats.priorStatesRequested <- priorStats.priorStatesRequested + 1
-                        priorStats.priorActionsEvaluated <- priorStats.priorActionsEvaluated + actionStates.Length
-                        let count =
-                            match priorStats.priorStatesPerDepth.TryGetValue(depth) with
-                            | true, v -> v
-                            | _ -> 0
-                        priorStats.priorStatesPerDepth.[depth] <- count + actionStates.Length
+                        let inferenceCount = client.RequestPrior(node.NodeId, node.State, actionStates, int node.State.PlayerTurn + 1, depth)
+                        if inferenceCount > 0 then
+                            priorStats.priorNodesRequested <- priorStats.priorNodesRequested + 1
+                            priorStats.priorActionsRequested <- priorStats.priorActionsRequested + actionStates.Length
+                            priorStats.priorInferencesRequested <- priorStats.priorInferencesRequested + inferenceCount
+                            let aCount =
+                                match priorStats.priorActionsPerDepth.TryGetValue(depth) with
+                                | true, v -> v
+                                | _ -> 0
+                            priorStats.priorActionsPerDepth.[depth] <- aCount + actionStates.Length
+                            let iCount =
+                                match priorStats.priorInferencesPerDepth.TryGetValue(depth) with
+                                | true, v -> v
+                                | _ -> 0
+                            priorStats.priorInferencesPerDepth.[depth] <- iCount + inferenceCount
+                        else
+                            // Client declined to send (e.g. placement-mode rejection).
+                            // Roll back the registry insertions and count as a skip.
+                            nodeReg.Remove(node.NodeId) |> ignore
+                            layoutReg.Remove(node.NodeId) |> ignore
+                            priorStats.priorNodesSkipped <- priorStats.priorNodesSkipped + 1
         | _ -> ()
 
     /// Collect completed prior responses and apply them to tree nodes.
@@ -511,7 +545,7 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                     | _ -> ()
                 | _ ->
                     // Stale response (node no longer in registry) — discard
-                    priorStats.stateNotFound <- priorStats.stateNotFound + 1
+                    priorStats.priorResponsesOrphaned <- priorStats.priorResponsesOrphaned + 1
                     ()
         | _ -> ()
 
@@ -614,5 +648,14 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
     // Final collection: apply any priors that arrived during the last
     // iterations of the search loop, before the caller flushes.
     collectPriors ()
+
+    // Drop this search's pending responses from the shared client
+    // mailbox. Responses for other concurrent searches are preserved.
+    // The server-side queue is never cleared (it is shared too).
+    match priorClient, nodeRegistry with
+    | Some client, Some nodeReg ->
+        let knownIds = HashSet<int64>(nodeReg.Keys) :> IReadOnlySet<int64>
+        client.Flush(knownIds)
+    | _ -> ()
 
     (extractBestPath root |> List.toArray, priorStats)

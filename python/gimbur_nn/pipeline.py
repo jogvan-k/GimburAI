@@ -67,6 +67,7 @@ class TrainConfig:
     loss_sigma: float = 2.0
     resume_from_previous: bool = True
     target: str = "winrate"
+    output_mode: str = "value"
 
 
 @dataclass
@@ -106,6 +107,25 @@ class BenchmarkConfig:
     games: int = 100
     ai: list[str] = field(default_factory=lambda: ["nn", "greedy"])
     phase: str = "both"  # "placement", "combined", or "both"
+    search_time_ms: int | None = None
+    server_prior_mode: str | None = None
+    server_max_prior_depth: int | None = None
+
+
+@dataclass
+class BaselineBenchmarkConfig:
+    """A reference benchmark used as a horizontal line on the progress chart.
+
+    Unlike :class:`BenchmarkConfig`, baselines are run once (not per
+    generation) and cached under ``{results_dir}/baselines/{name}.json``.
+    They typically pit a non-NN strategy (e.g. ``mcts``, ``server-mcts``)
+    against the same opponent as one of the per-generation benchmarks, so
+    the chart shows how the trained NN compares to a no-prior baseline.
+    """
+
+    name: str = "mcts-vs-greedy"
+    games: int = 200
+    ai: list[str] = field(default_factory=lambda: ["mcts", "greedy"])
     search_time_ms: int | None = None
     server_prior_mode: str | None = None
     server_max_prior_depth: int | None = None
@@ -152,6 +172,7 @@ class PipelineConfig:
             BenchmarkConfig(name="nn-vs-random", games=100, ai=["nn", "random"]),
         ]
     )
+    baselines: list[BaselineBenchmarkConfig] = field(default_factory=list)
 
 
 def _strip_json_comments(text: str) -> str:
@@ -219,6 +240,8 @@ def _load_config(path: Path) -> PipelineConfig:
         cfg.gimbur_server = _load_section(GimburServerConfig, raw["gimburServer"])
     if "benchmarks" in raw:
         cfg.benchmarks = [_load_section(BenchmarkConfig, b) for b in raw["benchmarks"]]
+    if "baselines" in raw:
+        cfg.baselines = [_load_section(BaselineBenchmarkConfig, b) for b in raw["baselines"]]
 
     return cfg
 
@@ -285,6 +308,11 @@ def _model_path(cfg: PipelineConfig, gen: int, model_type: str | None = None) ->
 
 def _results_path(cfg: PipelineConfig, gen: int, name: str) -> Path:
     return Path(cfg.results_dir) / f"gen{gen}" / f"{name}.json"
+
+
+def _baseline_path(cfg: PipelineConfig, name: str) -> Path:
+    """Path for a cached baseline benchmark result (run once, not per-gen)."""
+    return Path(cfg.results_dir) / "baselines" / f"{name}.json"
 
 
 def _checkpoint_path(cfg: PipelineConfig, gen: int, model_type: str | None = None) -> Path:
@@ -776,6 +804,8 @@ _SERVER_AI_KINDS = frozenset({
     "server-mcts-nn",
     "nn-mcts-placement",
     "nn-mcts-placement-random",
+    "mcts-placement",
+    "mcts-placement-random",
 })
 
 
@@ -987,6 +1017,7 @@ def _step_train(
         "loss": tr.loss,
         "lossSigma": tr.loss_sigma,
         "target": tr.target,
+        "outputMode": tr.output_mode,
     }
 
     # Enable per-epoch checkpointing if configured.
@@ -1108,6 +1139,103 @@ def _step_benchmark(
     return gen_results
 
 
+def _step_baselines(
+    cfg: PipelineConfig,
+    project_root: Path,
+    gimbur_server: _GimburServerProcess | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Run any configured baseline benchmarks once, caching results.
+
+    Baselines are reference matchups (e.g. ``mcts vs greedy``) used as
+    horizontal lines on the progress chart. Each baseline runs a single
+    fixed number of games and the result is cached at
+    ``{results_dir}/baselines/{name}.json``; on subsequent pipeline runs
+    the cached file is loaded and the benchmark is skipped.
+
+    Returns ``{baseline_name: result_dict}`` for every configured baseline,
+    populated from cache where available.
+    """
+    results: dict[str, dict[str, Any]] = {}
+    if not cfg.baselines:
+        return results
+
+    # Determine which baselines need to run vs which are cached.
+    pending: list[BaselineBenchmarkConfig] = []
+    for bench in cfg.baselines:
+        out_path = _baseline_path(cfg, bench.name)
+        if out_path.is_file():
+            results[bench.name] = json.loads(out_path.read_text())
+            print(f"  Baseline '{bench.name}': cached, skipping.")
+        else:
+            pending.append(bench)
+
+    if not pending:
+        return results
+
+    # Start Gimbur.Server if any pending baseline needs it.
+    started_game_server = False
+    if gimbur_server is not None and any(
+        ai in _SERVER_AI_KINDS for bench in pending for ai in bench.ai
+    ):
+        gimbur_server.start(
+            gimbur_server_cfg=cfg.gimbur_server,
+            cwd=project_root,
+        )
+        started_game_server = True
+
+    try:
+        for bench in pending:
+            out_path = _baseline_path(cfg, bench.name)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+
+            bench_config: dict[str, Any] = {
+                "games": bench.games,
+                "ai": bench.ai,
+                "mapConfig": cfg.map_config,
+                "output": str(out_path),
+                "verbosity": "quiet",
+            }
+            if cfg.seed is not None:
+                bench_config["seed"] = cfg.seed
+            if bench.search_time_ms is not None:
+                bench_config["searchTimeMs"] = bench.search_time_ms
+            if any(ai in _SERVER_AI_KINDS for ai in bench.ai):
+                gs = cfg.gimbur_server
+                bench_config["serverUrl"] = f"http://{gs.host}:{gs.port}"
+            if bench.server_prior_mode is not None:
+                bench_config["serverPriorMode"] = bench.server_prior_mode
+            if bench.server_max_prior_depth is not None:
+                bench_config["serverMaxPriorDepth"] = bench.server_max_prior_depth
+
+            config_path = _write_config(cfg, f"baseline_{bench.name}", bench_config)
+
+            args = [
+                "dotnet",
+                "run",
+                "--project",
+                cfg.dotnet_project,
+                "--",
+                "benchmark",
+                "--config",
+                str(config_path),
+            ]
+
+            _run(
+                args,
+                label=f"Baseline '{bench.name}' ({bench.games} games)",
+                cwd=project_root,
+            )
+
+            if out_path.exists():
+                results[bench.name] = json.loads(out_path.read_text())
+
+    finally:
+        if started_game_server and gimbur_server is not None:
+            gimbur_server.stop()
+
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Results tracking
 # ---------------------------------------------------------------------------
@@ -1188,6 +1316,14 @@ def _save_progress_chart(cfg: PipelineConfig, all_results: dict[int, dict[str, A
     as separate series on the same chart.  The file is overwritten after
     every benchmark phase so it always reflects the latest state.
 
+    Also overlays:
+
+    * One dashed horizontal line per distinct player count, marking the
+      equal-play baseline ``100 / player_count`` (e.g. 50% for 2 players).
+    * One dashed horizontal line per configured baseline benchmark
+      (loaded from ``{results_dir}/baselines/*.json``), marking how a
+      reference no-prior strategy fares against the same opponent.
+
     Requires ``matplotlib`` (optional ``pipeline`` dependency).  If not
     installed, silently skips.
     """
@@ -1230,6 +1366,40 @@ def _save_progress_chart(cfg: PipelineConfig, all_results: dict[int, dict[str, A
         gens = [g for g, _ in points]
         rates = [r * 100 for _, r in points]
         ax.plot(gens, rates, marker="o", markersize=4, linewidth=1.5, label=bench_name)
+
+    # Equal-play horizontal lines, one per distinct player count across
+    # the configured benchmarks (typically just one).
+    player_counts = {len(b.ai) for b in cfg.benchmarks if b.ai}
+    for pc in sorted(player_counts):
+        equal = 100.0 / pc
+        ax.axhline(
+            equal,
+            linestyle=":",
+            color="gray",
+            linewidth=1.0,
+            label=f"equal play ({pc}p, {equal:.1f}%)",
+        )
+
+    # Baseline horizontal lines (mcts vs greedy/random with same params).
+    for bench in cfg.baselines:
+        out_path = _baseline_path(cfg, bench.name)
+        if not out_path.is_file():
+            continue
+        try:
+            data = json.loads(out_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        rates = _normalize_win_rates(data)
+        subject = bench.ai[0].replace("-", "").lower() if bench.ai else None
+        rate = rates.get(subject) if subject else None
+        if rate is None:
+            continue
+        ax.axhline(
+            rate * 100,
+            linestyle="--",
+            linewidth=1.0,
+            label=f"{bench.name} ({rate * 100:.1f}%)",
+        )
 
     ax.set_xlabel("Generation")
     ax.set_ylabel("Win Rate (%)")
@@ -1548,6 +1718,14 @@ def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> Non
     is_combined = cfg.model_type == "combined"
 
     try:
+        # Run baseline benchmarks (cached; only first run executes them).
+        # These are model-independent reference matchups for the chart.
+        if cfg.baselines:
+            print(f"\n{'#' * 60}")
+            print("  BASELINES")
+            print(f"{'#' * 60}\n")
+            _step_baselines(cfg, project_root, gimbur_server=gimbur_server)
+
         for gen in range(start_gen, cfg.generations):
             # Check if entire generation is already done.
             if _generation_complete(cfg, gen):
@@ -1641,6 +1819,20 @@ def main() -> None:
             print(f"Auto-detected resume point: generation {start_gen}")
         if start_gen >= cfg.generations:
             print(f"All {cfg.generations} generations are already complete.")
+            # Still ensure baselines are computed and chart reflects them.
+            if cfg.baselines:
+                gimbur_server = _GimburServerProcess()
+                try:
+                    _step_baselines(cfg, project_root, gimbur_server=gimbur_server)
+                finally:
+                    gimbur_server.stop()
+            all_results: dict[int, dict[str, Any]] = {}
+            summary_path = Path(cfg.results_dir) / "summary.json"
+            if summary_path.exists():
+                for entry in json.loads(summary_path.read_text()):
+                    all_results[entry["generation"]] = entry.get("benchmarks", {})
+            if all_results:
+                _save_progress_chart(cfg, all_results)
             return
 
     print(f"Project root: {project_root}")

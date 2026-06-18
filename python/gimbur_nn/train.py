@@ -50,8 +50,10 @@ from .game_config import CONFIGS_BY_NAME
 from .loss_config import LOSS_MODES, LossConfig, LossFn, build_loss_fn
 from .transformer_model import (
     MODEL_CONFIGS_BY_NAME,
+    OUTPUT_MODES,
     GimburPlacementTransformer,
     GimburTransformer,
+    _make_model_config,
 )
 
 # ── Config file helpers ──────────────────────────────────────────────
@@ -112,6 +114,7 @@ _CONFIG_KEYS: dict[str, str] = {
     "loss": "loss",
     "lossSigma": "loss_sigma",
     "target": "target",
+    "outputMode": "output_mode",
 }
 
 # Attributes whose CLI type is Path.
@@ -164,10 +167,16 @@ def _build_dataset(
     """Construct a dataset, forwarding the placement-specific ``target`` arg
     only when training a placement model. The state dataset doesn't accept a
     ``target`` keyword.
+
+    When ``output_mode`` is ``"combined"``, the target is forced to
+    ``"combined"`` so the dataset returns both value and policy targets.
     """
     if args.model_type == "placement":
+        effective_target = (
+            "combined" if args.output_mode == "combined" else args.target
+        )
         return dataset_class(
-            games, game_cfg, n_buckets=n_buckets, target=args.target
+            games, game_cfg, n_buckets=n_buckets, target=effective_target
         )
     return dataset_class(games, game_cfg, n_buckets=n_buckets)
 
@@ -229,7 +238,20 @@ def parse_args() -> argparse.Namespace:
             "Training target for placement models: 'winrate' (default — predict "
             "per-action expected win probability) or 'policy' (predict each "
             "action's normalised share of MCTS visits among its siblings, "
-            "yielding peaked PUCT-style action priors). Ignored for state models."
+            "yielding peaked PUCT-style action priors). Ignored for state models "
+            "and when --output-mode=combined."
+        ),
+    )
+    parser.add_argument(
+        "--output-mode",
+        type=str,
+        default="value",
+        choices=sorted(OUTPUT_MODES),
+        help=(
+            "Output head topology: 'value' (default — single head for win "
+            "probability), 'policy' (single head for visit-share), or "
+            "'combined' (dual heads for both value and policy, trained "
+            "simultaneously). When 'combined', --target is ignored."
         ),
     )
     parser.add_argument(
@@ -308,6 +330,7 @@ _ARG_DEFAULTS: dict[str, object] = {
     "loss": "hard",
     "loss_sigma": 2.0,
     "target": "winrate",
+    "output_mode": "value",
 }
 
 
@@ -356,10 +379,10 @@ def _save_final_model(
 
     The on-disk format is a dict containing ``model_state_dict`` plus
     metadata fields (``model_type``, ``model_config``, ``game_config``,
-    ``target``) that downstream consumers (training resume, the inference
-    server) need to interpret the model correctly. Existing checkpoints
-    saved as a bare ``state_dict()`` can still be loaded via
-    :func:`_load_model_state` for backward compatibility.
+    ``target``, ``output_mode``) that downstream consumers (training
+    resume, the inference server) need to interpret the model correctly.
+    Existing checkpoints saved as a bare ``state_dict()`` can still be
+    loaded via :func:`_load_model_state` for backward compatibility.
     """
     torch.save(
         {
@@ -368,6 +391,7 @@ def _save_final_model(
             "model_config": args.model_config,
             "game_config": args.game_config,
             "target": args.target,
+            "output_mode": args.output_mode,
         },
         path,
     )
@@ -378,14 +402,16 @@ def _load_model_state(path: Path, device: torch.device) -> dict:
 
     Accepts both:
       * Legacy bare ``state_dict()`` files (returned with ``model_state_dict``
-        key only and ``target='winrate'`` for backward compatibility).
+        key only, ``target='winrate'``, and ``output_mode='value'`` for
+        backward compatibility).
       * New format dicts with ``model_state_dict`` and metadata keys.
     """
     raw = torch.load(path, map_location=device, weights_only=False)
     if isinstance(raw, dict) and "model_state_dict" in raw:
+        raw.setdefault("output_mode", "value")
         return raw
     # Legacy: bare state_dict.
-    return {"model_state_dict": raw, "target": "winrate"}
+    return {"model_state_dict": raw, "target": "winrate", "output_mode": "value"}
 
 
 def _append_epoch_stats(
@@ -413,18 +439,24 @@ def _append_epoch_stats(
 
 def _run_epoch(
     model: GimburTransformer,
-    loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
+    loader: DataLoader,
     device: torch.device,
     optimizer: torch.optim.Optimizer | None,
     log_interval: int,
     epoch: int,
     phase: str,
     loss_fn: LossFn = F.cross_entropy,
+    output_mode: str = "value",
 ) -> float:
     """Run one epoch (train or eval).
 
     When *optimizer* is ``None`` the model runs in eval mode with no
     gradient updates (validation).
+
+    When *output_mode* is ``"combined"``, the model returns a dict with
+    ``"value"`` and ``"policy"`` logits and each batch yields three
+    tensors (token_ids, value_targets, policy_targets).  The total loss
+    is the mean of the value and policy losses.
 
     Returns the mean loss over the epoch.
     """
@@ -436,14 +468,24 @@ def _run_epoch(
 
     ctx = torch.no_grad() if not is_train else torch.enable_grad()
     with ctx:
-        for batch_idx, (token_ids, targets) in enumerate(loader):
-            token_ids = token_ids.to(device)
-            targets = targets.to(device)
+        for batch_idx, batch in enumerate(loader):
+            token_ids = batch[0].to(device)
 
-            logits = model(token_ids)  # (batch, seq_len, n_buckets)
-            last_logits = logits[:, -1, :]  # (batch, n_buckets)
+            output = model(token_ids)
 
-            loss = loss_fn(last_logits, targets)
+            if output_mode == "combined":
+                value_targets = batch[1].to(device)
+                policy_targets = batch[2].to(device)
+                value_logits = output["value"][:, -1, :]
+                policy_logits = output["policy"][:, -1, :]
+                loss = (
+                    loss_fn(value_logits, value_targets)
+                    + loss_fn(policy_logits, policy_targets)
+                ) / 2.0
+            else:
+                targets = batch[1].to(device)
+                logits = output[:, -1, :]  # (batch, n_buckets)
+                loss = loss_fn(logits, targets)
 
             if is_train:
                 assert optimizer is not None
@@ -486,6 +528,20 @@ def main() -> None:
 
     game_cfg = CONFIGS_BY_NAME[args.game_config]
     model_cfg = MODEL_CONFIGS_BY_NAME[args.model_config]
+
+    # Apply output_mode to the model config.  The predefined presets
+    # default to "value"; override when the user requests a different
+    # output mode.
+    if args.output_mode != getattr(model_cfg, "output_mode", "value"):
+        model_cfg = _make_model_config(
+            d_model=model_cfg.d_model,
+            n_heads=model_cfg.n_heads,
+            n_layers=model_cfg.n_layers,
+            n_buckets=model_cfg.n_buckets,
+            ffn_hidden_mult=model_cfg.ffn_hidden_mult,
+            dropout=model_cfg.dropout,
+            output_mode=args.output_mode,
+        )
 
     # ── Select model and dataset class based on model type ───────────
     if args.model_type == "placement":
@@ -589,7 +645,7 @@ def main() -> None:
         batch_size=args.batch_size,
         shuffle=True,
     )
-    val_loader: DataLoader[tuple[torch.Tensor, torch.Tensor]] | None = None
+    val_loader: DataLoader | None = None
     if val_dataset is not None:
         val_loader = DataLoader(
             val_dataset,
@@ -624,6 +680,7 @@ def main() -> None:
         train_loss = _run_epoch(
             model, train_loader, device, optimizer, args.log_interval, epoch, "train",
             loss_fn=loss_fn,
+            output_mode=args.output_mode,
         )
 
         label = f"{epoch}/{max_epochs}" if max_epochs else str(epoch)
@@ -634,6 +691,7 @@ def main() -> None:
         if val_loader is not None:
             val_loss = _run_epoch(
                 model, val_loader, device, None, 0, epoch, "val", loss_fn=loss_fn,
+                output_mode=args.output_mode,
             )
             msg += f" | val loss {val_loss:.4f}"
 
@@ -670,7 +728,7 @@ def main() -> None:
 
     # ── Test evaluation ──────────────────────────────────────────────
     if test_dataset is not None and len(test_dataset) > 0:
-        test_loader: DataLoader[tuple[torch.Tensor, torch.Tensor]] = DataLoader(
+        test_loader: DataLoader = DataLoader(
             test_dataset,
             batch_size=args.batch_size,
             shuffle=False,
@@ -680,6 +738,7 @@ def main() -> None:
         model.load_state_dict(ckpt["model_state_dict"])
         test_loss = _run_epoch(
             model, test_loader, device, None, 0, 0, "test", loss_fn=loss_fn,
+            output_mode=args.output_mode,
         )
         print(f"Test loss: {test_loss:.4f}")
 

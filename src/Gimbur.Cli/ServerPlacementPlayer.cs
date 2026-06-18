@@ -3,21 +3,22 @@ using Gimbur.Rules;
 namespace Gimbur.Cli;
 
 /// <summary>
-/// Hybrid benchmark player that uses NN-guided MCTS (via the Gimbur.Server
-/// <c>mcts-nn-ai</c> mode) for the initial placement phase, then falls back
-/// to a configurable simpler player for the main game.
+/// Hybrid benchmark player that delegates placement-phase decisions to
+/// the Gimbur.Server (running either <c>mcts-ai</c> or <c>mcts-nn-ai</c>
+/// mode) and falls back to a configurable simpler player for the main
+/// game.
 ///
-/// Mirrors <see cref="NnPlacementPlayer"/> but routes placement decisions
-/// through MCTS+NN-priors instead of taking the NN's argmax directly.
-/// Useful for measuring the value of MCTS search on top of the NN policy
-/// during placement.
+/// Used by the placement-only AI variants (<c>mcts-placement</c>,
+/// <c>mcts-placement-random</c>, <c>nn-mcts-placement</c>,
+/// <c>nn-mcts-placement-random</c>) so that the post-placement strategy
+/// matches the opponent and the comparison isolates placement quality.
 /// </summary>
-internal sealed class NnMctsPlacementPlayer : IBenchmarkPlayer, IDisposable
+internal sealed class ServerPlacementPlayer : IBenchmarkPlayer, IDisposable
 {
     private readonly ServerPlayer _placement;
     private readonly IBenchmarkPlayer _fallback;
 
-    public NnMctsPlacementPlayer(ServerPlayer placement, IBenchmarkPlayer? fallback = null)
+    public ServerPlacementPlayer(ServerPlayer placement, IBenchmarkPlayer? fallback = null)
     {
         _placement = placement;
         _fallback = fallback ?? new GreedyPlayer();

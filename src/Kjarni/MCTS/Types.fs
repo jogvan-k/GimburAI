@@ -54,16 +54,28 @@ type LogInfo =
         val mutable successfulTranspositionTableLookup: int
         val mutable transpositionTableSize: int
         val mutable reachedTerminal: bool
-        val mutable priorStatesRequested: int
-        /// Number of tree nodes that had prior policies successfully applied.
+        // ── Prior stats (mirrors Kjarni.MCTS.Algorithm.PriorStats) ─────────
+        /// Number of nodes for which a prior request was issued.
+        val mutable priorNodesRequested: int
+        /// Number of MCTS-level action states sent to the client across all
+        /// requested nodes.
+        val mutable priorActionsRequested: int
+        /// Number of (state, action) inference pairs actually sent to the model.
+        /// In placement mode this counts post-fan-out composite (settlement, road)
+        /// pairs; in state mode it equals priorActionsRequested.
+        val mutable priorInferencesRequested: int
+        /// Number of nodes whose prior policy was successfully attached.
         val mutable priorNodesApplied: int
-        /// Number of individual action states covered by applied priors.
-        val mutable priorsApplied: int
-        val mutable priorStatesEvaluated: int
-        /// Per-depth count of prior states evaluated (depth → state count).
-        val mutable priorStatesPerDepth: Dictionary<int, int>
+        /// Number of action states whose prior probabilities were applied.
+        val mutable priorActionsApplied: int
+        /// Per-depth count of MCTS-level action states sent to the client (depth → count).
+        val mutable priorActionsPerDepth: Dictionary<int, int>
+        /// Per-depth count of model inference pairs (depth → count).
+        val mutable priorInferencesPerDepth: Dictionary<int, int>
+        /// Number of nodes refused by the client's ShouldRequestPrior pre-check.
+        val mutable priorNodesSkipped: int
+        /// Number of responses returned for nodes the search no longer tracks.
+        val mutable priorResponsesOrphaned: int
+        /// Number of selection paths that hit the maxPriorDepth horizon.
         val mutable horizonSkips: int
-        /// Number of nodes skipped by the ShouldRequestPrior pre-check.
-        val mutable priorsSkipped: int
-        val mutable stateNotFound: int
     end

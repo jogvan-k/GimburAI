@@ -26,23 +26,23 @@ type MonteCarloTreeSearch(config: MCTSConfig) =
                 config.MaxPriorDepth
             )
 
-        // Flush the prior queue after search completes
-        match config.PriorClient with
-        | Some client when not (isNull (box client)) -> client.Flush()
-        | _ -> ()
+        // search() handles per-search Flush internally so that it can
+        // hand the prior client the local set of node IDs it owned.
 
         let mutable logInfo = LogInfo()
         logInfo.simulations <- root.Rollouts
         logInfo.elapsedTime <- timer.Elapsed
         logInfo.reachedTerminal <- isResolved root
-        logInfo.priorStatesRequested <- priorStats.priorStatesRequested
+        logInfo.priorNodesRequested <- priorStats.priorNodesRequested
+        logInfo.priorActionsRequested <- priorStats.priorActionsRequested
+        logInfo.priorInferencesRequested <- priorStats.priorInferencesRequested
         logInfo.priorNodesApplied <- priorStats.priorNodesApplied
-        logInfo.priorsApplied <- priorStats.priorActionsApplied
-        logInfo.priorStatesEvaluated <- priorStats.priorActionsEvaluated
-        logInfo.priorStatesPerDepth <- priorStats.priorStatesPerDepth
+        logInfo.priorActionsApplied <- priorStats.priorActionsApplied
+        logInfo.priorActionsPerDepth <- priorStats.priorActionsPerDepth
+        logInfo.priorInferencesPerDepth <- priorStats.priorInferencesPerDepth
+        logInfo.priorNodesSkipped <- priorStats.priorNodesSkipped
+        logInfo.priorResponsesOrphaned <- priorStats.priorResponsesOrphaned
         logInfo.horizonSkips <- priorStats.horizonSkips
-        logInfo.priorsSkipped <- priorStats.priorsSkipped
-        logInfo.stateNotFound <- priorStats.stateNotFound
 
         _logInfos <- logInfo :: _logInfos
 
