@@ -296,7 +296,8 @@ def expand_placement_games(
     n_buckets: int = 128,
     tokenizer: PlacementTokenizer | None = None,
     target: str = "winrate",
-) -> list[tuple[torch.Tensor, int]] | list[tuple[torch.Tensor, int, int]]:
+    advantage: bool = False,
+) -> list[tuple[torch.Tensor, int]] | list[tuple[torch.Tensor, int, int]] | list:
     """Expand placement-phase game dicts into training samples.
 
     Each game's states are expanded via symmetry permutations.  Unlike
@@ -313,13 +314,22 @@ def expand_placement_games(
             ``"policy"`` (bucketize each action's share of total MCTS
             visits within its sibling group), or ``"combined"`` (return
             both value and policy bucket targets per sample).
+        advantage: When True and ``target="combined"``, include a per-sample
+            advantage weight computed as ``A = Q(s,a) - V(s)`` where
+            ``Q(s,a)`` is the MCTS win rate and ``V(s)`` is the model's
+            value estimate for the state. Samples without a model value
+            estimate (``modelValue`` is null) get advantage 0.
 
     Returns:
         For ``"winrate"`` or ``"policy"``: a flat list of
         ``(token_ids, target_bucket)`` pairs.
 
-        For ``"combined"``: a flat list of
+        For ``"combined"`` without advantage: a flat list of
         ``(token_ids, value_bucket, policy_bucket)`` triples.
+
+        For ``"combined"`` with advantage: a flat list of
+        ``(token_ids, value_bucket, policy_bucket, advantage_weight)``
+        4-tuples where ``advantage_weight`` is a float.
     """
     if tokenizer is None:
         tokenizer = PlacementTokenizer(cfg)
@@ -327,9 +337,11 @@ def expand_placement_games(
         raise ValueError(
             f"Unknown target: {target!r} (expected 'winrate', 'policy', or 'combined')."
         )
+    if advantage and target != "combined":
+        raise ValueError("Advantage weighting requires target='combined'.")
     samples: list = []
     for game in games:
-        _process_placement_game(game, n_buckets, samples, tokenizer, target)
+        _process_placement_game(game, n_buckets, samples, tokenizer, target, advantage)
     return samples
 
 
@@ -339,6 +351,7 @@ def _process_placement_game(
     samples: list,
     tokenizer: PlacementTokenizer,
     target: str = "winrate",
+    advantage: bool = False,
 ) -> None:
     """Expand one placement-phase game record into training samples."""
     for state_entry in game["states"]:
@@ -366,6 +379,14 @@ def _process_placement_game(
         else:
             visit_shares = None
 
+        # For advantage weighting: V(s) = model's value estimate for this state.
+        # A(s,a) = Q(s,a) - V(s) where Q(s,a) = action's MCTS winRate.
+        model_value: float | None = None
+        if advantage:
+            mv = state_entry.get("modelValue")
+            if mv is not None:
+                model_value = float(mv)
+
         for variant_idx, state_str in enumerate(all_variants):
             compact = _compact(state_str)
 
@@ -384,7 +405,11 @@ def _process_placement_game(
                     policy_prob = visit_shares[action_idx]
                     value_bucket = _prob_to_bucket(value_prob, n_buckets)
                     policy_bucket = _prob_to_bucket(policy_prob, n_buckets)
-                    samples.append((token_ids, value_bucket, policy_bucket))
+                    if advantage:
+                        adv = (value_prob - model_value) if model_value is not None else 0.0
+                        samples.append((token_ids, value_bucket, policy_bucket, adv))
+                    else:
+                        samples.append((token_ids, value_bucket, policy_bucket))
                 elif target == "policy":
                     assert visit_shares is not None
                     prob = visit_shares[action_idx]
@@ -413,6 +438,10 @@ class PlacementDataset(Dataset[tuple[torch.Tensor, ...]]):
     For ``target="combined"``, each item is a
     ``(token_ids, value_bucket, policy_bucket)`` triple.
 
+    For ``target="combined"`` with ``advantage=True``, each item is a
+    ``(token_ids, value_bucket, policy_bucket, advantage_weight)`` 4-tuple
+    where ``advantage_weight`` is a scalar float tensor.
+
     Args:
         games: List of parsed placement game dicts (from :func:`load_games`).
         cfg: Game configuration matching the exported data.
@@ -422,6 +451,8 @@ class PlacementDataset(Dataset[tuple[torch.Tensor, ...]]):
             total MCTS visits within its sibling group), or
             ``"combined"`` (return both value and policy targets).
             See :func:`expand_placement_games`.
+        advantage: When True (requires ``target="combined"``), include
+            per-sample advantage weights ``A = Q(s,a) - V(s)``.
     """
 
     def __init__(
@@ -431,16 +462,23 @@ class PlacementDataset(Dataset[tuple[torch.Tensor, ...]]):
         *,
         n_buckets: int = 128,
         target: str = "winrate",
+        advantage: bool = False,
     ) -> None:
         tok = PlacementTokenizer(cfg)
         raw = expand_placement_games(
-            games, cfg, n_buckets=n_buckets, tokenizer=tok, target=target
+            games, cfg, n_buckets=n_buckets, tokenizer=tok, target=target,
+            advantage=advantage,
         )
         self._combined = target == "combined"
+        self._advantage = advantage
         self._tokens = [t[0] for t in raw]
         if self._combined:
             self._value_targets = torch.tensor([t[1] for t in raw], dtype=torch.long)
             self._policy_targets = torch.tensor([t[2] for t in raw], dtype=torch.long)
+            if self._advantage:
+                self._advantages = torch.tensor(
+                    [t[3] for t in raw], dtype=torch.float32
+                )
         else:
             self._targets = torch.tensor([t[1] for t in raw], dtype=torch.long)
 
@@ -449,5 +487,12 @@ class PlacementDataset(Dataset[tuple[torch.Tensor, ...]]):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, ...]:
         if self._combined:
+            if self._advantage:
+                return (
+                    self._tokens[idx],
+                    self._value_targets[idx],
+                    self._policy_targets[idx],
+                    self._advantages[idx],
+                )
             return self._tokens[idx], self._value_targets[idx], self._policy_targets[idx]
         return self._tokens[idx], self._targets[idx]

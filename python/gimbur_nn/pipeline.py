@@ -68,6 +68,7 @@ class TrainConfig:
     resume_from_previous: bool = True
     target: str = "winrate"
     output_mode: str = "value"
+    advantage: bool = False
 
 
 @dataclass
@@ -1018,6 +1019,7 @@ def _step_train(
         "lossSigma": tr.loss_sigma,
         "target": tr.target,
         "outputMode": tr.output_mode,
+        "advantage": tr.advantage,
     }
 
     # Enable per-epoch checkpointing if configured.

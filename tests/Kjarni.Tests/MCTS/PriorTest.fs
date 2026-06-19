@@ -62,7 +62,7 @@ type MockPriorClient() =
 
     /// Schedule a response to be returned on the next CollectPriors call.
     member _.EnqueueResponse(nodeId: int64, winProbs: float[]) =
-        _responses.Enqueue(PriorResponse(nodeId, winProbs))
+        _responses.Enqueue(PriorResponse(nodeId, winProbs, System.Double.NaN))
 
     /// Whether Flush was called at least once.
     member _.WasFlushed = _flushed
@@ -101,7 +101,7 @@ type AutoRespondPriorClient(winProbFn: ICoreState[] -> float[]) =
         member _.RequestPrior(nodeId, parentState, states, actingPlayer, depth) =
             _requests.Add((nodeId, parentState, states, actingPlayer, depth))
             let winProbs = winProbFn states
-            _responses.Enqueue(PriorResponse(nodeId, winProbs))
+            _responses.Enqueue(PriorResponse(nodeId, winProbs, System.Double.NaN))
             states.Length
 
         member _.CollectPriors(knownNodeIds: IReadOnlySet<int64>) =

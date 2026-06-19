@@ -115,6 +115,7 @@ _CONFIG_KEYS: dict[str, str] = {
     "lossSigma": "loss_sigma",
     "target": "target",
     "outputMode": "output_mode",
+    "advantage": "advantage",
 }
 
 # Attributes whose CLI type is Path.
@@ -176,7 +177,8 @@ def _build_dataset(
             "combined" if args.output_mode == "combined" else args.target
         )
         return dataset_class(
-            games, game_cfg, n_buckets=n_buckets, target=effective_target
+            games, game_cfg, n_buckets=n_buckets, target=effective_target,
+            advantage=args.advantage,
         )
     return dataset_class(games, game_cfg, n_buckets=n_buckets)
 
@@ -252,6 +254,18 @@ def parse_args() -> argparse.Namespace:
             "probability), 'policy' (single head for visit-share), or "
             "'combined' (dual heads for both value and policy, trained "
             "simultaneously). When 'combined', --target is ignored."
+        ),
+    )
+    parser.add_argument(
+        "--advantage",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable advantage weighting for the policy loss. Requires "
+            "--output-mode=combined. Each sample's policy loss is weighted by "
+            "A = Q(s,a) - V(s) where Q(s,a) is the MCTS win rate and V(s) is "
+            "the model's value estimate (from 'modelValue' in the exported data). "
+            "Samples without modelValue get weight 0 (policy loss ignored)."
         ),
     )
     parser.add_argument(
@@ -331,6 +345,7 @@ _ARG_DEFAULTS: dict[str, object] = {
     "loss_sigma": 2.0,
     "target": "winrate",
     "output_mode": "value",
+    "advantage": False,
 }
 
 
@@ -447,6 +462,7 @@ def _run_epoch(
     phase: str,
     loss_fn: LossFn = F.cross_entropy,
     output_mode: str = "value",
+    advantage: bool = False,
 ) -> float:
     """Run one epoch (train or eval).
 
@@ -457,6 +473,12 @@ def _run_epoch(
     ``"value"`` and ``"policy"`` logits and each batch yields three
     tensors (token_ids, value_targets, policy_targets).  The total loss
     is the mean of the value and policy losses.
+
+    When *advantage* is ``True`` (requires combined mode), the batch
+    has a 4th element — per-sample advantage weights.  The policy loss
+    is weighted by these advantages:
+    ``policy_loss = mean(advantage * per_sample_CE)``.  The value loss
+    remains unweighted.
 
     Returns the mean loss over the epoch.
     """
@@ -478,10 +500,21 @@ def _run_epoch(
                 policy_targets = batch[2].to(device)
                 value_logits = output["value"][:, -1, :]
                 policy_logits = output["policy"][:, -1, :]
-                loss = (
-                    loss_fn(value_logits, value_targets)
-                    + loss_fn(policy_logits, policy_targets)
-                ) / 2.0
+                value_loss = loss_fn(value_logits, value_targets)
+
+                if advantage:
+                    # Per-sample advantage weights from batch[3].
+                    adv_weights = batch[3].to(device)  # (batch,)
+                    # Per-sample policy cross-entropy (no reduction).
+                    per_sample_policy_loss = F.cross_entropy(
+                        policy_logits, policy_targets, reduction="none"
+                    )
+                    # Weight by advantage and take mean.
+                    policy_loss = (adv_weights * per_sample_policy_loss).mean()
+                else:
+                    policy_loss = loss_fn(policy_logits, policy_targets)
+
+                loss = (value_loss + policy_loss) / 2.0
             else:
                 targets = batch[1].to(device)
                 logits = output[:, -1, :]  # (batch, n_buckets)
@@ -681,6 +714,7 @@ def main() -> None:
             model, train_loader, device, optimizer, args.log_interval, epoch, "train",
             loss_fn=loss_fn,
             output_mode=args.output_mode,
+            advantage=args.advantage,
         )
 
         label = f"{epoch}/{max_epochs}" if max_epochs else str(epoch)
@@ -692,6 +726,7 @@ def main() -> None:
             val_loss = _run_epoch(
                 model, val_loader, device, None, 0, epoch, "val", loss_fn=loss_fn,
                 output_mode=args.output_mode,
+                advantage=args.advantage,
             )
             msg += f" | val loss {val_loss:.4f}"
 
@@ -739,6 +774,7 @@ def main() -> None:
         test_loss = _run_epoch(
             model, test_loader, device, None, 0, 0, "test", loss_fn=loss_fn,
             output_mode=args.output_mode,
+            advantage=args.advantage,
         )
         print(f"Test loss: {test_loss:.4f}")
 
