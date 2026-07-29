@@ -451,23 +451,19 @@ internal static class Program
             return ApplyActionAndLog(state, UnwrapCoreAction(coreActions[roll]), aiControlled: true);
         }
 
-        var states = new List<string>(compositeActions.Count);
-        var actions = new List<string>(compositeActions.Count);
-        foreach (var (_, _, actionString) in compositeActions)
-        {
-            states.Add(placementState);
-            actions.Add(actionString);
-        }
-
-        var buckets = _nnClient!.PredictPlacementAsync(states, actions).GetAwaiter().GetResult();
+        var prediction = _nnClient!.PredictPlacementAsync([placementState]).GetAwaiter().GetResult();
+        var densePolicy = prediction.PolicyProbabilities.Length == 1
+            ? Array.ConvertAll(prediction.PolicyProbabilities[0], value => (double)value)
+            : [];
+        var legalPolicy = _actionSerializer!.MaskAndNormalize(
+            densePolicy,
+            compositeActions.Select(action => _actionSerializer.IndexOf(action.ActionString)).ToArray());
 
         var bestIndex = 0;
         var bestScore = float.NegativeInfinity;
         for (var j = 0; j < compositeActions.Count; j++)
         {
-            var score = j < buckets.Length
-                ? NnClient.ExpectedWinProbability(buckets[j])
-                : 0f;
+            var score = (float)legalPolicy[j];
             if (score > bestScore)
             {
                 bestScore = score;
@@ -883,26 +879,28 @@ internal static class Program
         if (composites.Count == 0)
             return null;
 
-        var states = new List<string>(composites.Count);
         var actionStrings = new List<string>(composites.Count);
         foreach (var (_, actionString) in composites)
         {
-            states.Add(placementState);
             actionStrings.Add(actionString);
         }
 
         try
         {
-            var buckets = _nnClient!.PredictPlacementAsync(states, actionStrings)
+            var prediction = _nnClient!.PredictPlacementAsync([placementState])
                 .GetAwaiter().GetResult();
+            var densePolicy = prediction.PolicyProbabilities.Length == 1
+                ? Array.ConvertAll(prediction.PolicyProbabilities[0], value => (double)value)
+                : [];
+            var legalPolicy = _actionSerializer!.MaskAndNormalize(
+                densePolicy,
+                actionStrings.Select(_actionSerializer.IndexOf).ToArray());
 
             // Aggregate: best score per settlement vertex.
             var result = new Dictionary<int, float>();
             for (var i = 0; i < composites.Count; i++)
             {
-                var score = i < buckets.Length
-                    ? NnClient.ExpectedWinProbability(buckets[i])
-                    : 0f;
+                var score = (float)legalPolicy[i];
                 var vertex = composites[i].VertexIndex;
                 if (!result.TryGetValue(vertex, out var existing) || score > existing)
                     result[vertex] = score;
@@ -963,26 +961,22 @@ internal static class Program
         if (roadActions.Length == 0)
             return null;
 
-        var states = new List<string>(roadActions.Length);
-        var actionStrings = new List<string>(roadActions.Length);
-        foreach (var road in roadActions)
-        {
-            states.Add(placementState);
-            actionStrings.Add(_actionSerializer!.Serialize(
-                settlementVertex.Value, road.EdgeIndex));
-        }
-
         try
         {
-            var buckets = _nnClient!.PredictPlacementAsync(states, actionStrings)
+            var prediction = _nnClient!.PredictPlacementAsync([placementState])
                 .GetAwaiter().GetResult();
+            var densePolicy = prediction.PolicyProbabilities.Length == 1
+                ? Array.ConvertAll(prediction.PolicyProbabilities[0], value => (double)value)
+                : [];
+            var legalPolicy = _actionSerializer!.MaskAndNormalize(
+                densePolicy,
+                roadActions.Select(road => _actionSerializer.IndexOf(
+                    settlementVertex.Value, road.EdgeIndex)).ToArray());
 
             var result = new Dictionary<int, float>();
             for (var i = 0; i < roadActions.Length; i++)
             {
-                var score = i < buckets.Length
-                    ? NnClient.ExpectedWinProbability(buckets[i])
-                    : 0f;
+                var score = (float)legalPolicy[i];
                 result[roadActions[i].EdgeIndex] = score;
             }
             return result;

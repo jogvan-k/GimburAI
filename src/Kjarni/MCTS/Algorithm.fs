@@ -344,25 +344,30 @@ let computePriorPolicy (winProbs: float[]) (layout: int[]) (outcomeWeights: int[
     let n = layout.Length
     let rawPriors = Array.zeroCreate<float> n
     let mutable probIdx = 0
+    let expectedCount = Array.sum layout
+    let valid =
+        winProbs.Length = expectedCount
+        && winProbs |> Array.forall (fun value -> Double.IsFinite(value) && value >= 0.)
 
-    for i in 0 .. n - 1 do
-        let count = layout.[i]
-        if count = 0 then
-            rawPriors.[i] <- 0.
-        elif count = 1 then
-            rawPriors.[i] <- winProbs.[probIdx]
-            probIdx <- probIdx + 1
-        else
-            // Stochastic: weighted average across outcomes
-            let weights = outcomeWeights.[i]
-            let mutable weightedSum = 0.
-            let mutable totalWeight = 0.
-            for j in 0 .. count - 1 do
-                let w = float weights.[j]
-                weightedSum <- weightedSum + w * winProbs.[probIdx + j]
-                totalWeight <- totalWeight + w
-            rawPriors.[i] <- if totalWeight > 0. then weightedSum / totalWeight else 0.
-            probIdx <- probIdx + count
+    if valid then
+        for i in 0 .. n - 1 do
+            let count = layout.[i]
+            if count = 0 then
+                rawPriors.[i] <- 0.
+            elif count = 1 then
+                rawPriors.[i] <- winProbs.[probIdx]
+                probIdx <- probIdx + 1
+            else
+                // Stochastic: weighted average across outcomes
+                let weights = outcomeWeights.[i]
+                let mutable weightedSum = 0.
+                let mutable totalWeight = 0.
+                for j in 0 .. count - 1 do
+                    let w = float weights.[j]
+                    weightedSum <- weightedSum + w * winProbs.[probIdx + j]
+                    totalWeight <- totalWeight + w
+                rawPriors.[i] <- if totalWeight > 0. then weightedSum / totalWeight else 0.
+                probIdx <- probIdx + count
 
     // Normalise to sum to 1
     let total = Array.sum rawPriors
@@ -502,26 +507,19 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                         nodeReg.[node.NodeId] <- node
                         layoutReg.[node.NodeId] <- (layout, outcomeWeights)
                         let inferenceCount = client.RequestPrior(node.NodeId, node.State, actionStates, int node.State.PlayerTurn + 1, depth)
-                        if inferenceCount > 0 then
-                            priorStats.priorNodesRequested <- priorStats.priorNodesRequested + 1
-                            priorStats.priorActionsRequested <- priorStats.priorActionsRequested + actionStates.Length
-                            priorStats.priorInferencesRequested <- priorStats.priorInferencesRequested + inferenceCount
-                            let aCount =
-                                match priorStats.priorActionsPerDepth.TryGetValue(depth) with
-                                | true, v -> v
-                                | _ -> 0
-                            priorStats.priorActionsPerDepth.[depth] <- aCount + actionStates.Length
-                            let iCount =
-                                match priorStats.priorInferencesPerDepth.TryGetValue(depth) with
-                                | true, v -> v
-                                | _ -> 0
-                            priorStats.priorInferencesPerDepth.[depth] <- iCount + inferenceCount
-                        else
-                            // Client declined to send (e.g. placement-mode rejection).
-                            // Roll back the registry insertions and count as a skip.
-                            nodeReg.Remove(node.NodeId) |> ignore
-                            layoutReg.Remove(node.NodeId) |> ignore
-                            priorStats.priorNodesSkipped <- priorStats.priorNodesSkipped + 1
+                        priorStats.priorNodesRequested <- priorStats.priorNodesRequested + 1
+                        priorStats.priorActionsRequested <- priorStats.priorActionsRequested + actionStates.Length
+                        priorStats.priorInferencesRequested <- priorStats.priorInferencesRequested + inferenceCount
+                        let aCount =
+                            match priorStats.priorActionsPerDepth.TryGetValue(depth) with
+                            | true, v -> v
+                            | _ -> 0
+                        priorStats.priorActionsPerDepth.[depth] <- aCount + actionStates.Length
+                        let iCount =
+                            match priorStats.priorInferencesPerDepth.TryGetValue(depth) with
+                            | true, v -> v
+                            | _ -> 0
+                        priorStats.priorInferencesPerDepth.[depth] <- iCount + inferenceCount
         | _ -> ()
 
     /// Collect completed prior responses and apply them to tree nodes.
@@ -539,7 +537,7 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                             let policy = computePriorPolicy resp.Priors layout outcomeWeights
                             node.Priors <- Some policy
                             priorStats.priorActionsApplied <- priorStats.priorActionsApplied + resp.Priors.Length
-                        if not (System.Double.IsNaN(resp.ValueEstimate)) then
+                        if System.Double.IsFinite(resp.ValueEstimate) then
                             node.ValueEstimate <- resp.ValueEstimate
                         priorStats.priorNodesApplied <- priorStats.priorNodesApplied + 1
                         // Remove from registries once applied
@@ -595,7 +593,7 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
         | Candidate (stateHistory, i) ->
             resubmitPriors stateHistory
             let mostRecentState = stateHistory.[0]
-            let depth = stateHistory.Length - 1
+            let depth = stateHistory.Length
 
             let expandedState = expand (mostRecentState, i)
             let visitedStates = expandedState :: stateHistory

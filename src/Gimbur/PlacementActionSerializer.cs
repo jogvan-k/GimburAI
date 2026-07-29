@@ -70,6 +70,71 @@ public sealed class PlacementActionSerializer
     /// </summary>
     public int IndexOf(int vertex, int edge) => _vertexEdgeToIndex[(vertex, edge)];
 
+    /// <summary>Validates that a dense policy exactly matches this vocabulary.</summary>
+    public bool IsValidDensePolicy(IReadOnlyList<double> policy) =>
+        policy.Count == VocabularySize
+        && policy.All(value => double.IsFinite(value) && value >= 0.0);
+
+    /// <summary>
+    /// Masks a dense vocabulary policy to legal composite indices and normalizes it.
+    /// Invalid or zero-mass policies produce a uniform legal policy.
+    /// </summary>
+    public double[] MaskAndNormalize(
+        IReadOnlyList<double> policy,
+        IReadOnlyList<int> legalVocabularyIndices)
+    {
+        var result = new double[legalVocabularyIndices.Count];
+        if (result.Length == 0)
+            return result;
+
+        if (IsValidDensePolicy(policy))
+        {
+            for (var i = 0; i < result.Length; i++)
+                result[i] = policy[legalVocabularyIndices[i]];
+        }
+
+        NormalizeOrUniform(result);
+        return result;
+    }
+
+    /// <summary>
+    /// Marginalizes a dense composite policy into settlement-action order.
+    /// Each group contains the legal composite vocabulary indices for one settlement.
+    /// </summary>
+    public double[] SettlementMarginals(
+        IReadOnlyList<double> policy,
+        IReadOnlyList<int[]> settlementCompositeIndices)
+    {
+        var result = new double[settlementCompositeIndices.Count];
+        if (IsValidDensePolicy(policy))
+        {
+            for (var i = 0; i < result.Length; i++)
+            {
+                foreach (var index in settlementCompositeIndices[i])
+                    result[i] += policy[index];
+            }
+        }
+
+        NormalizeOrUniform(result);
+        return result;
+    }
+
+    private static void NormalizeOrUniform(double[] values)
+    {
+        if (values.Length == 0)
+            return;
+
+        var total = values.Sum();
+        if (double.IsFinite(total) && total > 0.0)
+        {
+            for (var i = 0; i < values.Length; i++)
+                values[i] /= total;
+            return;
+        }
+
+        Array.Fill(values, 1.0 / values.Length);
+    }
+
     // â”€â”€ Precomputed instances â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     public static PlacementActionSerializer Mini { get; } = Create(BoardTopology.Mini);

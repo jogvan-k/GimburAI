@@ -69,6 +69,8 @@ class TrainConfig:
     target: str = "winrate"
     output_mode: str = "value"
     advantage: bool = False
+    value_loss_weight: float = 1.0
+    policy_loss_weight: float = 1.0
 
 
 @dataclass
@@ -346,9 +348,7 @@ def _write_config(cfg: PipelineConfig, name: str, data: dict[str, Any]) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _effective_simulate(
-    cfg: PipelineConfig, model_type: str | None = None
-) -> SimulateConfig:
+def _effective_simulate(cfg: PipelineConfig, model_type: str | None = None) -> SimulateConfig:
     """Return the effective ``SimulateConfig`` for a pipeline step.
 
     For combined pipelines with ``model_type="placement"``, returns
@@ -800,21 +800,21 @@ class _GimburServerProcess:
         raise RuntimeError(f"Gimbur.Server did not become healthy within {timeout}s")
 
 
-_SERVER_AI_KINDS = frozenset({
-    "server-mcts",
-    "server-mcts-nn",
-    "nn-mcts-placement",
-    "nn-mcts-placement-random",
-    "mcts-placement",
-    "mcts-placement-random",
-})
+_SERVER_AI_KINDS = frozenset(
+    {
+        "server-mcts",
+        "server-mcts-nn",
+        "nn-mcts-placement",
+        "nn-mcts-placement-random",
+        "mcts-placement",
+        "mcts-placement-random",
+    }
+)
 
 
 def _benchmarks_need_game_server(benchmarks: list[BenchmarkConfig]) -> bool:
     """Return True if any benchmark uses server-mcts or server-mcts-nn AI kinds."""
-    return any(
-        ai in _SERVER_AI_KINDS for bench in benchmarks for ai in bench.ai
-    )
+    return any(ai in _SERVER_AI_KINDS for bench in benchmarks for ai in bench.ai)
 
 
 # ---------------------------------------------------------------------------
@@ -1000,6 +1000,14 @@ def _step_train(
         if effective_type == "placement"
         else cfg.model_config
     )
+    if effective_type == "state" and cfg.model_type != "combined" and tr.output_mode != "value":
+        raise ValueError(
+            "State policy/combined training is not supported by GameState exports; "
+            "set train.outputMode to 'value'."
+        )
+    output_mode = tr.output_mode if effective_type == "placement" else "value"
+    target = tr.target if effective_type == "placement" else "winrate"
+    advantage = tr.advantage if effective_type == "placement" else False
 
     # Build config JSON for training.
     train_config: dict[str, Any] = {
@@ -1017,9 +1025,11 @@ def _step_train(
         "logInterval": tr.log_interval,
         "loss": tr.loss,
         "lossSigma": tr.loss_sigma,
-        "target": tr.target,
-        "outputMode": tr.output_mode,
-        "advantage": tr.advantage,
+        "target": target,
+        "outputMode": output_mode,
+        "advantage": advantage,
+        "valueLossWeight": tr.value_loss_weight,
+        "policyLossWeight": tr.policy_loss_weight,
     }
 
     # Enable per-epoch checkpointing if configured.
@@ -1331,6 +1341,7 @@ def _save_progress_chart(cfg: PipelineConfig, all_results: dict[int, dict[str, A
     """
     try:
         import matplotlib
+
         matplotlib.use("Agg")  # non-interactive backend
         import matplotlib.pyplot as plt
     except ImportError:
@@ -1473,7 +1484,10 @@ def _run_combined_generation(
         gen_nn_url = nn_url
 
     _step_simulate(
-        cfg, gen, project_root, gen_nn_url,
+        cfg,
+        gen,
+        project_root,
+        gen_nn_url,
         model_type="placement",
     )
 
@@ -1504,7 +1518,9 @@ def _run_combined_generation(
                 cwd=project_root,
             )
 
-        gen_results = _step_benchmark(cfg, gen, project_root, nn_url, phase="placement", gimbur_server=gimbur_server)
+        gen_results = _step_benchmark(
+            cfg, gen, project_root, nn_url, phase="placement", gimbur_server=gimbur_server
+        )
 
         if not bench_done:
             server.stop()
@@ -1578,7 +1594,9 @@ def _run_combined_generation(
                 cwd=project_root,
             )
 
-        gen_results = _step_benchmark(cfg, gen, project_root, nn_url, phase="combined", gimbur_server=gimbur_server)
+        gen_results = _step_benchmark(
+            cfg, gen, project_root, nn_url, phase="combined", gimbur_server=gimbur_server
+        )
 
         if not bench_done:
             server.stop()
@@ -1748,9 +1766,13 @@ def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> Non
             print(f"{'#' * 60}\n")
 
             if is_combined:
-                _run_combined_generation(cfg, gen, project_root, server, nn_url, all_results, gimbur_server=gimbur_server)
+                _run_combined_generation(
+                    cfg, gen, project_root, server, nn_url, all_results, gimbur_server=gimbur_server
+                )
             else:
-                _run_single_generation(cfg, gen, project_root, server, nn_url, all_results, gimbur_server=gimbur_server)
+                _run_single_generation(
+                    cfg, gen, project_root, server, nn_url, all_results, gimbur_server=gimbur_server
+                )
 
     except KeyboardInterrupt:
         print("\n\nPipeline interrupted by user.")

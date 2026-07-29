@@ -1,15 +1,9 @@
 """
-Tokenizer for the placement phase (state + action).
+Tokenizer for placement-phase states and canonical action indices.
 
-Provides :class:`PlacementTokenizer` which assigns every state
-character and every action string a unique token ID in a single
-embedding space.  State character tokens occupy IDs 0..S-1 and
-action tokens occupy IDs S..S+A-1, where S is the number of state
-vocabulary characters and A is the number of valid placement actions
-for the map.
-
-The combined vocabulary allows the transformer to attend across
-both state and action tokens in a single sequence.
+States are character-tokenized model inputs. Actions are dense output
+coordinates in the canonical range ``0 .. A - 1`` and are never appended
+to the input sequence.
 
 See also :mod:`state_tokenizer` for the game state tokenizer.
 """
@@ -69,7 +63,7 @@ def _build_placement_state_vocab(player_count: int) -> str:
 #
 # Each tuple lists every valid placement action string for the map.
 # Sorted by vertex index, then direction (alphabetical).
-# Token index offset == state_vocab_size + position in list.
+# Tuple position is the canonical local output index.
 
 _MINI_ACTIONS: tuple[str, ...] = (
     '0SE', '0SW', '1SE', '1SW', '2NE', '2S', '3NE', '3NW',
@@ -128,13 +122,7 @@ _ACTIONS_BY_MAP: dict[str, tuple[str, ...]] = {
 
 
 class PlacementTokenizer:
-    """Unified tokenizer for placement phase state + action.
-
-    State characters and action strings share a single ID space
-    so the transformer can attend across both in one sequence.
-
-    State character tokens occupy IDs ``0 .. state_vocab_size - 1``.
-    Action tokens occupy IDs ``state_vocab_size .. vocab_size - 1``.
+    """Tokenize placement states and map actions to model output indices.
 
     Args:
         cfg: Game configuration (uses map_name, player_count, topology sizes).
@@ -155,25 +143,22 @@ class PlacementTokenizer:
         self.state_vocab_size: int = len(self.state_vocab_chars)
         """Number of unique state vocabulary characters (S)."""
 
-        # -- Action vocabulary (string-level, offset by S) --
+        # -- Action output vocabulary (string-level, local indices) --
         actions = _ACTIONS_BY_MAP.get(cfg.map_name)
         if actions is None:
             msg = f"Unknown map: {cfg.map_name}"
             raise ValueError(msg)
         self.actions: tuple[str, ...] = actions
-        """Ordered action strings (position + state_vocab_size = token id)."""
+        """Ordered action strings, indexed by the policy output coordinate."""
 
-        offset = self.state_vocab_size
-        self.action_vocab: dict[str, int] = {
-            a: offset + i for i, a in enumerate(actions)
-        }
-        """Maps each action string to its global integer token id."""
+        self.action_vocab: dict[str, int] = {a: i for i, a in enumerate(actions)}
+        """Maps each action string to its local policy output index."""
 
         self.action_vocab_size: int = len(actions)
         """Number of unique placement actions (A)."""
 
-        self.vocab_size: int = self.state_vocab_size + self.action_vocab_size
-        """Total vocabulary size S + A (for embedding table)."""
+        self.vocab_size: int = self.state_vocab_size
+        """State input vocabulary size for the embedding table."""
 
     # -- State tokenization --
 
@@ -194,13 +179,17 @@ class PlacementTokenizer:
             [self.state_vocab[ch] for ch in compact], dtype=torch.int,
         )
 
-    # -- Action tokenization --
+    def tokenize_batch(self, states: list[str]) -> torch.Tensor:
+        """Tokenize a batch of equally sized placement states."""
+        return torch.stack([self.tokenize_state(state) for state in states])
+
+    # -- Action output indexing --
 
     def tokenize_action(self, action: str) -> int:
-        """Convert a single action string to its global token id.
+        """Convert an action string to its canonical local output index.
 
         Returns:
-            The integer token id (in range ``[state_vocab_size, vocab_size)``).
+            The integer output index in range ``[0, action_vocab_size)``.
 
         Raises:
             KeyError: If the action is not in the vocabulary.
@@ -208,47 +197,9 @@ class PlacementTokenizer:
         return self.action_vocab[action]
 
     def decode_action(self, token_id: int) -> str:
-        """Convert a global token id back to the action string.
+        """Convert a local output index back to the action string.
 
         Raises:
             IndexError: If *token_id* is out of range.
         """
-        return self.actions[token_id - self.state_vocab_size]
-
-    # -- Combined state + action tokenization --
-
-    def tokenize_state_action(self, state_str: str, action: str) -> torch.Tensor:
-        """Tokenize a state string and append a single action token.
-
-        Returns:
-            A 1-D ``torch.int`` tensor of length ``placement_token_size + 1``.
-        """
-        state_ids = self.tokenize_state(state_str)
-        action_id = torch.tensor([self.action_vocab[action]], dtype=torch.int)
-        return torch.cat([state_ids, action_id])
-
-    def tokenize_state_actions(
-        self, state_str: str, actions: list[str],
-    ) -> torch.Tensor:
-        """Tokenize a state string paired with each action in a list.
-
-        Each row is the same state token sequence with a different
-        action token appended.
-
-        Args:
-            state_str: A single placement state string.
-            actions: List of action strings.
-
-        Returns:
-            A 2-D ``torch.int`` tensor of shape
-            ``(len(actions), placement_token_size + 1)``.
-        """
-        state_ids = self.tokenize_state(state_str)
-        rows: list[torch.Tensor] = []
-        for act in actions:
-            action_id = torch.tensor([self.action_vocab[act]], dtype=torch.int)
-            rows.append(torch.cat([state_ids, action_id]))
-        if len(rows) == 0:
-            seq_len = state_ids.shape[0] + 1
-            return torch.empty(0, seq_len, dtype=torch.int)
-        return torch.stack(rows)
+        return self.actions[token_id]

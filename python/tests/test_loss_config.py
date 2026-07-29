@@ -6,7 +6,26 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from gimbur_nn.loss_config import LOSS_MODES, LossConfig, build_loss_fn
+from gimbur_nn.loss_config import (
+    LOSS_MODES,
+    LossConfig,
+    build_loss_fn,
+    masked_soft_target_cross_entropy,
+)
+
+
+def test_masked_soft_target_cross_entropy_ignores_illegal_logits() -> None:
+    targets = torch.tensor([[0.25, 0.75, 0.0]])
+    mask = torch.tensor([[True, True, False]])
+    logits = torch.tensor([[0.0, 1.0, 1000.0]], requires_grad=True)
+
+    loss = masked_soft_target_cross_entropy(logits, targets, mask)
+    expected = -(targets[0, :2] * F.log_softmax(logits[0, :2], dim=0)).sum()
+
+    assert loss.item() == pytest.approx(expected.item())
+    loss.backward()
+    assert logits.grad is not None
+    assert logits.grad[0, 2] == 0
 
 # ---------------------------------------------------------------------------
 # LossConfig defaults

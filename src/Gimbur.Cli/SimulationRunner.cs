@@ -249,6 +249,12 @@ internal record PlacementActionRecord
     /// Acting player's win rate at the road grandchild.
     /// </summary>
     public double WinRate { get; init; }
+
+    /// <summary>
+    /// NN probability for this settlement-road composite. Null unless both the
+    /// settlement marginal and conditional road policy were applied.
+    /// </summary>
+    public double? ModelPrior { get; init; }
 }
 
 /// <summary>
@@ -323,6 +329,9 @@ internal record PlacementStateRecord
     /// Null when no value estimate is available (non-combined model or no NN prior).
     /// </summary>
     public double? ModelValue { get; init; }
+
+    /// <summary>Rollout-weighted acting-player win rate across legal actions.</summary>
+    public double? ValueTarget { get; init; }
 }
 
 /// <summary>
@@ -772,6 +781,15 @@ internal class SimulationRunner
         return (Array.Empty<double>(), 0.0, 0);
     }
 
+    private static double? ComputePlacementValueTarget(IReadOnlyList<PlacementActionRecord> actions)
+    {
+        var totalRollouts = actions.Sum(action => action.Rollouts);
+        if (totalRollouts == 0)
+            return null;
+
+        return actions.Sum(action => action.WinRate * action.Rollouts) / totalRollouts;
+    }
+
     private GameResult RunSingleGame(
         GameConfig config,
         int playerCount,
@@ -1114,6 +1132,7 @@ internal class SimulationRunner
                             Wins = wins,
                             Rollouts = rollouts,
                             WinRate = winRate,
+                            ModelPrior = null,
                         });
 
                         if (winRate > bestWinRate)
@@ -1141,6 +1160,7 @@ internal class SimulationRunner
                     PriorNodesSkipped = totalPriorNodesSkipped,
                     Actions = compositeActions,
                     ModelValue = null,
+                    ValueTarget = ComputePlacementValueTarget(compositeActions),
                 });
 
                 // Apply the best settlement action and advance.
@@ -1161,6 +1181,7 @@ internal class SimulationRunner
 
                 // Build composite actions by iterating settlement children and their road grandchildren.
                 var compositeActions = new List<PlacementActionRecord>();
+                var priors = mctsRoot.Priors;
                 for (var si = 0; si < mctsRoot.Actions.Length; si++)
                 {
                     var settlementAction = mctsRoot.Actions[si];
@@ -1169,6 +1190,10 @@ internal class SimulationRunner
                     if (coreSettlement is not PlaceSettlementAction psa) continue;
                     var vertex = psa.VertexIndex;
 
+                    double? settlementPrior = priors != null && priors.Value is { } p && si < p.Length
+                        ? p[si]
+                        : null;
+
                     // Get the child MCTSState for this settlement action.
                     Kjarni.MCTS.Types.MCTSState? childMctsState = null;
                     if (settlementAction.IsDeterministicAction)
@@ -1176,25 +1201,25 @@ internal class SimulationRunner
                     else if (settlementAction.IsHorizonAction)
                         childMctsState = ((Kjarni.MCTS.Types.Action.HorizonAction)settlementAction).Item;
 
-                    if (childMctsState is null)
-                    {
-                        // Unexplored settlement — we don't know the road actions.
-                        // Skip (no composite actions to record for this vertex).
-                        continue;
-                    }
+                    // C# legality is authoritative even when this settlement is unexplored.
+                    var roadState = (CatanState)coreSettlement.DoCoreAction();
+                    var roadCoreActions = roadState.Actions();
 
-                    // The child state's actions are PlaceRoadActions.
-                    var childCoreState = childMctsState.State;
-                    var roadCoreActions = ((CatanState)childCoreState).Actions();
-
-                    for (var ri = 0; ri < childMctsState.Actions.Length; ri++)
+                    for (var ri = 0; ri < roadCoreActions.Length; ri++)
                     {
-                        var roadAction = childMctsState.Actions[ri];
                         var coreRoad = UnwrapCoreAction(roadCoreActions[ri]);
                         if (coreRoad is not PlaceRoadAction pra) continue;
                         var edge = pra.EdgeIndex;
 
-                        var (wins, winRate, rollouts) = GetChildWinData(roadAction, playerIndex);
+                        var (wins, winRate, rollouts) = childMctsState is not null
+                            && ri < childMctsState.Actions.Length
+                            ? GetChildWinData(childMctsState.Actions[ri], playerIndex)
+                            : (Array.Empty<double>(), 0.0, 0);
+                        double? modelPrior = settlementPrior.HasValue
+                            && childMctsState?.Priors is { } roadPriors
+                            && ri < roadPriors.Value.Length
+                            ? settlementPrior.Value * roadPriors.Value[ri]
+                            : null;
                         var actionString = actionSerializer.Serialize(vertex, edge);
 
                         compositeActions.Add(new PlacementActionRecord
@@ -1205,6 +1230,7 @@ internal class SimulationRunner
                             Wins = wins,
                             Rollouts = rollouts,
                             WinRate = winRate,
+                            ModelPrior = modelPrior,
                         });
                     }
                 }
@@ -1230,6 +1256,7 @@ internal class SimulationRunner
                     PriorNodesSkipped = logInfo.priorNodesSkipped,
                     Actions = compositeActions,
                     ModelValue = double.IsNaN(mctsRoot.ValueEstimate) ? null : mctsRoot.ValueEstimate,
+                    ValueTarget = ComputePlacementValueTarget(compositeActions),
                 });
 
                 // Apply the best action and advance.
@@ -1608,12 +1635,14 @@ internal class SimulationRunner
                 s.PriorInferencesRequested,
                 s.PriorNodesSkipped,
                 s.ModelValue,
+                s.ValueTarget,
                 actions = s.Actions.Select(a => new
                 {
                     a.Action,
                     a.Wins,
                     a.Rollouts,
                     a.WinRate,
+                    a.ModelPrior,
                     permutations = symmetryPerms.Length > 0
                         ? symmetryPerms.Select(p =>
                             actionSerializer.Serialize(p.Vertices[a.Vertex], p.Edges[a.Edge]))

@@ -51,6 +51,8 @@ public sealed class PriorClient : IPriorClient, IDisposable
     private volatile bool _disposed;
     private readonly PriorMode _mode;
     private readonly PlacementActionSerializer? _actionSerializer;
+    private readonly ConcurrentDictionary<long, PendingPlacementRequest> _pendingPlacement = new();
+    private readonly ConcurrentDictionary<string, double[]> _roadPolicies = new();
 
     /// <summary>
     /// When true, this client is owned by a pool and shared across many
@@ -122,8 +124,8 @@ public sealed class PriorClient : IPriorClient, IDisposable
     /// <summary>
     /// Fast pre-check: returns <c>true</c> when the client can produce a
     /// meaningful prior for a node whose parent is in the given state.
-    /// In <see cref="PriorMode.Placement"/>, only settlement decision points
-    /// are eligible; in <see cref="PriorMode.State"/>, all states are eligible.
+    /// In <see cref="PriorMode.Placement"/>, settlement nodes request inference
+    /// and road nodes consume a cached conditional policy.
     /// </summary>
     public bool ShouldRequestPrior(ICoreState parentState)
     {
@@ -132,8 +134,13 @@ public sealed class PriorClient : IPriorClient, IDisposable
             return true;
         }
 
-        var stage = ((CatanState)parentState).Stage;
-        return stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement;
+        if (_actionSerializer is null)
+            return false;
+
+        var state = (CatanState)parentState;
+        return state.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement
+            || state.Stage is TurnStage.PlaceFirstRoad or TurnStage.PlaceSecondRoad
+                && _roadPolicies.ContainsKey(RoadStateKey(state));
     }
 
     /// <summary>
@@ -149,7 +156,7 @@ public sealed class PriorClient : IPriorClient, IDisposable
         }
         else
         {
-            return RequestStatePrior(nodeId, states, actingPlayer, depth);
+            return RequestStatePrior(nodeId, parentState, states, actingPlayer, depth);
         }
     }
 
@@ -158,7 +165,12 @@ public sealed class PriorClient : IPriorClient, IDisposable
     /// <see cref="CatanStateSerializer.SerializeCompact"/> and POSTs to /state/prior-enqueue.
     /// Returns the number of inference pairs sent (= states.Length).
     /// </summary>
-    private int RequestStatePrior(long nodeId, ICoreState[] states, int actingPlayer, int depth)
+    private int RequestStatePrior(
+        long nodeId,
+        ICoreState parentState,
+        ICoreState[] states,
+        int actingPlayer,
+        int depth)
     {
         var serialized = new string[states.Length];
         for (int i = 0; i < states.Length; i++)
@@ -173,6 +185,7 @@ public sealed class PriorClient : IPriorClient, IDisposable
                 new PriorRequestItem
                 {
                     Id = nodeId.ToString(),
+                    ParentState = CatanStateSerializer.SerializeCompact((CatanState)parentState),
                     States = serialized,
                     Player = actingPlayer,
                     Priority = depth,
@@ -203,85 +216,62 @@ public sealed class PriorClient : IPriorClient, IDisposable
     }
 
     /// <summary>
-    /// Placement-mode prior: at settlement decision points, serializes the parent
-    /// placement state and enumerates all composite (settlement, road) actions from
-    /// child states. For each child (road-stage state), discovers the legal roads
-    /// and constructs composite action strings. Sends all (state, action) pairs to
-    /// <c>/placement/prior-enqueue</c>. The response win probabilities are aggregated
-    /// per settlement (max across roads) before being returned.
-    ///
-    /// At road stages and non-placement stages, no prior is requested.
-    /// Returns the number of (state, action) inference pairs sent to the model
-    /// (= total composite (settlement, road) pairs across all child states), or
-    /// 0 when the request was declined.
+    /// Placement-mode prior: settlement nodes request one dense policy for the
+    /// compact parent state. The response is marginalized over each settlement's
+    /// legal roads and retained to condition the immediately following road node.
     /// </summary>
     private int RequestPlacementPrior(long nodeId, ICoreState parentState, ICoreState[] states, int actingPlayer, int depth)
     {
         var parent = (CatanState)parentState;
-
-        // Only provide priors at settlement decision points.
-        if (parent.Stage is not (TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement))
-        {
-            return 0;
-        }
 
         if (_actionSerializer is null)
         {
             return 0;
         }
 
-        var placementState = parent.SerializePlacementPhaseCompact();
-
-        // For each child state (road-stage state after placing settlement),
-        // enumerate legal road actions and build composite action strings.
-        // Track which composite actions belong to which settlement child (by index).
-        var allStates = new List<string>();
-        var allActions = new List<string>();
-        var childBoundaries = new List<int>(); // start index in allActions for each child
-
-        for (int ci = 0; ci < states.Length; ci++)
+        if (parent.Stage is TurnStage.PlaceFirstRoad or TurnStage.PlaceSecondRoad)
         {
-            childBoundaries.Add(allActions.Count);
-            var childState = (CatanState)states[ci];
+            if (parent.PendingSettlementVertex is not { } vertex
+                || !_roadPolicies.TryRemove(RoadStateKey(parent), out var policy))
+                return 0;
 
-            // Child should be in a road stage with a pending settlement vertex.
-            if (childState.Stage is not (TurnStage.PlaceFirstRoad or TurnStage.PlaceSecondRoad))
-            {
-                continue;
-            }
+            var legalIndices = parent.Actions()
+                .Select(UnwrapAction)
+                .OfType<PlaceRoadAction>()
+                .Select(action => _actionSerializer.IndexOf(vertex, action.EdgeIndex))
+                .ToArray();
+            if (legalIndices.Length != states.Length)
+                return 0;
 
-            if (childState.PendingSettlementVertex is not { } vertex)
-            {
-                continue;
-            }
-
-            var roadActions = childState.Actions();
-            foreach (var roadCoreAction in roadActions)
-            {
-                CatanAction roadAction;
-                if (roadCoreAction.IsDeterministic)
-                    roadAction = (CatanDeterministicAction)((CoreAction.Deterministic)roadCoreAction).Item;
-                else if (roadCoreAction.IsStochastic)
-                    roadAction = (CatanStochasticAction)((CoreAction.Stochastic)roadCoreAction).Item;
-                else
-                    continue;
-
-                if (roadAction is not PlaceRoadAction placeRoad)
-                    continue;
-
-                var actionString = _actionSerializer.Serialize(vertex, placeRoad.EdgeIndex);
-                allStates.Add(placementState);
-                allActions.Add(actionString);
-            }
-        }
-
-        if (allActions.Count == 0)
-        {
+            var priors = _actionSerializer.MaskAndNormalize(policy, legalIndices);
+            _mailbox.Enqueue(new PriorResponse(nodeId, priors, double.NaN));
             return 0;
         }
 
-        // Add a sentinel to simplify boundary calculation.
-        childBoundaries.Add(allActions.Count);
+        if (parent.Stage is not (TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement))
+            return 0;
+
+        var groups = new int[states.Length][];
+        var roadKeys = new string[states.Length];
+        for (var i = 0; i < states.Length; i++)
+        {
+            var roadState = (CatanState)states[i];
+            if (roadState.PendingSettlementVertex is not { } vertex
+                || roadState.Stage is not (TurnStage.PlaceFirstRoad or TurnStage.PlaceSecondRoad))
+                return 0;
+
+            groups[i] = roadState.Actions()
+                .Select(UnwrapAction)
+                .OfType<PlaceRoadAction>()
+                .Select(action => _actionSerializer.IndexOf(vertex, action.EdgeIndex))
+                .ToArray();
+            roadKeys[i] = RoadStateKey(roadState);
+        }
+
+        if (groups.Any(group => group.Length == 0))
+            return 0;
+
+        _pendingPlacement[nodeId] = new PendingPlacementRequest(groups, roadKeys);
 
         var request = new PlacementPriorEnqueuePayload
         {
@@ -290,9 +280,7 @@ public sealed class PriorClient : IPriorClient, IDisposable
                 new PlacementPriorRequestItem
                 {
                     Id = nodeId.ToString(),
-                    States = allStates.ToArray(),
-                    Actions = allActions.ToArray(),
-                    ChildBoundaries = childBoundaries.ToArray(),
+                    State = parent.SerializePlacementPhaseCompact(),
                     Priority = depth,
                 }
             ],
@@ -309,6 +297,7 @@ public sealed class PriorClient : IPriorClient, IDisposable
             catch
             {
                 // Server unreachable — degrade gracefully (no priors for this node).
+                _pendingPlacement.TryRemove(nodeId, out _);
                 Interlocked.Increment(ref _enqueueErrorCount);
             }
             finally
@@ -317,8 +306,20 @@ public sealed class PriorClient : IPriorClient, IDisposable
             }
         });
 
-        return allActions.Count;
+        return 1;
     }
+
+    private static CatanAction UnwrapAction(CoreAction action)
+    {
+        if (action.IsDeterministic)
+            return (CatanDeterministicAction)((CoreAction.Deterministic)action).Item;
+        if (action.IsStochastic)
+            return (CatanStochasticAction)((CoreAction.Stochastic)action).Item;
+        throw new InvalidOperationException($"Unknown CoreAction tag: {action.Tag}");
+    }
+
+    private static string RoadStateKey(CatanState state) =>
+        $"{(int)state.Stage}:{state.CurrentPlayer}:{state.PendingSettlementVertex}:{state.SerializePlacementPhaseCompact()}";
 
     /// <summary>
     /// Return completed prior responses whose NodeId is in the given set.
@@ -378,6 +379,9 @@ public sealed class PriorClient : IPriorClient, IDisposable
         {
             _mailbox.Enqueue(item);
         }
+
+        foreach (var nodeId in knownNodeIds)
+            _pendingPlacement.TryRemove(nodeId, out _);
     }
 
     public void Dispose()
@@ -428,13 +432,30 @@ public sealed class PriorClient : IPriorClient, IDisposable
                         {
                             if (long.TryParse(r.Id, out var nodeId))
                             {
-                                var priors = new double[r.Priors.Length];
-                                for (int i = 0; i < r.Priors.Length; i++)
-                                    priors[i] = r.Priors[i];
+                                var priors = Array.ConvertAll(r.Priors, value => (double)value);
                                 var valueEstimate = r.ValueEstimate.HasValue
                                     ? (double)r.ValueEstimate.Value
                                     : double.NaN;
-                                _mailbox.Enqueue(new PriorResponse(nodeId, priors, valueEstimate));
+                                if (!double.IsFinite(valueEstimate))
+                                    valueEstimate = double.NaN;
+
+                                if (_mode == PriorMode.Placement
+                                    && _pendingPlacement.TryRemove(nodeId, out var pending))
+                                {
+                                    var valid = _actionSerializer!.IsValidDensePolicy(priors);
+                                    var settlementPriors = _actionSerializer.SettlementMarginals(
+                                        priors, pending.SettlementCompositeIndices);
+                                    if (valid)
+                                    {
+                                        foreach (var key in pending.RoadStateKeys)
+                                            _roadPolicies[key] = priors;
+                                    }
+                                    _mailbox.Enqueue(new PriorResponse(nodeId, settlementPriors, valueEstimate));
+                                }
+                                else if (_mode == PriorMode.State)
+                                {
+                                    _mailbox.Enqueue(new PriorResponse(nodeId, priors, valueEstimate));
+                                }
                                 Interlocked.Increment(ref _pollResponsesReceived);
                             }
                         }
@@ -483,6 +504,10 @@ public sealed class PriorClient : IPriorClient, IDisposable
     private sealed class PriorRequestItem
     {
         public string Id { get; init; } = "";
+
+        [JsonPropertyName("parent_state")]
+        public string ParentState { get; init; } = "";
+
         public string[] States { get; init; } = [];
         public int Player { get; init; }
         public int Priority { get; init; }
@@ -497,18 +522,13 @@ public sealed class PriorClient : IPriorClient, IDisposable
     private sealed class PlacementPriorRequestItem
     {
         public string Id { get; init; } = "";
-        public string[] States { get; init; } = [];
-        public string[] Actions { get; init; } = [];
-
-        /// <summary>
-        /// Boundary indices mapping composite actions back to settlement children.
-        /// <c>ChildBoundaries[i]</c> is the start index of actions for child <c>i</c>;
-        /// <c>ChildBoundaries[i+1]</c> is the exclusive end (sentinel at the end).
-        /// </summary>
-        [JsonPropertyName("child_boundaries")]
-        public int[] ChildBoundaries { get; init; } = [];
+        public string State { get; init; } = "";
         public int Priority { get; init; }
     }
+
+    private sealed record PendingPlacementRequest(
+        int[][] SettlementCompositeIndices,
+        string[] RoadStateKeys);
 
     // Shared response payloads (same format for both modes)
     private sealed class PriorCollectPayload

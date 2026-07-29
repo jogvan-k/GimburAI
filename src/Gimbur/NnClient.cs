@@ -89,26 +89,25 @@ public sealed class NnClient : IDisposable
     }
 
     /// <summary>
-    /// Sends compact placement state strings together with action strings to
-    /// the <c>/placement/predict</c> endpoint.  The server evaluates each
-    /// (state, action) pair and returns bucket probability distributions.
+    /// Sends compact placement states to <c>/placement/predict</c> and returns
+    /// value buckets plus one dense policy over the full action vocabulary.
     /// </summary>
     /// <param name="compactStates">Compact serialized placement phase states.</param>
-    /// <param name="actions">Placement action strings (one per state).</param>
-    /// <returns>
-    /// An array of float arrays, one per input (state, action) pair.  Each
-    /// inner array has <see cref="BucketCount"/> elements summing to ~1.0.
-    /// </returns>
-    public async Task<float[][]> PredictPlacementAsync(
-        IReadOnlyList<string> compactStates,
-        IReadOnlyList<string> actions)
+    public async Task<PlacementPrediction> PredictPlacementAsync(
+        IReadOnlyList<string> compactStates)
     {
-        var request = new PredictPlacementRequest { States = compactStates, Actions = actions };
+        var request = new PredictPlacementRequest { States = compactStates };
         using var response = await SendWithRetryAsync(
             () => _http.PostAsJsonAsync("placement/predict", request, JsonOptions));
         var result = await response.Content.ReadFromJsonAsync<PredictPlacementResponse>(JsonOptions);
-        return result?.Probabilities ?? [];
+        return new PlacementPrediction(
+            result?.ValueProbabilities ?? [],
+            result?.PolicyProbabilities ?? []);
     }
+
+    public sealed record PlacementPrediction(
+        float[][] ValueProbabilities,
+        float[][] PolicyProbabilities);
 
 
     /// <summary>
@@ -238,11 +237,14 @@ public sealed class NnClient : IDisposable
     private sealed class PredictPlacementRequest
     {
         public IReadOnlyList<string> States { get; init; } = [];
-        public IReadOnlyList<string> Actions { get; init; } = [];
     }
 
     private sealed class PredictPlacementResponse
     {
-        public float[][] Probabilities { get; init; } = [];
+        [JsonPropertyName("value_probabilities")]
+        public float[][] ValueProbabilities { get; init; } = [];
+
+        [JsonPropertyName("policy_probabilities")]
+        public float[][] PolicyProbabilities { get; init; } = [];
     }
 }

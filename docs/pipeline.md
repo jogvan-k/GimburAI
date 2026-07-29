@@ -49,6 +49,8 @@ maps them to Python `snake_case` internally.
 | `mapConfig`     | string   | `"mini"`           | Board layout preset passed to the CLI. |
 | `gameConfig`    | string   | `"mini_2p"`        | Game rules preset (players, VP target, etc.). |
 | `modelConfig`   | string   | `"small"`          | Neural network architecture preset. |
+| `placementModelConfig` | string/null | `null` | Optional placement architecture preset; defaults to `modelConfig`. |
+| `modelType`     | string   | `"state"`          | Pipeline mode: `state`, `placement`, or `combined`. |
 | `seed`          | int/null | `null`             | Base seed for reproducibility. Each gen offsets it. |
 | `dataDir`       | string   | `"pipeline/data"`  | Root directory for per-generation game data. |
 | `modelDir`      | string   | `"pipeline/models"`| Directory for model checkpoints. |
@@ -82,6 +84,18 @@ maps them to Python `snake_case` internally.
 | `valSplit`    | float | `0.1`   | Fraction of data for validation. |
 | `testSplit`   | float | `0.0`   | Fraction of data for testing. |
 | `logInterval` | int   | `50`    | Print training stats every N batches. |
+| `outputMode`  | string | `"value"` | Placement head topology: `value` or `combined`. State pipelines use `value`. |
+| `target`      | string | `"winrate"` | Placement data target; combined output uses dense visit-share policy targets. |
+| `valueLossWeight` | float | `1.0` | Value-loss weight for combined placement training. |
+| `policyLossWeight` | float | `1.0` | Masked policy-loss weight for combined placement training. |
+
+## Placement Architecture
+
+Placement checkpoints use `checkpoint_version: 2` and `architecture: "placement_state_v2"`. The model input is only the serialized placement state; the tokenizer action vocabulary supplies dense policy output indices, not input tokens. Placement models support a value-only head or combined heads: value logits are `[B,128]`, and combined policy logits are `[B,A]` with `A=60/82/144` for mini/small/standard.
+
+The model emits raw logits. Combined training constructs a legal mask from every exported legal composite action and applies it to policy loss. Policy targets must come from standard shared-root MCTS visit shares; `simulationsPerAction` rollout counts are independent evaluation budgets and are unsuitable. Serving softmaxes the full vocabulary, while C# remains authoritative for legality and masks and normalizes policy probabilities before MCTS use.
+
+Old action-conditioned placement checkpoints do not match this architecture and cannot be resumed or served; retrain them as version 2 checkpoints.
 
 ### `serve` Section
 
@@ -118,7 +132,7 @@ pipeline/
 │   ├── gen1/
 │   └── ...
 ├── models/
-│   ├── gen0.pt        # Model checkpoint (state_dict only)
+│   ├── gen0.pt        # Versioned checkpoint with model weights and metadata
 │   ├── gen1.pt
 │   └── ...
 └── results/

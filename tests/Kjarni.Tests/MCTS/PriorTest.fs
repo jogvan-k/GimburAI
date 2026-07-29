@@ -438,6 +438,19 @@ type ComputePriorPolicyTests() =
         policy |> should haveLength 1
         policy.[0] |> should (equalWithin 0.001) 1.0
 
+    [<Test>]
+    member _.MalformedPriors_FallBackToUniform() =
+        let malformed =
+            [| [| 0.5 |]
+               [| 0.5; 0.3; 0.2 |]
+               [| Double.NaN; 0.5 |]
+               [| Double.PositiveInfinity; 0.5 |]
+               [| -0.1; 0.5 |] |]
+
+        for winProbs in malformed do
+            let policy = computePriorPolicy winProbs [| 1; 1 |] [| [| 1 |]; [| 1 |] |]
+            policy |> should equal [| 0.5; 0.5 |]
+
 // ────────────────────────────────────────────────────────────────
 // Search integration with mock IPriorClient
 // ────────────────────────────────────────────────────────────────
@@ -595,12 +608,11 @@ type PriorSearchIntegrationTests() =
 
         let _ = mcts.RunSimulation(mctsRoot)
 
-        // We should have requests with depth starting at 0 (first expansion
-        // from root has stateHistory = [root], so depth = 0).
+        // The root is requested at depth 0 and its expanded child at depth 1.
         mockClient.Requests.Length |> should be (greaterThan 0)
         let depths = mockClient.Requests |> List.map (fun (_, _, _, _, d) -> d)
-        // First expansion is at depth 0 (child of root)
         depths |> should contain 0
+        depths |> should contain 1
 
 // ────────────────────────────────────────────────────────────────
 // Priors field on MCTSState

@@ -47,7 +47,13 @@ from torch.utils.data import DataLoader
 
 from .data_loader import PlacementDataset, SimulationDataset, load_games, split_games
 from .game_config import CONFIGS_BY_NAME
-from .loss_config import LOSS_MODES, LossConfig, LossFn, build_loss_fn
+from .loss_config import (
+    LOSS_MODES,
+    LossConfig,
+    LossFn,
+    build_loss_fn,
+    masked_soft_target_cross_entropy,
+)
 from .transformer_model import (
     MODEL_CONFIGS_BY_NAME,
     OUTPUT_MODES,
@@ -116,6 +122,8 @@ _CONFIG_KEYS: dict[str, str] = {
     "target": "target",
     "outputMode": "output_mode",
     "advantage": "advantage",
+    "valueLossWeight": "value_loss_weight",
+    "policyLossWeight": "policy_loss_weight",
 }
 
 # Attributes whose CLI type is Path.
@@ -173,9 +181,7 @@ def _build_dataset(
     ``"combined"`` so the dataset returns both value and policy targets.
     """
     if args.model_type == "placement":
-        effective_target = (
-            "combined" if args.output_mode == "combined" else args.target
-        )
+        effective_target = "combined" if args.output_mode == "combined" else "winrate"
         return dataset_class(
             games, game_cfg, n_buckets=n_buckets, target=effective_target,
             advantage=args.advantage,
@@ -235,13 +241,10 @@ def parse_args() -> argparse.Namespace:
         "--target",
         type=str,
         default="winrate",
-        choices=["winrate", "policy"],
+        choices=["winrate"],
         help=(
-            "Training target for placement models: 'winrate' (default — predict "
-            "per-action expected win probability) or 'policy' (predict each "
-            "action's normalised share of MCTS visits among its siblings, "
-            "yielding peaked PUCT-style action priors). Ignored for state models "
-            "and when --output-mode=combined."
+            "Compatibility option for placement value training. Combined mode "
+            "always uses dense value and policy targets."
         ),
     )
     parser.add_argument(
@@ -250,22 +253,20 @@ def parse_args() -> argparse.Namespace:
         default="value",
         choices=sorted(OUTPUT_MODES),
         help=(
-            "Output head topology: 'value' (default — single head for win "
-            "probability), 'policy' (single head for visit-share), or "
-            "'combined' (dual heads for both value and policy, trained "
-            "simultaneously). When 'combined', --target is ignored."
+            "Output head topology. Placement models support 'value' and "
+            "'combined'; policy-only is retained only for state-model config "
+            "compatibility and is not currently trainable."
         ),
     )
+    parser.add_argument("--value-loss-weight", type=float, default=1.0)
+    parser.add_argument("--policy-loss-weight", type=float, default=1.0)
     parser.add_argument(
         "--advantage",
         action="store_true",
         default=False,
         help=(
-            "Enable advantage weighting for the policy loss. Requires "
-            "--output-mode=combined. Each sample's policy loss is weighted by "
-            "A = Q(s,a) - V(s) where Q(s,a) is the MCTS win rate and V(s) is "
-            "the model's value estimate (from 'modelValue' in the exported data). "
-            "Samples without modelValue get weight 0 (policy loss ignored)."
+            "Deprecated compatibility option; dense placement policy training "
+            "does not use advantage weighting."
         ),
     )
     parser.add_argument(
@@ -346,6 +347,8 @@ _ARG_DEFAULTS: dict[str, object] = {
     "target": "winrate",
     "output_mode": "value",
     "advantage": False,
+    "value_loss_weight": 1.0,
+    "policy_loss_weight": 1.0,
 }
 
 
@@ -401,6 +404,8 @@ def _save_final_model(
     """
     torch.save(
         {
+            "checkpoint_version": 2,
+            "architecture": "placement_state_v2" if args.model_type == "placement" else "state",
             "model_state_dict": model.state_dict(),
             "model_type": args.model_type,
             "model_config": args.model_config,
@@ -463,22 +468,17 @@ def _run_epoch(
     loss_fn: LossFn = F.cross_entropy,
     output_mode: str = "value",
     advantage: bool = False,
+    value_loss_weight: float = 1.0,
+    policy_loss_weight: float = 1.0,
 ) -> float:
     """Run one epoch (train or eval).
 
     When *optimizer* is ``None`` the model runs in eval mode with no
     gradient updates (validation).
 
-    When *output_mode* is ``"combined"``, the model returns a dict with
-    ``"value"`` and ``"policy"`` logits and each batch yields three
-    tensors (token_ids, value_targets, policy_targets).  The total loss
-    is the mean of the value and policy losses.
-
-    When *advantage* is ``True`` (requires combined mode), the batch
-    has a 4th element — per-sample advantage weights.  The policy loss
-    is weighted by these advantages:
-    ``policy_loss = mean(advantage * per_sample_CE)``.  The value loss
-    remains unweighted.
+    In combined mode each batch contains state tokens, a value bucket,
+    a dense policy target, and a legal-action mask. Loss weights control
+    the contribution of the value and masked soft-policy losses.
 
     Returns the mean loss over the epoch.
     """
@@ -498,26 +498,17 @@ def _run_epoch(
             if output_mode == "combined":
                 value_targets = batch[1].to(device)
                 policy_targets = batch[2].to(device)
-                value_logits = output["value"][:, -1, :]
-                policy_logits = output["policy"][:, -1, :]
+                value_logits = output["value"]
+                policy_logits = output["policy"]
                 value_loss = loss_fn(value_logits, value_targets)
-
-                if advantage:
-                    # Per-sample advantage weights from batch[3].
-                    adv_weights = batch[3].to(device)  # (batch,)
-                    # Per-sample policy cross-entropy (no reduction).
-                    per_sample_policy_loss = F.cross_entropy(
-                        policy_logits, policy_targets, reduction="none"
-                    )
-                    # Weight by advantage and take mean.
-                    policy_loss = (adv_weights * per_sample_policy_loss).mean()
-                else:
-                    policy_loss = loss_fn(policy_logits, policy_targets)
-
-                loss = (value_loss + policy_loss) / 2.0
+                legal_mask = batch[3].to(device)
+                policy_loss = masked_soft_target_cross_entropy(
+                    policy_logits, policy_targets, legal_mask
+                )
+                loss = value_loss_weight * value_loss + policy_loss_weight * policy_loss
             else:
                 targets = batch[1].to(device)
-                logits = output[:, -1, :]  # (batch, n_buckets)
+                logits = output if output.ndim == 2 else output[:, -1, :]
                 loss = loss_fn(logits, targets)
 
             if is_train:
@@ -558,6 +549,13 @@ def main() -> None:
         raise SystemExit("Error: --game-config is required (via CLI or config file).")
     if args.model_config is None:
         raise SystemExit("Error: --model-config is required (via CLI or config file).")
+    if args.model_type == "state" and args.output_mode != "value":
+        raise SystemExit(
+            "Error: state policy/combined training requires per-action visit-share data, "
+            "which GameState exports do not currently contain. Use --output-mode=value."
+        )
+    if args.model_type == "placement" and args.output_mode == "policy":
+        raise SystemExit("Error: placement models support only value or combined output modes.")
 
     game_cfg = CONFIGS_BY_NAME[args.game_config]
     model_cfg = MODEL_CONFIGS_BY_NAME[args.model_config]
@@ -715,6 +713,8 @@ def main() -> None:
             loss_fn=loss_fn,
             output_mode=args.output_mode,
             advantage=args.advantage,
+            value_loss_weight=args.value_loss_weight,
+            policy_loss_weight=args.policy_loss_weight,
         )
 
         label = f"{epoch}/{max_epochs}" if max_epochs else str(epoch)
@@ -727,6 +727,8 @@ def main() -> None:
                 model, val_loader, device, None, 0, epoch, "val", loss_fn=loss_fn,
                 output_mode=args.output_mode,
                 advantage=args.advantage,
+                value_loss_weight=args.value_loss_weight,
+                policy_loss_weight=args.policy_loss_weight,
             )
             msg += f" | val loss {val_loss:.4f}"
 
@@ -775,6 +777,8 @@ def main() -> None:
             model, test_loader, device, None, 0, 0, "test", loss_fn=loss_fn,
             output_mode=args.output_mode,
             advantage=args.advantage,
+            value_loss_weight=args.value_loss_weight,
+            policy_loss_weight=args.policy_loss_weight,
         )
         print(f"Test loss: {test_loss:.4f}")
 

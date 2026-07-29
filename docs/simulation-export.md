@@ -114,7 +114,7 @@ Board symmetry permutations rearrange position-dependent data (tile indices, ver
 
 ## InitialPlacement Export Schema
 
-*Produces training data for the **GimburPlacementActionEvaluator** model. Records all candidate composite (settlement + road) actions with per-action MCTS statistics.*
+*Produces training data for the state-only `placement_state_v2` model. Records every legal composite settlement-road action, including legal composites with zero rollouts.*
 
 When `--export-type InitialPlacement` is specified, the game loop runs in placement-only mode. MCTS search is performed at settlement placement steps (`PlaceFirstSettlement` and `PlaceSecondSettlement`). Each MCTS root action is a `PlaceSettlementAction`, and its child state has `PlaceRoadAction` choices. The export combines these into composite actions serialized as `<vertex><direction>` strings (see [state-action-serialization.md](state-action-serialization.md) Part III).
 
@@ -167,12 +167,15 @@ Note: The `winner` and `turns` fields from the GameState schema are omitted sinc
   "serializedState": "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|._._._._._._._._._._._._._._._._._._._._._._._._|______________________________|",
   "simulations": 5000,
   "elapsedMs": 1000,
+  "modelValue": 0.61,
+  "valueTarget": 0.62,
   "actions": [
     {
       "action": "6N",
       "wins": [320.0, 180.0],
       "rollouts": 500,
       "winRate": 0.64,
+      "modelPrior": 0.18,
       "permutations": ["8SE", "10SW", "14N", "16SE"]
     },
     {
@@ -197,7 +200,9 @@ Note: The `winner` and `turns` fields from the GameState schema are omitted sinc
 | `serializedState` | string | 4-section placement phase state: `tiles\|ports\|placementVertices\|edges`. See [state-action-serialization.md](state-action-serialization.md) Part II. |
 | `simulations` | int | Total MCTS rollouts performed for this decision. |
 | `elapsedMs` | int | Wall-clock time spent on MCTS search (milliseconds). |
-| `actions` | Action[] | All candidate composite actions with per-action MCTS statistics. |
+| `modelValue` | float? | Placement model's scalar value estimate when a combined prior response was applied; otherwise `null`. |
+| `valueTarget` | float? | Rollout-weighted acting-player value target across legal composites; `null` if no rollouts are available. |
+| `actions` | Action[] | Every C#-legal composite action with per-action MCTS statistics, including zero-rollout actions. This list also defines the exported legal mask. |
 | `permutations` | string[] | `serializedState` under each non-trivial symmetry permutation. Same order as `board.permutations`. |
 
 ### Action Object
@@ -220,6 +225,7 @@ Each action represents a composite settlement + road placement. The action strin
 | `wins` | float[] | MCTS win counts at the road grandchild node, 0-indexed (index 0 = player 1). See [Composite Action Stats](#composite-action-stats). |
 | `rollouts` | int | Total rollouts at the road grandchild node. |
 | `winRate` | float | Acting player's win rate (wins[playerIndex] / rollouts). |
+| `modelPrior` | float? | Masked, normalized NN probability for this legal composite when both settlement and road priors were applied; otherwise `null`. |
 | `permutations` | string[] | Action string under each symmetry permutation. Same order as `board.permutations`. The wins, rollouts, and winRate are identical under permutation and are not repeated. |
 
 ### Composite Action Stats
@@ -240,7 +246,9 @@ Root (settlement choices)
 
 Each composite action maps to a specific road grandchild. The `wins` and `rollouts` are read directly from that grandchild MCTS node. This provides per-(vertex, road) granularity, allowing the model to learn directional road preferences.
 
-For unexplored actions (where MCTS did not expand the settlement or road), the action is included with `wins: []`, `rollouts: 0`, `winRate: 0`.
+For unexplored actions, the action remains in the export with `wins: []`, `rollouts: 0`, and `winRate: 0`. Python maps all listed actions to the dense legal mask. In combined training, visit shares from a normal shared-root MCTS search form the policy target and policy loss is masked to these legal indices.
+
+`--simulations-per-action` runs separate rollouts from each post-composite state. Those rollout counts measure independent evaluation budgets, not shared-root action preference, and are therefore unsuitable as policy targets. Use standard shared-root placement search when training a combined value/policy model. `valueTarget` remains the rollout-weighted value label.
 
 ### Symmetry Permutations (InitialPlacement)
 

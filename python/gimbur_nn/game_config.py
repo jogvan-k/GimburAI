@@ -36,7 +36,7 @@ class ModelType(Enum):
     """GimburStateEvaluator — full game state during normal play."""
 
     PLACEMENT = "placement"
-    """GimburPlacementActionEvaluator — placement phase state + actions."""
+    """State-only placement evaluator with dense action outputs."""
 
 
 class GameConfig:
@@ -76,7 +76,7 @@ class GameConfig:
     """Number of unique placement actions for this map (E * 2)."""
 
     placement_vocab_size: int
-    """Combined placement embedding table size (state chars + action strings)."""
+    """Placement state input embedding table size."""
 
     # ── Victory / thresholds ─────────────────────────────────────────
     victory_points_to_win: int
@@ -156,7 +156,7 @@ def _make_config(
         tile_count, vertex_count, edge_count, port_count
     )
     cfg.action_vocab_size = edge_count * 2
-    cfg.placement_vocab_size = _placement_state_vocab_size(player_count) + cfg.action_vocab_size
+    cfg.placement_vocab_size = _placement_state_vocab_size(player_count)
     cfg.victory_points_to_win = victory_points_to_win
     cfg.longest_road_minimum = longest_road_minimum
     cfg.largest_army_minimum = largest_army_minimum

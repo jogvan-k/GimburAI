@@ -234,31 +234,20 @@ class GimburTransformer(nn.Module):
 
 
 class GimburPlacementTransformer(nn.Module):
-    """Neural network for evaluating Catan placement actions.
-
-    Input:  tokenized placement state + action (from PlacementTokenizer).
-    Output: bucket logits (value, policy, or both depending on output_mode).
-
-    When ``output_mode`` is ``"value"`` or ``"policy"``, the model has a
-    single ``bucket_head`` and ``forward()`` returns a tensor of shape
-    ``(batch, seq_len, n_buckets)``.
-
-    When ``output_mode`` is ``"combined"``, the model has two independent
-    heads (``value_head`` and ``policy_head``) and ``forward()`` returns a
-    dict ``{"value": Tensor, "policy": Tensor}`` with the same shape.
-    """
+    """State-only placement model with pooled value and dense policy heads."""
 
     def __init__(self, game_cfg: GameConfig, model_cfg: GimburTransformerConfig) -> None:
         super().__init__()
         self.game_config = game_cfg
         self.model_config = model_cfg
         self.output_mode = getattr(model_cfg, "output_mode", "value")
+        if self.output_mode not in ("value", "combined"):
+            raise ValueError("Placement models support only 'value' and 'combined' output modes.")
         assert model_cfg.d_model % model_cfg.n_heads == 0
 
         tok = PlacementTokenizer(game_cfg)
         self.tok_embeddings = nn.Embedding(tok.vocab_size, model_cfg.d_model)
-        # placement state tokens + 1 action token
-        self.pos_embeddings = nn.Embedding(game_cfg.placement_token_size + 1, model_cfg.d_model)
+        self.pos_embeddings = nn.Embedding(game_cfg.placement_token_size, model_cfg.d_model)
         self.embed_dropout = nn.Dropout(model_cfg.dropout)
 
         self.trf_blocks = nn.Sequential(
@@ -269,7 +258,7 @@ class GimburPlacementTransformer(nn.Module):
         # Output heads
         if self.output_mode == "combined":
             self.value_head = nn.Linear(model_cfg.d_model, model_cfg.n_buckets, bias=False)
-            self.policy_head = nn.Linear(model_cfg.d_model, model_cfg.n_buckets, bias=False)
+            self.policy_head = nn.Linear(model_cfg.d_model, tok.action_vocab_size, bias=False)
         else:
             self.bucket_head = nn.Linear(model_cfg.d_model, model_cfg.n_buckets, bias=False)
 
@@ -282,10 +271,11 @@ class GimburPlacementTransformer(nn.Module):
         x = self.embed_dropout(x)
         x = self.trf_blocks(x)
         x = self.final_ln(x)
+        pooled = x.mean(dim=1)
 
         if self.output_mode == "combined":
             return {
-                "value": self.value_head(x),
-                "policy": self.policy_head(x),
+                "value": self.value_head(pooled),
+                "policy": self.policy_head(pooled),
             }
-        return self.bucket_head(x)
+        return self.bucket_head(pooled)

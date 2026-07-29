@@ -142,6 +142,44 @@ public class PlacementSerializationTests
     }
 
     [Test]
+    public void DensePolicy_MarginalizesAndConditionsOnlyLegalComposites()
+    {
+        var serializer = PlacementActionSerializer.Mini;
+        var policy = new double[serializer.VocabularySize];
+        policy[2] = 2;
+        policy[4] = 3;
+        policy[7] = 5;
+
+        var marginals = serializer.SettlementMarginals(policy, new[] { new[] { 2, 4 }, new[] { 7 } });
+        var conditional = serializer.MaskAndNormalize(policy, new[] { 2, 4 });
+
+        Assert.That(marginals, Is.EqualTo(new[] { 0.5, 0.5 }).Within(1e-12));
+        Assert.That(conditional, Is.EqualTo(new[] { 0.4, 0.6 }).Within(1e-12));
+    }
+
+    [TestCaseSource(nameof(MalformedDensePolicies))]
+    public void DensePolicy_MalformedInputFallsBackToUniform(double[] policy)
+    {
+        var serializer = PlacementActionSerializer.Mini;
+
+        Assert.That(serializer.IsValidDensePolicy(policy), Is.False);
+        Assert.That(
+            serializer.MaskAndNormalize(policy, new[] { 1, 3 }),
+            Is.EqualTo(new[] { 0.5, 0.5 }).Within(1e-12));
+    }
+
+    private static IEnumerable<double[]> MalformedDensePolicies()
+    {
+        yield return new double[PlacementActionSerializer.Mini.VocabularySize - 1];
+        var negative = new double[PlacementActionSerializer.Mini.VocabularySize];
+        negative[0] = -1;
+        yield return negative;
+        var nonFinite = new double[PlacementActionSerializer.Mini.VocabularySize];
+        nonFinite[0] = double.NaN;
+        yield return nonFinite;
+    }
+
+    [Test]
     public void PeakVertices_UseN_SW_SE_Directions()
     {
         var validDirs = new HashSet<string> { "N", "SW", "SE" };

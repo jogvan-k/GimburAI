@@ -36,6 +36,16 @@ import torch.nn.functional as F
 LossFn = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 
 
+def masked_soft_target_cross_entropy(
+    logits: torch.Tensor, targets: torch.Tensor, legal_mask: torch.Tensor
+) -> torch.Tensor:
+    """Cross entropy for dense soft targets over legal actions only."""
+    masked_logits = logits.masked_fill(~legal_mask.bool(), float("-inf"))
+    log_probs = F.log_softmax(masked_logits, dim=-1).masked_fill(~legal_mask.bool(), 0.0)
+    per_sample = -(targets * log_probs).sum(dim=-1)
+    return per_sample.mean()
+
+
 @dataclass
 class LossConfig:
     """Configuration for the training loss function.

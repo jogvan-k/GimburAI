@@ -46,13 +46,16 @@
   - `game_config.py` — map dimension constants and tensor size formulas for mini/small/standard maps.
   - `tokenizer.py` — legacy game-state tokenizer; parses 10-section serialized strings into PyTorch tensors.
   - `state_tokenizer.py` — game-state tokenizer class (`StateTokenizer`).
-  - `placement_tokenizer.py` — placement-phase tokenizer class (`PlacementTokenizer`); handles 4-section placement state strings and action vocabulary.
+  - `placement_tokenizer.py` — placement-phase tokenizer class (`PlacementTokenizer`); handles 4-section placement state strings. Its action vocabulary is dense policy output indexing only, not model input.
   - `data_loader.py` — loads JSONL training data exported by `gimbur simulate --export`, builds `SimulationDataset` for PyTorch `DataLoader`.
   - `model_config.py` — model hyperparameter configuration.
-  - `transformer_model.py` — transformer-based model architecture; defines `OutputMode` enum (`value`, `policy`, `combined`) and `GimburTransformerConfig` with `output_mode` field controlling the output head topology (single bucket head or dual value + policy heads).
+  - `transformer_model.py` — transformer-based models. `GimburPlacementTransformer` implements state-only `placement_state_v2` with value-only `[B,128]` logits or combined value `[B,128]` and dense policy `[B,A]` logits (`A` = 60/82/144 by map).
   - `pipeline.py` — training/evaluation pipeline utilities.
   - `train.py` — training loop; reads JSONL data exported by `gimbur simulate --export`.
-  - `serve.py` — HTTP inference server; loads a trained checkpoint and serves predictions for the MCTS engine. Prior collect responses include `priors` (per-action policy weights) and `value_estimate` (scalar state value from combined models).
+  - `serve.py` — HTTP inference server. `/placement/predict` accepts `states` and returns `value_probabilities` plus optional full-vocabulary `policy_probabilities`. Placement prior requests contain `id`, `state`, and `priority`; collect responses contain dense `priors` and `value_estimate`.
+- Placement models emit raw logits. Combined training masks policy loss using legal actions exported by C#; serving softmaxes the full vocabulary, and C# is authoritative for legality and masks/normalizes before MCTS use.
+- Placement MCTS converts dense composite policy into settlement marginals (sum over legal roads) and conditional road priors. Shared-root visits are policy targets; `simulations-per-action` rollout counts are not.
+- Placement checkpoints require `checkpoint_version: 2` and `architecture: "placement_state_v2"`; older action-conditioned checkpoints are incompatible.
 - Tests live under `python/tests/` using pytest:
   - `test_tokenizer.py` — tests for all tokenizer classes (game state, placement state, action vocab).
   - `test_data_loader.py` — tests for data loading, sample expansion, and dataset construction.

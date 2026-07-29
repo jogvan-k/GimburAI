@@ -297,51 +297,20 @@ def expand_placement_games(
     tokenizer: PlacementTokenizer | None = None,
     target: str = "winrate",
     advantage: bool = False,
-) -> list[tuple[torch.Tensor, int]] | list[tuple[torch.Tensor, int, int]] | list:
-    """Expand placement-phase game dicts into training samples.
+) -> list:
+    """Emit one state sample per exported state and symmetry permutation.
 
-    Each game's states are expanded via symmetry permutations.  Unlike
-    :func:`expand_games`, there is no player rotation — each action
-    already has its own ``winRate``, and each ``(state, action)`` pair
-    produces one sample.
-
-    Args:
-        games: List of parsed placement game dicts.
-        cfg: Game configuration matching the exported data.
-        n_buckets: Number of output buckets (must match the model).
-        tokenizer: Optional pre-built tokenizer (avoids re-creation).
-        target: ``"winrate"`` (default — bucketize each action's winRate),
-            ``"policy"`` (bucketize each action's share of total MCTS
-            visits within its sibling group), or ``"combined"`` (return
-            both value and policy bucket targets per sample).
-        advantage: When True and ``target="combined"``, include a per-sample
-            advantage weight computed as ``A = Q(s,a) - V(s)`` where
-            ``Q(s,a)`` is the MCTS win rate and ``V(s)`` is the model's
-            value estimate for the state. Samples without a model value
-            estimate (``modelValue`` is null) get advantage 0.
-
-    Returns:
-        For ``"winrate"`` or ``"policy"``: a flat list of
-        ``(token_ids, target_bucket)`` pairs.
-
-        For ``"combined"`` without advantage: a flat list of
-        ``(token_ids, value_bucket, policy_bucket)`` triples.
-
-        For ``"combined"`` with advantage: a flat list of
-        ``(token_ids, value_bucket, policy_bucket, advantage_weight)``
-        4-tuples where ``advantage_weight`` is a float.
+    ``target`` and ``advantage`` remain accepted for config compatibility.
+    ``target="combined"`` emits dense policy targets and legal masks;
+    all other supported target values emit value-only samples.
     """
     if tokenizer is None:
         tokenizer = PlacementTokenizer(cfg)
-    if target not in ("winrate", "policy", "combined"):
-        raise ValueError(
-            f"Unknown target: {target!r} (expected 'winrate', 'policy', or 'combined')."
-        )
-    if advantage and target != "combined":
-        raise ValueError("Advantage weighting requires target='combined'.")
+    if target not in ("winrate", "combined"):
+        raise ValueError("Placement target must be 'winrate' or 'combined'.")
     samples: list = []
     for game in games:
-        _process_placement_game(game, n_buckets, samples, tokenizer, target, advantage)
+        _process_placement_game(game, n_buckets, samples, tokenizer, target)
     return samples
 
 
@@ -351,109 +320,57 @@ def _process_placement_game(
     samples: list,
     tokenizer: PlacementTokenizer,
     target: str = "winrate",
-    advantage: bool = False,
 ) -> None:
-    """Expand one placement-phase game record into training samples."""
+    """Expand one placement game into state-level value/policy samples."""
     for state_entry in game["states"]:
         state_serialized: str = state_entry["serializedState"]
         state_permutations: list[str] = state_entry["permutations"]
 
-        # Identity + one per symmetry permutation.
-        # Each variant is already a full 4-section string (tiles|ports|vertices|edges).
         all_variants = [state_serialized, *state_permutations]
-
-        # For policy or combined mode, precompute per-action visit shares.
-        need_policy = target in ("policy", "combined")
-        if need_policy:
-            rollouts = [int(a.get("rollouts", 0)) for a in state_entry["actions"]]
-            total = sum(rollouts)
-            if total <= 0:
-                if target == "policy":
-                    # Degenerate: no MCTS data for this state. Skip rather than
-                    # train on a uniform-policy ghost target.
-                    continue
-                # Combined mode: skip policy but still emit value-only? No —
-                # combined requires both targets; skip the whole state.
-                continue
-            visit_shares = [r / total for r in rollouts]
+        actions = state_entry["actions"]
+        if not actions:
+            continue
+        rollouts = [max(0, int(action.get("rollouts", 0))) for action in actions]
+        total_rollouts = sum(rollouts)
+        if target == "combined" and total_rollouts == 0:
+            continue
+        exported_value = state_entry.get("valueTarget")
+        if exported_value is not None:
+            value_prob = float(exported_value)
+        elif total_rollouts > 0:
+            value_prob = sum(
+                float(action["winRate"]) * rollout
+                for action, rollout in zip(actions, rollouts)
+            ) / total_rollouts
         else:
-            visit_shares = None
-
-        # For advantage weighting: V(s) = model's value estimate for this state.
-        # A(s,a) = Q(s,a) - V(s) where Q(s,a) = action's MCTS winRate.
-        model_value: float | None = None
-        if advantage:
-            mv = state_entry.get("modelValue")
-            if mv is not None:
-                model_value = float(mv)
+            value_prob = sum(float(action["winRate"]) for action in actions) / len(actions)
+        value_bucket = _prob_to_bucket(value_prob, n_buckets)
 
         for variant_idx, state_str in enumerate(all_variants):
-            compact = _compact(state_str)
+            token_ids = tokenizer.tokenize_state(_compact(state_str))
+            if target != "combined":
+                samples.append((token_ids, value_bucket))
+                continue
 
-            for action_idx, action_entry in enumerate(state_entry["actions"]):
-                # Select the correct action string for this variant.
-                if variant_idx == 0:
-                    action_string = action_entry["action"]
-                else:
-                    action_string = action_entry["permutations"][variant_idx - 1]
-
-                token_ids = tokenizer.tokenize_state_action(compact, action_string)
-
-                if target == "combined":
-                    assert visit_shares is not None
-                    value_prob = float(action_entry["winRate"])
-                    policy_prob = visit_shares[action_idx]
-                    value_bucket = _prob_to_bucket(value_prob, n_buckets)
-                    policy_bucket = _prob_to_bucket(policy_prob, n_buckets)
-                    if advantage:
-                        adv = (value_prob - model_value) if model_value is not None else 0.0
-                        samples.append((token_ids, value_bucket, policy_bucket, adv))
-                    else:
-                        samples.append((token_ids, value_bucket, policy_bucket))
-                elif target == "policy":
-                    assert visit_shares is not None
-                    prob = visit_shares[action_idx]
-                    bucket = _prob_to_bucket(prob, n_buckets)
-                    samples.append((token_ids, bucket))
-                else:
-                    prob = float(action_entry["winRate"])
-                    bucket = _prob_to_bucket(prob, n_buckets)
-                    samples.append((token_ids, bucket))
+            policy = torch.zeros(tokenizer.action_vocab_size, dtype=torch.float32)
+            legal_mask = torch.zeros(tokenizer.action_vocab_size, dtype=torch.bool)
+            for action_entry, rollout in zip(actions, rollouts):
+                action = (
+                    action_entry["action"]
+                    if variant_idx == 0
+                    else action_entry["permutations"][variant_idx - 1]
+                )
+                action_idx = tokenizer.tokenize_action(action)
+                policy[action_idx] += rollout / total_rollouts
+                legal_mask[action_idx] = True
+            samples.append((token_ids, value_bucket, policy, legal_mask))
 
 
 # ── Placement Dataset ────────────────────────────────────────────────
 
 
 class PlacementDataset(Dataset[tuple[torch.Tensor, ...]]):
-    """PyTorch dataset for placement-phase training data.
-
-    Expands placement games into samples on construction and holds them
-    in memory.
-
-    For ``target="winrate"`` or ``"policy"``, each item is a
-    ``(token_ids, target_bucket)`` pair where ``token_ids`` is a 1-D
-    ``int`` tensor (state + action tokens) and ``target_bucket`` is a
-    scalar ``long`` tensor.
-
-    For ``target="combined"``, each item is a
-    ``(token_ids, value_bucket, policy_bucket)`` triple.
-
-    For ``target="combined"`` with ``advantage=True``, each item is a
-    ``(token_ids, value_bucket, policy_bucket, advantage_weight)`` 4-tuple
-    where ``advantage_weight`` is a scalar float tensor.
-
-    Args:
-        games: List of parsed placement game dicts (from :func:`load_games`).
-        cfg: Game configuration matching the exported data.
-        n_buckets: Number of output buckets (default 128).
-        target: ``"winrate"`` (default — bucketize each action's winRate),
-            ``"policy"`` (bucketize each action's normalised share of
-            total MCTS visits within its sibling group), or
-            ``"combined"`` (return both value and policy targets).
-            See :func:`expand_placement_games`.
-        advantage: When True (requires ``target="combined"``), include
-            per-sample advantage weights ``A = Q(s,a) - V(s)``.
-    """
+    """In-memory placement dataset with one sample per state/permutation."""
 
     def __init__(
         self,
@@ -470,15 +387,11 @@ class PlacementDataset(Dataset[tuple[torch.Tensor, ...]]):
             advantage=advantage,
         )
         self._combined = target == "combined"
-        self._advantage = advantage
         self._tokens = [t[0] for t in raw]
         if self._combined:
             self._value_targets = torch.tensor([t[1] for t in raw], dtype=torch.long)
-            self._policy_targets = torch.tensor([t[2] for t in raw], dtype=torch.long)
-            if self._advantage:
-                self._advantages = torch.tensor(
-                    [t[3] for t in raw], dtype=torch.float32
-                )
+            self._policy_targets = [t[2] for t in raw]
+            self._legal_masks = [t[3] for t in raw]
         else:
             self._targets = torch.tensor([t[1] for t in raw], dtype=torch.long)
 
@@ -487,12 +400,10 @@ class PlacementDataset(Dataset[tuple[torch.Tensor, ...]]):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, ...]:
         if self._combined:
-            if self._advantage:
-                return (
-                    self._tokens[idx],
-                    self._value_targets[idx],
-                    self._policy_targets[idx],
-                    self._advantages[idx],
-                )
-            return self._tokens[idx], self._value_targets[idx], self._policy_targets[idx]
+            return (
+                self._tokens[idx],
+                self._value_targets[idx],
+                self._policy_targets[idx],
+                self._legal_masks[idx],
+            )
         return self._tokens[idx], self._targets[idx]

@@ -192,20 +192,18 @@ details.
 ## Phase 3 — Prior Request
 
 After expansion, if a prior client is configured, the search loop enqueues an
-asynchronous prior request for the newly expanded node. The request contains the
-serialized result state of every action from the expanded node — the NN evaluates
-each resulting position and returns one **prior score** per action. Depending on
-how the model was trained, those scores have one of two meanings:
+asynchronous prior request for the newly expanded node. Full-state value models
+evaluate serialized action-result states. The placement client instead sends one
+placement state to the state-only `placement_state_v2` model and receives a dense
+full-vocabulary policy plus an optional value estimate.
 
 - **Win-rate prior** (legacy): each score is the predicted win probability of
   the corresponding result state for the acting player. Scores are independent
   per action and are not constrained to any particular sum.
-- **Policy prior** (placement model only, going forward): the scores form an
-  approximate policy distribution over the legal actions of the parent node and
-  approximately sum to 1.
+- **Placement policy prior**: the server softmaxes the model's raw dense policy
+  logits. C# applies authoritative legality masking and normalization.
 
-In both cases the prior client treats the returned values as raw scores and
-normalises them before they are stored on the parent node (see
+The prior client normalises legal scores before storing them on the parent node (see
 [Converting Prior Scores to Priors](#converting-prior-scores-to-priors)). The
 call is non-blocking; the search continues immediately with simulation. See
 [Asynchronous Neural Network Priors](#asynchronous-neural-network-priors) for
@@ -510,9 +508,8 @@ next chance event.
 ## Asynchronous Neural Network Priors
 
 The search uses neural network priors to bias action selection toward promising
-moves. The NN evaluates the resulting state of each action to produce a win
-probability, which is then converted into a prior policy over the parent node's
-actions. Because NN inference is expensive relative to a single MCTS iteration,
+moves. Full-state models evaluate action-result states. Placement models evaluate
+one parent placement state and return a dense canonical policy. Because NN inference is expensive relative to a single MCTS iteration,
 prior requests are issued asynchronously — the search loop does not block while
 waiting for results.
 
@@ -533,22 +530,21 @@ MCTS Search Loop                   Prior Client                    Inference Ser
 expand(node)                              │                              │
   ├─ create child MCTSState(s)            │                              │
   ├─ requestPrior(                        │                              │
-  │    parentNode,                        │                              │
-  │    actionStates[], depth) ───────────►├─ POST /prior-enqueue ───────►├─ enqueue by depth
-  │   (non-blocking, fire & forget)       │   { states[], depth }        │
+  │    parentNode, state, depth) ────────►├─ POST /placement/prior-enqueue ► enqueue by depth
+  │   (non-blocking, fire & forget)       │   { id, state, priority }    │
   │                                       │                              ├─ dequeue batch
   ├─ simulate(child)                      │                              │   (lowest depth first)
   ├─ backPropagate(path, outcome)         │                              ├─ GPU inference
   ├─ propagateTerminals(path)             │                              │
   │                                       │                              │
   ├─ collectPriors() ◄────────────────────┤◄─────── response ────────────┤
-  │   check mailbox for responses         │   { id, win_probs[] }        │
-  │   if found: normalize win_probs       │                              │
-  │   into prior policy, apply to node    │                              │
+  │   check mailbox for responses         │   { id, priors[],            │
+  │   if found: mask and normalize        │     value_estimate }         │
+  │   legal priors, apply to node         │                              │
   │                                       │                              │
   └─ continue loop                        │                              │
                                           │                              │
-search ends ──────────────────────────────┼─ POST /prior-flush ─────────►├─ clear queue
+search ends ──────────────────────────────┼─ discard local pending IDs   │
 ```
 
 ### Prior Request Lifecycle
@@ -561,21 +557,18 @@ edges from the root to the newly expanded node. This call is **non-blocking** �
 it enqueues the request and returns immediately. The MCTS iteration continues
 with rollout and backpropagation as normal.
 
-The request contains a list of serialized game states — one per action from the
-expanded node. Each state represents the result of applying that action. The
-inference server does not know how to apply game actions; Kjarni is responsible
-for materializing the resulting states and sending them.
+For state-model priors, the request contains serialized result states. For
+placement priors, it contains only the parent placement state. The placement
+action vocabulary is output indexing, not request input.
 
 For **deterministic actions**, the resulting state is `action.State()`. For
 **stochastic actions**, each possible outcome is a separate state. A node with
 3 deterministic actions and 1 stochastic action with 4 outcomes sends 7 states
 total.
 
-The request payload contains:
+The queued placement request contains:
 - A client-side ID to correlate the response back to the parent `MCTSState`.
-- The list of serialized action-result states (compact strings, same format as
-  training data).
-- The acting player (1-based, for server-side player rotation).
+- One compact placement state.
 - The priority (depth from root; lower = more important).
 
 #### 2. Priority queuing on the server
@@ -604,19 +597,18 @@ After each backpropagation and terminal propagation step, the search loop calls
 completed prior responses. For each response:
 
 1. Look up the corresponding parent `MCTSState` by its ID.
-2. Convert the per-action win probabilities into a normalized prior policy.
+2. For placement, mask the dense policy to C#-legal composites and normalize it.
 3. Store the prior on the parent node.
 
 If no responses are available, `collectPriors` returns immediately with no
 blocking. Multiple responses may arrive between iterations; all are consumed in
 a single pass.
 
-#### 4. Flush on search completion
+#### 4. Cleanup on search completion
 
-When the MCTS search finishes (budget exhausted or root resolved), the caller
-invokes `flush()` on the server. This clears the priority queue and drops all
-pending requests. Any in-flight responses that arrive after the flush are
-discarded by the client (the node IDs no longer exist in the new tree).
+When the MCTS search finishes, the client drops pending IDs and mailbox responses
+for that search. It does not clear the shared server queue, which may also contain
+requests from concurrent searches. Late responses become harmless orphans.
 
 This is necessary because the tree is advanced to a new root after each game
 move. Pending requests reference nodes in the old tree that are no longer
@@ -624,10 +616,10 @@ relevant.
 
 ### Converting Prior Scores to Priors
 
-The NN returns one **score** per action-result state. The semantics of the
-score depend on which target the model was trained for (see
-[Prior Targets](#prior-targets) below), but Kjarni's conversion path is the
-same in both cases.
+For state priors, the NN returns one score per action-result state. For placement,
+the server returns a dense policy of width 60, 82, or 144. C# is authoritative
+for legality: it rejects invalid dense vectors, masks illegal composites, and
+normalizes the remaining scores.
 
 For **stochastic actions** with multiple outcomes, the action's score is the
 probability-weighted average across its outcomes:
@@ -650,33 +642,13 @@ back to the uniform distribution `1 / number_of_actions`. The resulting prior
 policy is stored on the parent `MCTSState` node and used by `actionEvaluator`
 (see [Action Evaluation (PUCT)](#action-evaluation-puct)).
 
-#### Prior Targets
+#### Placement Composite Priors
 
-The score returned by the inference server depends on how the model was
-trained. The MCTS engine and prior client are agnostic to which target was
-used — the per-action normalisation above is what guarantees a valid policy.
-
-| Target              | Per-action score meaning                                                | Rough sum of raw scores | Used by         |
-|---------------------|-------------------------------------------------------------------------|-------------------------|-----------------|
-| `winrate` (legacy)  | Predicted win probability of the action-result state for the acting player. Each score is computed independently per action. | Unconstrained (typically not 1) | State model, legacy placement model |
-| `policy`            | Approximate posterior probability that the action is the best move at the parent state — the model's policy head output, softmaxed across the parent's legal actions. | ~1 by construction      | New placement model |
-
-Why both are supported:
-
-- The **`winrate` target** is what the existing simulation export already
-  contains as `winRate` per action. Models trained on this target produce
-  normalised priors that are nearly uniform when sibling win rates are similar
-  (e.g. `0.48, 0.49, 0.50, 0.51` → `~0.245, ~0.245, ~0.250, ~0.255`). The
-  resulting policy provides only weak guidance to PUCT.
-- The **`policy` target** is trained on MCTS visit-count distributions
-  (`rollouts[i] / sum(rollouts)`) — the search's own preference. This produces
-  a much more peaked distribution (e.g. `0.01, 0.04, 0.80, 0.15`) and therefore
-  much stronger PUCT guidance. The placement model is the first to adopt this
-  target; the state model continues to use `winrate` for now.
-
-Both targets share the same wire format (a list of per-action floats); the
-inference server tags each response with the target it was trained for, but the
-normalisation step above is what makes the engine indifferent.
+At a settlement node, the settlement prior is the sum of dense probabilities for
+all C#-legal roads paired with that settlement. At the subsequent road node, the
+road prior is conditional within that settlement: each legal composite probability
+is divided by the settlement marginal. Thus the MCTS two-step decision preserves
+the model's composite settlement-road distribution.
 
 ### Prior Data Format
 
@@ -687,12 +659,7 @@ normalisation step above is what makes the engine indifferent.
     "requests": [
         {
             "id": "node-0x1a2b3c",
-            "states": [
-                "<compact_state_for_action_0>",
-                "<compact_state_for_action_1>",
-                "<compact_state_for_action_2>"
-            ],
-            "player": 2,
+            "state": "<compact_placement_state>",
             "priority": 3
         }
     ]
@@ -700,11 +667,7 @@ normalisation step above is what makes the engine indifferent.
 ```
 
 - `id` — opaque string the server echoes back to correlate responses.
-- `states` — serialized game states, one per action result. For deterministic
-  actions this is the single successor state; for stochastic actions this is
-  one state per outcome. The order matches the parent node's `Actions()` array,
-  with stochastic actions expanded inline (outcomes in weight order).
-- `player` — the acting player (1-based), for server-side player rotation.
+- `state` — the serialized placement parent state.
 - `priority` — depth from root (0 = root's children). Lower = serve first.
 
 #### Response (server → MCTS)
@@ -714,42 +677,37 @@ normalisation step above is what makes the engine indifferent.
     "responses": [
         {
             "id": "node-0x1a2b3c",
-            "win_probabilities": [0.62, 0.45, 0.38],
-            "target": "winrate"
+            "priors": [0.01, 0.0, 0.03, 0.02],
+            "value_estimate": 0.62
         }
     ]
 }
 ```
 
 - `id` — matches the request ID.
-- `win_probabilities` — per-state prior score, in the same order as the
-  request's `states` array. The field name is preserved for backward
-  compatibility, but the values may be either win probabilities (`target =
-  "winrate"`) or policy probabilities (`target = "policy"`). Kjarni maps these
-  back to actions, computes weighted averages for stochastic actions, and
-  normalises to produce the prior policy (see
-  [Converting Prior Scores to Priors](#converting-prior-scores-to-priors)).
-- `target` — optional, identifies how the model was trained. Used for logging
-  and audits. The MCTS engine itself does not branch on this field.
+- `priors` — dense full-vocabulary placement policy probabilities. C# masks and
+  normalizes them over currently legal composites. The abbreviated example has
+  four entries; actual widths are 60, 82, or 144.
+- `value_estimate` — scalar expected value from the 128-bucket value head.
 
 ### Server Endpoints
 
-#### `POST /prior-enqueue`
+#### `POST /placement/prior-enqueue`
 
 Accepts a batch of prior requests. Each request is inserted into the priority
 queue. Returns immediately with 202 Accepted (results are delivered
-asynchronously via `/prior-collect`).
+asynchronously via `/placement/prior-collect`).
 
-#### `POST /prior-collect`
+#### `POST /placement/prior-collect`
 
 Returns all completed inference results since the last call. The response body
 contains an array of prior responses. If no results are ready, returns an empty
 array immediately (non-blocking).
 
-#### `POST /prior-flush`
+#### `POST /placement/prior-flush`
 
-Clears the priority queue and discards any pending results. Called when the game
-advances to a new position and the old tree is abandoned.
+Administratively clears the placement priority queue and pending results. Normal
+per-search cleanup stays client-side so concurrent searches are not disrupted.
 
 ### MCTSState Changes
 

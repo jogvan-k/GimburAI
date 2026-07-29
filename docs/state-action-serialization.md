@@ -1,13 +1,13 @@
 # State & Action Serialization
 
-This document defines two state serialization formats and an action serialization format for the GimburAI neural network evaluators. The state formats use fixed-length, human-readable token strings with a reversible compact form for transformer ingestion. The action format uses a separate tokenizer where each action string maps to a single token. Counts are given for the **mini map** (radius 1), the **small map** (10 tiles, non-circular), and the **standard map** (radius 2).
+This document defines two state serialization formats and the canonical placement action indexing used by GimburAI neural network evaluators. The state formats use fixed-length, human-readable token strings with a reversible compact form for transformer ingestion. Counts are given for the **mini map** (radius 1), the **small map** (10 tiles, non-circular), and the **standard map** (radius 2).
 
 Two neural network models consume these serializations:
 
 | Model | Input | Output | Used during |
 |-------|-------|--------|-------------|
 | **GimburStateEvaluator** | Game state serialization (full) | Per-player win probability | Normal play (after initial placement) |
-| **GimburPlacementActionEvaluator** | Placement phase state + action list | Per-action score | Initial placement phase |
+| **Placement model (`placement_state_v2`)** | Placement phase state only | Value logits, optionally dense policy logits | Initial placement phase |
 
 ## Encoding Overview
 
@@ -17,7 +17,7 @@ Two neural network models consume these serializations:
 
 ### Token Alphabets
 
-These alphabets apply to the **state** tokenizer (Parts I and II). The **action** tokenizer (Part III) uses a separate vocabulary where each complete action string is a single token. Each semantic category uses its own character set so that the state tokenizer can learn category-specific embeddings. Categories that share the same underlying concept reuse the same alphabet — positional embeddings disambiguate context.
+These alphabets apply to the **state** tokenizer (Parts I and II). The placement action vocabulary in Part III maps complete action strings to policy output indices; action tokens are never model inputs. Each semantic category uses its own character set so that the state tokenizer can learn category-specific embeddings. Categories that share the same underlying concept reuse the same alphabet — positional embeddings disambiguate context.
 
 | Category | Characters | Notes |
 |----------|-----------|-------|
@@ -369,13 +369,13 @@ Changes:
 
 ### Implementation
 
-The rotation is implemented in `python/gimbur_nn/tokenizer.py` as `rotate_player_state()`. The inference server's `/predict-player` endpoint applies rotation automatically: callers send the original (unrotated) compact state together with the target player number, and the server handles the rest.
+The rotation is implemented in `python/gimbur_nn/tokenizer.py` as `rotate_player_state()`. The inference server's `/state/predict-player` endpoint applies rotation automatically: callers send the original (unrotated) compact state together with the target player number, and the server handles the rest.
 
 ---
 
 # Part II — Placement Phase State Serialization
 
-*Consumed by the **GimburPlacementActionEvaluator** model during the initial placement phase, paired with a list of candidate actions (see [Part III](#part-iii--action-serialization)).*
+*Consumed as the complete input to the state-only `placement_state_v2` model during initial placement. Legal actions are not appended to the input.*
 
 ## Placement Phase Layout
 
@@ -483,15 +483,15 @@ w4lo1lb5lW2lw5hs3hW4ho1hs2hw3lb5hs3hW4ho3ls4lb5lw2lW2hd0n|ggwgbsWog|._._._._._._
 
 ---
 
-# Part III — Action Serialization
+# Part III — Placement Action Indexing
 
-*Used exclusively by the **GimburPlacementActionEvaluator** model. Actions are sent alongside the placement phase state as a batch of candidates for the model to score.*
+*Defines canonical indices for the dense policy output and exported policy targets. Actions are not tokenized as model inputs.*
 
 ## Placement Action Format
 
 A placement action is the combined move of placing a settlement on a vertex and building a road from that vertex in a specific direction. During initial placement, settlement and road are always placed together as a single logical decision.
 
-Each action is serialized as a human-readable string that the action tokenizer maps to a **single token**:
+Each action is serialized as a human-readable string that the placement tokenizer maps to one **output index**:
 
 ```
 <vertex_index><road_direction>
@@ -499,7 +499,7 @@ Each action is serialized as a human-readable string that the action tokenizer m
 
 For example: `3S`, `12NW`, `53NE`.
 
-The action tokenizer maintains a fixed vocabulary of all valid `(vertex, direction)` combinations for a given map size. Unlike the state tokenizer (which processes individual characters), the action tokenizer maps each complete action string to one embedding.
+The tokenizer maintains a fixed vocabulary of all topology-valid `(vertex, direction)` combinations for a map size. The index selects one element of the dense policy vector; there is no action embedding in `placement_state_v2`.
 
 ### Vertex Index
 
@@ -525,7 +525,7 @@ The compass direction from the settlement vertex to the adjacent vertex that for
 | `NW` | Diagonal edge going up-left to peak above-left |
 | `NE` | Diagonal edge going up-right to peak above-right |
 
-Boundary vertices have only 2 of the 3 directions available. The model only receives actions whose direction corresponds to a valid edge in the topology.
+Boundary vertices have only 2 of the 3 directions available. This defines topology-valid vocabulary entries; C# game rules determine which entries are legal in a particular state.
 
 ### Action Vocabulary Size
 
@@ -537,11 +537,11 @@ The vocabulary is the set of all `(vertex, direction)` pairs corresponding to va
 | Small | 32 | 41 | 82 |
 | Standard | 54 | 72 | 144 |
 
-Not all entries are reachable in a single game (the distance rule eliminates most), but the vocabulary is fixed for a given map size.
+Only a subset is legal in any state, but the vocabulary and output width are fixed for a map size. A combined model emits raw policy logits `[B,A]`, with `A` equal to the vocabulary size above. Training masks those logits with the legal mask derived from every exported legal composite action. Serving returns a full-vocabulary softmax; C# applies the authoritative legal mask and renormalizes before use.
 
-### Action List Format
+### Exported Action List Format
 
-Multiple candidate actions are separated by `;` in human-readable form:
+When a textual list is needed for interchange or diagnostics, actions may be separated by `;`:
 
 ```
 <action>;<action>;...

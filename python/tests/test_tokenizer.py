@@ -13,8 +13,8 @@ from gimbur_nn.game_config import (
     STANDARD_3P,
     STANDARD_4P,
 )
-from gimbur_nn.state_tokenizer import StateTokenizer
 from gimbur_nn.placement_tokenizer import PlacementTokenizer
+from gimbur_nn.state_tokenizer import StateTokenizer
 
 # ---------------------------------------------------------------------------
 # Example states copied verbatim from docs/state-action-serialization.md
@@ -139,20 +139,9 @@ class TestVocab:
         assert PlacementTokenizer(STANDARD_3P).state_vocab_size == 22
         assert PlacementTokenizer(STANDARD_4P).state_vocab_size == 23
 
-    def test_placement_combined_vocab_sizes(self) -> None:
-        """Combined vocab (state chars + actions): S + A."""
-        assert PlacementTokenizer(MINI_2P).vocab_size == 81
-        assert PlacementTokenizer(SMALL_2P).vocab_size == 103
-        assert PlacementTokenizer(SMALL_3P).vocab_size == 104
-        assert PlacementTokenizer(STANDARD_2P).vocab_size == 165
-        assert PlacementTokenizer(STANDARD_3P).vocab_size == 166
-        assert PlacementTokenizer(STANDARD_4P).vocab_size == 167
-
-    def test_placement_vocab_matches_config(self) -> None:
-        """PlacementTokenizer.vocab_size matches GameConfig.placement_vocab_size."""
-        for cfg in (MINI_2P, SMALL_2P, SMALL_3P, STANDARD_2P, STANDARD_3P, STANDARD_4P):
-            tok = PlacementTokenizer(cfg)
-            assert tok.vocab_size == cfg.placement_vocab_size
+    def test_placement_input_vocab_is_state_only(self) -> None:
+        assert PlacementTokenizer(MINI_2P).vocab_size == 21
+        assert PlacementTokenizer(STANDARD_4P).vocab_size == 23
 
     def test_no_duplicate_chars(self) -> None:
         tok = StateTokenizer(MINI_2P)
@@ -489,7 +478,7 @@ class TestRotatePlayerState:
 
 
 class TestPlacementTokenizer:
-    """Tests for the unified PlacementTokenizer (state + action)."""
+    """Tests for state inputs and canonical action output indices."""
 
     # -- Mini empty-board placement state (from spec Part II) --
     MINI_PLACEMENT_STATE = (
@@ -543,15 +532,15 @@ class TestPlacementTokenizer:
     # -- Action tokenization -----------------------------------------------
 
     def test_tokenize_action_mini(self) -> None:
-        """First action maps to state_vocab_size, last to vocab_size - 1."""
+        """Actions use dense local output indices."""
         tok = PlacementTokenizer(MINI_2P)
-        assert tok.tokenize_action("0SE") == tok.state_vocab_size
-        assert tok.tokenize_action("23NW") == tok.vocab_size - 1
+        assert tok.tokenize_action("0SE") == 0
+        assert tok.tokenize_action("23NW") == tok.action_vocab_size - 1
 
     def test_tokenize_action_standard(self) -> None:
         tok = PlacementTokenizer(STANDARD_4P)
-        assert tok.tokenize_action("0SE") == tok.state_vocab_size
-        assert tok.tokenize_action("53NW") == tok.vocab_size - 1
+        assert tok.tokenize_action("0SE") == 0
+        assert tok.tokenize_action("53NW") == tok.action_vocab_size - 1
 
     def test_tokenize_action_unknown_raises(self) -> None:
         tok = PlacementTokenizer(MINI_2P)
@@ -573,53 +562,10 @@ class TestPlacementTokenizer:
         for action in tok.actions:
             assert tok.decode_action(tok.tokenize_action(action)) == action
 
-    # -- Combined state + action -------------------------------------------
-
-    def test_tokenize_state_action_shape(self) -> None:
-        """tokenize_state_action returns placement_token_size + 1 tokens."""
+    def test_tokenize_batch_is_state_only(self) -> None:
         tok = PlacementTokenizer(MINI_2P)
-        t = tok.tokenize_state_action(self.MINI_PLACEMENT_STATE, "0SE")
-        assert t.shape == (MINI_2P.placement_token_size + 1,)
-        assert t.dtype == torch.int32
-
-    def test_tokenize_state_action_last_token(self) -> None:
-        """Last token in combined sequence is the action token."""
-        tok = PlacementTokenizer(MINI_2P)
-        t = tok.tokenize_state_action(self.MINI_PLACEMENT_STATE, "5N")
-        action_id = tok.tokenize_action("5N")
-        assert t[-1].item() == action_id
-
-    def test_tokenize_state_action_prefix_matches_state(self) -> None:
-        """All tokens except the last match tokenize_state output."""
-        tok = PlacementTokenizer(MINI_2P)
-        state_tokens = tok.tokenize_state(self.MINI_PLACEMENT_STATE)
-        combined = tok.tokenize_state_action(self.MINI_PLACEMENT_STATE, "0SE")
-        assert torch.equal(combined[:-1], state_tokens)
-
-    # -- Batch state + actions ---------------------------------------------
-
-    def test_tokenize_state_actions_shape(self) -> None:
-        """tokenize_state_actions returns (N, placement_token_size + 1)."""
-        tok = PlacementTokenizer(MINI_2P)
-        actions = ["0SE", "5N", "23NW"]
-        t = tok.tokenize_state_actions(self.MINI_PLACEMENT_STATE, actions)
-        assert t.shape == (3, MINI_2P.placement_token_size + 1)
-        assert t.dtype == torch.int32
-
-    def test_tokenize_state_actions_matches_single(self) -> None:
-        """Each row matches calling tokenize_state_action individually."""
-        tok = PlacementTokenizer(MINI_2P)
-        actions = ["0SE", "5N", "23NW"]
-        batch = tok.tokenize_state_actions(self.MINI_PLACEMENT_STATE, actions)
-        for i, action in enumerate(actions):
-            single = tok.tokenize_state_action(self.MINI_PLACEMENT_STATE, action)
-            assert torch.equal(batch[i], single)
-
-    def test_tokenize_state_actions_empty(self) -> None:
-        """Empty action list returns shape (0, placement_token_size + 1)."""
-        tok = PlacementTokenizer(MINI_2P)
-        t = tok.tokenize_state_actions(self.MINI_PLACEMENT_STATE, [])
-        assert t.shape == (0, MINI_2P.placement_token_size + 1)
+        batch = tok.tokenize_batch([self.MINI_PLACEMENT_STATE] * 2)
+        assert batch.shape == (2, MINI_2P.placement_token_size)
 
     # -- Action vocab sizes ------------------------------------------------
 

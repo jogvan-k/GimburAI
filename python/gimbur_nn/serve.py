@@ -44,14 +44,14 @@ import logging
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 import torch
 import torch.nn.functional as F
-import uvicorn
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
 
 from .game_config import CONFIGS_BY_NAME, GameConfig
 from .placement_tokenizer import PlacementTokenizer
@@ -64,6 +64,25 @@ from .transformer_model import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _load_checkpoint(path: Path, device: torch.device) -> dict:
+    """Load a metadata checkpoint or normalize a legacy bare state dict."""
+    raw = torch.load(path, map_location=device, weights_only=False)
+    if isinstance(raw, dict) and "model_state_dict" in raw:
+        raw.setdefault("target", "winrate")
+        raw.setdefault("output_mode", "value")
+        return raw
+    return {"model_state_dict": raw, "target": "winrate", "output_mode": "value"}
+
+
+def _extract_logits(
+    output: torch.Tensor | dict[str, torch.Tensor], head: str = "value"
+) -> torch.Tensor:
+    """Extract last-token logits, selecting a head from combined models."""
+    if isinstance(output, dict):
+        return output[head][:, -1, :]
+    return output[:, -1, :]
 
 
 class PredictRequest(BaseModel):
@@ -107,15 +126,15 @@ class PredictPlacementRequest(BaseModel):
     states: list[str]
     """Serialized placement phase state strings."""
 
-    actions: list[str]
-    """Placement action strings (one per state)."""
-
 
 class PredictPlacementResponse(BaseModel):
     """Response body for the /placement/predict endpoint."""
 
-    probabilities: list[list[float]]
-    """Per-(state,action) bucket probabilities, shape (n, n_buckets)."""
+    value_probabilities: list[list[float]]
+    """Per-state value bucket probabilities, shape (n, n_buckets)."""
+
+    policy_probabilities: list[list[float]] | None = None
+    """Full canonical action probabilities for combined models."""
 
 
 # ── Prior queue models ────────────────────────────────────────────────────────
@@ -126,6 +145,9 @@ class PriorRequest(BaseModel):
 
     id: str
     """Opaque ID to correlate response back to the MCTSState."""
+
+    parent_state: str | None = None
+    """Serialized state at the node, used by a value head when available."""
 
     states: list[str]
     """Serialized result states for each action (deterministic: 1 state,
@@ -149,7 +171,7 @@ class PriorResponseItem(BaseModel):
 
     id: str
     priors: list[float]
-    """Per-action prior policy weights. Empty if not available (e.g. state mode)."""
+    """Per-action prior weights in the legal-action order supplied by the client."""
 
     value_estimate: float | None = None
     """Scalar value estimate for the node's state. None if not available."""
@@ -170,16 +192,8 @@ class PlacementPriorRequest(BaseModel):
     id: str
     """Opaque ID to correlate response back to the MCTSState."""
 
-    states: list[str]
-    """Serialized placement phase state strings (one per composite action)."""
-
-    actions: list[str]
-    """Composite action strings (e.g. '3S', '12NW'), one per state."""
-
-    child_boundaries: list[int]
-    """Start indices mapping composite actions to settlement children.
-    child_boundaries[i] is the start index for child i;
-    child_boundaries[-1] is the sentinel (total count)."""
+    state: str
+    """Serialized placement phase state string."""
 
     priority: int
     """Depth from root; lower = more important."""
@@ -412,6 +426,7 @@ def create_app(
     state_model: GimburTransformer | None = None,
     state_device: torch.device | None = None,
     state_game_cfg: GameConfig | None = None,
+    state_output_mode: str = "value",
     placement_model: GimburPlacementTransformer | None = None,
     placement_device: torch.device | None = None,
     placement_game_cfg: GameConfig | None = None,
@@ -424,23 +439,14 @@ def create_app(
     and ``/placement/...`` endpoints when a placement model is provided.
     Both can be active simultaneously.
 
-    ``placement_target`` selects how per-(state, action) scalar outputs from
-    the placement model are aggregated into per-settlement-child priors:
-
-    * ``"winrate"`` — each pair's expected value is an independent win
-      probability for the (settlement, road) pair; aggregate as MAX across
-      road grandchildren of each settlement (best-case road).
-    * ``"policy"`` — each pair's expected value is its share of MCTS visits
-      among siblings; aggregate as SUM across road grandchildren (marginal
-      visit mass for placing this settlement). Together these sum to 1
-      across settlement children if the model is well-calibrated.
-
-    ``placement_output_mode`` controls which output head is used for
-    inference when the placement model has dual heads (``"combined"``).
-    For combined models, the value head provides win probabilities for
-    ``/placement/predict`` and settlement-child aggregation uses the
-    appropriate head based on ``placement_target``.
+    ``placement_target`` is retained only for caller compatibility.
     """
+
+    try:
+        from fastapi import FastAPI, HTTPException
+        from fastapi.responses import JSONResponse
+    except ImportError as exc:
+        raise RuntimeError("create_app requires the optional 'serve' dependencies.") from exc
 
     # Collect async worker coroutines to be started by the lifespan handler.
     _worker_coros: list[object] = []
@@ -453,12 +459,6 @@ def create_app(
         tokenizer = StateTokenizer(state_game_cfg)
         prior_queue: PriorQueue[PriorRequest] = PriorQueue()
 
-        def _extract_state_logits(output: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
-            """Extract the value logits from model output (handles both single and combined)."""
-            if isinstance(output, dict):
-                return output["value"][:, -1, :]
-            return output[:, -1, :]
-
         def _infer_prior_batch(batch: list[PriorRequest]) -> list[PriorResponseItem]:
             """Run inference on a batch of prior requests and return results."""
             results: list[PriorResponseItem] = []
@@ -467,7 +467,13 @@ def create_app(
                     results.append(PriorResponseItem(id=req.id, priors=[]))
                     continue
                 try:
-                    rotated = [tokenizer.rotate_player_state(s, req.player) for s in req.states]
+                    inference_states = req.states
+                    has_parent = req.parent_state is not None and state_output_mode == "combined"
+                    if has_parent:
+                        inference_states = [req.parent_state, *inference_states]
+                    rotated = [
+                        tokenizer.rotate_player_state(s, req.player) for s in inference_states
+                    ]
                     token_ids = tokenizer.tokenize_batch(rotated).to(state_device)
                 except (KeyError, ValueError):
                     # Bad state — return zeros so the MCTS falls back to uniform.
@@ -481,11 +487,27 @@ def create_app(
 
                 with torch.no_grad():
                     output = state_model(token_ids)
-                    last_logits = _extract_state_logits(output)
-                    probs = F.softmax(last_logits, dim=-1)
+                    prior_head = "policy" if state_output_mode == "combined" else "value"
+                    prior_logits = _extract_logits(output, head=prior_head)
+                    prior_probs = F.softmax(prior_logits, dim=-1)
 
-                win_probs = [_expected_win_prob(probs[i]) for i in range(probs.shape[0])]
-                results.append(PriorResponseItem(id=req.id, priors=win_probs))
+                prior_offset = 1 if has_parent else 0
+                priors = [
+                    _expected_win_prob(prior_probs[i])
+                    for i in range(prior_offset, prior_probs.shape[0])
+                ]
+                value_estimate: float | None = None
+                if has_parent and state_output_mode != "policy":
+                    value_logits = _extract_logits(output, head="value")
+                    value_probs = F.softmax(value_logits, dim=-1)
+                    value_estimate = _expected_win_prob(value_probs[0])
+                results.append(
+                    PriorResponseItem(
+                        id=req.id,
+                        priors=priors,
+                        value_estimate=value_estimate,
+                    )
+                )
 
             return results
 
@@ -512,147 +534,35 @@ def create_app(
 
         placement_prior_queue: PriorQueue[PlacementPriorRequest] = PriorQueue()
 
-        def _extract_placement_logits(
-            output: torch.Tensor | dict[str, torch.Tensor],
-            head: str = "value",
-        ) -> torch.Tensor:
-            """Extract last-token logits from placement model output.
-
-            For combined models, *head* selects which output head to use.
-            For single-head models, *head* is ignored.
-            """
-            if isinstance(output, dict):
-                return output[head][:, -1, :]
-            return output[:, -1, :]
-
         def _infer_placement_prior_batch(
             batch: list[PlacementPriorRequest],
         ) -> list[PriorResponseItem]:
-            """Run inference on a batch of placement prior requests.
-
-            Concatenates all (state, action) pairs from all requests into one
-            big tensor, runs a single model forward pass, then splits results
-            back per request and aggregates per settlement child.
-
-            For combined models, both the policy head (for priors) and value
-            head (for value_estimate) are used.  The value estimate is computed
-            as the policy-weighted average of per-child value head outputs:
-            V(s) = sum_i prior[i] * value[i].
-            """
-            # Phase 1: Collect all tokenized pairs across all requests.
-            all_tokens: list[torch.Tensor] = []
-            # Per-request metadata: (req_index, n_pairs, is_error).
-            req_meta: list[tuple[int, int, bool]] = []
-
-            for ri, req in enumerate(batch):
-                if not req.states or not req.actions:
-                    req_meta.append((ri, 0, False))
-                    continue
-                try:
-                    tokens = [
-                        placement_tokenizer.tokenize_state_action(s, a)
-                        for s, a in zip(req.states, req.actions)
-                    ]
-                    all_tokens.extend(tokens)
-                    req_meta.append((ri, len(tokens), False))
-                except (KeyError, ValueError):
-                    req_meta.append((ri, 0, True))
-
-            # Phase 2: Single batched forward pass.
-            all_prior_scalars: torch.Tensor | None = None
-            all_value_scalars: torch.Tensor | None = None
-            if all_tokens:
-                token_batch = torch.stack(all_tokens).to(placement_device)
-                with torch.no_grad():
-                    output = placement_model(token_batch)
-
-                    # Compute prior scalars (for PUCT policy).
-                    if placement_output_mode == "combined":
-                        prior_logits = _extract_placement_logits(output, head="policy")
-                    else:
-                        prior_logits = _extract_placement_logits(output, head="value")
-                    prior_probs = F.softmax(prior_logits, dim=-1)
-
-                n_buckets = prior_probs.shape[1]
-                centres = torch.arange(
-                    n_buckets, dtype=prior_probs.dtype, device=prior_probs.device
-                )
-                centres = (centres + 0.5) / n_buckets
-                all_prior_scalars = (prior_probs * centres).sum(dim=-1)
-
-                # Compute value scalars from value head (combined models only).
-                if placement_output_mode == "combined":
-                    with torch.no_grad():
-                        value_logits = _extract_placement_logits(output, head="value")
-                        value_probs = F.softmax(value_logits, dim=-1)
-                    all_value_scalars = (value_probs * centres).sum(dim=-1)
-
-            # Phase 3: Split results back per request and aggregate.
+            """Return full-vocabulary priors and state values for placement states."""
             results: list[PriorResponseItem] = []
-            offset = 0
-            for ri, n_pairs, is_error in req_meta:
-                req = batch[ri]
-                if is_error:
-                    n_children = max(0, len(req.child_boundaries) - 1)
-                    results.append(
-                        PriorResponseItem(
-                            id=req.id,
-                            priors=[0.0] * n_children,
-                        )
+            for req in batch:
+                try:
+                    token_batch = placement_tokenizer.tokenize_batch([req.state]).to(
+                        placement_device
                     )
-                    continue
-                if n_pairs == 0:
+                except (KeyError, ValueError):
                     results.append(PriorResponseItem(id=req.id, priors=[]))
                     continue
-
-                pair_priors = all_prior_scalars[offset : offset + n_pairs]
-                pair_values = (
-                    all_value_scalars[offset : offset + n_pairs]
-                    if all_value_scalars is not None
-                    else None
-                )
-                offset += n_pairs
-
-                # Aggregate per settlement child across its road grandchildren.
-                # Priors: SUM across roads (marginal policy mass for the settlement).
-                # Values: MAX across roads (best-case road determines settlement value).
-                child_priors: list[float] = []
-                child_values: list[float] = []
-                boundaries = req.child_boundaries
-                for ci in range(len(boundaries) - 1):
-                    start = boundaries[ci]
-                    end = boundaries[ci + 1]
-                    if start < end:
-                        prior_slice = pair_priors[start:end]
-                        child_priors.append(float(prior_slice.sum()))
-                        if pair_values is not None:
-                            value_slice = pair_values[start:end]
-                            child_values.append(float(value_slice.max()))
-                    else:
-                        child_priors.append(0.0)
-                        if pair_values is not None:
-                            child_values.append(0.0)
-
-                # Normalize priors to sum to 1.
-                prior_total = sum(child_priors)
-                if prior_total > 0:
-                    child_priors = [p / prior_total for p in child_priors]
-
-                # Value estimate: policy-weighted average of per-child values.
-                value_estimate: float | None = None
-                if child_values and prior_total > 0:
-                    value_estimate = sum(
-                        p * v for p, v in zip(child_priors, child_values)
+                with torch.no_grad():
+                    output = placement_model(token_batch)
+                    value_logits = output["value"] if isinstance(output, dict) else output
+                    value_probs = F.softmax(value_logits, dim=-1)
+                    priors = (
+                        F.softmax(output["policy"], dim=-1)[0].cpu().tolist()
+                        if isinstance(output, dict)
+                        else []
                     )
-
                 results.append(
                     PriorResponseItem(
                         id=req.id,
-                        priors=child_priors,
-                        value_estimate=value_estimate,
+                        priors=priors,
+                        value_estimate=_expected_win_prob(value_probs[0]),
                     )
                 )
-
             return results
 
         async def _placement_prior_worker() -> None:
@@ -707,7 +617,7 @@ def create_app(
 
             with torch.no_grad():
                 output = state_model(token_ids)  # (batch, seq_len, n_buckets) or dict
-                last_logits = _extract_state_logits(output)  # (batch, n_buckets)
+                last_logits = _extract_logits(output)  # (batch, n_buckets)
                 probs = F.softmax(last_logits, dim=-1)
 
             return PredictResponse(probabilities=probs.cpu().tolist())
@@ -754,7 +664,7 @@ def create_app(
 
             with torch.no_grad():
                 output = state_model(token_ids)
-                last_logits = _extract_state_logits(output)
+                last_logits = _extract_logits(output)
                 probs = F.softmax(last_logits, dim=-1)
 
             win_probs = [_expected_win_prob(probs[i]) for i in range(probs.shape[0])]
@@ -801,48 +711,39 @@ def create_app(
         async def predict_placement(
             request: PredictPlacementRequest,
         ) -> PredictPlacementResponse:
-            """Predict win probability for placement (state, action) pairs.
-
-            Each state is paired with the corresponding action, tokenized
-            via PlacementTokenizer, and evaluated by the placement model.
-            """
+            """Predict values and optional full policies from placement states."""
             if not request.states:
                 raise HTTPException(
                     status_code=400,
                     detail="states list must not be empty",
                 )
-            if len(request.states) != len(request.actions):
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"states ({len(request.states)}) and actions "
-                        f"({len(request.actions)}) must have the same length"
-                    ),
-                )
-
             try:
-                token_batch = torch.stack(
-                    [
-                        placement_tokenizer.tokenize_state_action(s, a)
-                        for s, a in zip(request.states, request.actions)
-                    ]
-                ).to(placement_device)
+                token_batch = placement_tokenizer.tokenize_batch(request.states).to(
+                    placement_device
+                )
             except (KeyError, ValueError) as exc:
                 logger.error(
                     "Tokenization failed in /placement/predict: %s\n"
-                    "  First state (truncated): %.200s\n  First action: %s",
+                    "  First state (truncated): %.200s",
                     exc,
                     request.states[0] if request.states else "<empty>",
-                    request.actions[0] if request.actions else "<empty>",
                 )
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
             with torch.no_grad():
                 output = placement_model(token_batch)
-                last_logits = _extract_placement_logits(output, head="value")
-                probs = F.softmax(last_logits, dim=-1)
+                value_logits = output["value"] if isinstance(output, dict) else output
+                probs = F.softmax(value_logits, dim=-1)
+                policy_probs = (
+                    F.softmax(output["policy"], dim=-1).cpu().tolist()
+                    if isinstance(output, dict)
+                    else None
+                )
 
-            return PredictPlacementResponse(probabilities=probs.cpu().tolist())
+            return PredictPlacementResponse(
+                value_probabilities=probs.cpu().tolist(),
+                policy_probabilities=policy_probs,
+            )
 
         # ── Placement prior queue endpoints ──────────────────────────────────
 
@@ -939,19 +840,30 @@ def main() -> None:
     # ── Load state model ──────────────────────────────────────────────────
     loaded_state_model: GimburTransformer | None = None
     state_game_cfg: GameConfig | None = None
+    state_output_mode = "value"
     if has_state:
         state_game_cfg = CONFIGS_BY_NAME[args.game_config]
         state_model_cfg = MODEL_CONFIGS_BY_NAME[args.model_config]
+        state_ckpt = _load_checkpoint(args.model, device)
+        state_output_mode = str(state_ckpt.get("output_mode", "value"))
+        if state_output_mode != getattr(state_model_cfg, "output_mode", "value"):
+            state_model_cfg = _make_model_config(
+                d_model=state_model_cfg.d_model,
+                n_heads=state_model_cfg.n_heads,
+                n_layers=state_model_cfg.n_layers,
+                n_buckets=state_model_cfg.n_buckets,
+                ffn_hidden_mult=state_model_cfg.ffn_hidden_mult,
+                dropout=state_model_cfg.dropout,
+                output_mode=state_output_mode,
+            )
         loaded_state_model = GimburTransformer(state_game_cfg, state_model_cfg)
-        loaded_state_model.load_state_dict(
-            torch.load(args.model, map_location=device, weights_only=True)
-        )
+        loaded_state_model.load_state_dict(state_ckpt["model_state_dict"])
         loaded_state_model.to(device)
         loaded_state_model.eval()
         param_count = sum(p.numel() for p in loaded_state_model.parameters())
         print(
             f"Loaded state model ({args.model_config}) for {args.game_config} "
-            f"({param_count:,} parameters) on {device}"
+            f"({param_count:,} parameters) on {device}, output_mode={state_output_mode}"
         )
 
     # ── Load placement model ──────────────────────────────────────────────
@@ -962,18 +874,18 @@ def main() -> None:
     if has_placement:
         placement_game_cfg = CONFIGS_BY_NAME[args.game_config]
         placement_model_cfg = MODEL_CONFIGS_BY_NAME[args.placement_model_config]
-        # Accept both legacy bare-state_dict checkpoints and the new metadata
-        # dict format saved by train.py. Legacy files default to target='winrate'
-        # and output_mode='value' for backward compatibility.
-        raw_ckpt = torch.load(args.placement_model, map_location=device, weights_only=False)
-        if isinstance(raw_ckpt, dict) and "model_state_dict" in raw_ckpt:
-            placement_target = str(raw_ckpt.get("target", "winrate"))
-            placement_output_mode = str(raw_ckpt.get("output_mode", "value"))
-            state_dict = raw_ckpt["model_state_dict"]
-        else:
-            state_dict = raw_ckpt
-            placement_target = "winrate"
-            placement_output_mode = "value"
+        placement_ckpt = _load_checkpoint(args.placement_model, device)
+        if (
+            placement_ckpt.get("checkpoint_version") != 2
+            or placement_ckpt.get("architecture") != "placement_state_v2"
+        ):
+            raise SystemExit(
+                "Error: incompatible placement checkpoint; expected checkpoint_version=2 "
+                "and architecture='placement_state_v2'. Retrain the placement model."
+            )
+        placement_target = str(placement_ckpt.get("target", "winrate"))
+        placement_output_mode = str(placement_ckpt.get("output_mode", "value"))
+        state_dict = placement_ckpt["model_state_dict"]
 
         # Apply output_mode to the model config if it differs from the preset.
         if placement_output_mode != getattr(placement_model_cfg, "output_mode", "value"):
@@ -1004,12 +916,18 @@ def main() -> None:
         state_model=loaded_state_model,
         state_device=device if has_state else None,
         state_game_cfg=state_game_cfg,
+        state_output_mode=state_output_mode,
         placement_model=loaded_placement_model,
         placement_device=device if has_placement else None,
         placement_game_cfg=placement_game_cfg,
         placement_target=placement_target,
         placement_output_mode=placement_output_mode,
     )
+    try:
+        import uvicorn
+    except ImportError as exc:
+        raise SystemExit("Error: serving requires the optional 'serve' dependencies.") from exc
+
     uvicorn.run(
         app,
         host=args.host,

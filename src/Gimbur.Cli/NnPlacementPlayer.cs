@@ -98,8 +98,8 @@ internal sealed class NnPlacementPlayer : IBenchmarkPlayer, INnStatsProvider
     }
 
     /// <summary>
-    /// Enumerates all legal (settlement, road) composite actions, evaluates them
-    /// via the placement NN model, and applies the best settlement. Stores the
+    /// Enumerates all legal (settlement, road) composite actions, masks the
+    /// model's dense policy to them, and applies the best settlement. Stores the
     /// chosen road edge for the following road stage.
     /// </summary>
     private CatanState? ChoosePlacement(CatanState state, CoreAction[] coreActions, Random rng)
@@ -107,7 +107,7 @@ internal sealed class NnPlacementPlayer : IBenchmarkPlayer, INnStatsProvider
         var placementState = state.SerializePlacementPhaseCompact();
 
         // Build all composite (settlement, road) pairs.
-        var compositeActions = new List<(int SettlementActionIndex, int RoadEdge, string ActionString)>();
+        var compositeActions = new List<(int SettlementActionIndex, int RoadEdge, int VocabularyIndex)>();
 
         for (var i = 0; i < coreActions.Length; i++)
         {
@@ -125,9 +125,9 @@ internal sealed class NnPlacementPlayer : IBenchmarkPlayer, INnStatsProvider
                 if (roadAction is not PlaceRoadAction placeRoad)
                     continue;
 
-                var actionString = _actionSerializer.Serialize(
+                var vocabularyIndex = _actionSerializer.IndexOf(
                     placeSettlement.VertexIndex, placeRoad.EdgeIndex);
-                compositeActions.Add((i, placeRoad.EdgeIndex, actionString));
+                compositeActions.Add((i, placeRoad.EdgeIndex, vocabularyIndex));
             }
         }
 
@@ -138,27 +138,22 @@ internal sealed class NnPlacementPlayer : IBenchmarkPlayer, INnStatsProvider
             return (CatanState)UnwrapCoreAction(coreActions[roll]).DoCoreAction();
         }
 
-        // Batch predict all (state, action) pairs.
-        var states = new List<string>(compositeActions.Count);
-        var actions = new List<string>(compositeActions.Count);
-        foreach (var (_, _, actionString) in compositeActions)
-        {
-            states.Add(placementState);
-            actions.Add(actionString);
-        }
-
-        var buckets = _client.PredictPlacementAsync(states, actions).GetAwaiter().GetResult();
+        var prediction = _client.PredictPlacementAsync([placementState]).GetAwaiter().GetResult();
         TotalNnRequests++;
-        TotalNnStatesEvaluated += states.Count;
+        TotalNnStatesEvaluated++;
 
-        // Find the composite action with the highest expected win probability.
+        var densePolicy = prediction.PolicyProbabilities.Length == 1
+            ? Array.ConvertAll(prediction.PolicyProbabilities[0], value => (double)value)
+            : [];
+        var legalPolicy = _actionSerializer.MaskAndNormalize(
+            densePolicy,
+            compositeActions.Select(action => action.VocabularyIndex).ToArray());
+
         var bestIndex = 0;
-        var bestScore = float.NegativeInfinity;
+        var bestScore = double.NegativeInfinity;
         for (var j = 0; j < compositeActions.Count; j++)
         {
-            var score = j < buckets.Length
-                ? NnClient.ExpectedWinProbability(buckets[j])
-                : 0f;
+            var score = legalPolicy[j];
             if (score > bestScore)
             {
                 bestScore = score;

@@ -112,6 +112,7 @@ The goal is to train a neural network that evaluates board positions (state to w
 - [x] Transformer architecture: serialized state tokens to win probability (scalar 0-1)
 - [x] Training loop, validation, metrics (MSE, win/loss prediction accuracy)
 - [x] Serve model using python endpoint
+- [x] `placement_state_v2`: state-only placement encoder with value-only or combined value/policy heads
 
 #### 3c: Self-Play Loop (AlphaZero-style)
 
@@ -245,7 +246,7 @@ dotnet run --project src/Gimbur.Cli -- benchmark \
 | `--max-rollout-depth <n>` | | `500` | Max rollout depth |
 | `--nn-url <url>` | | `http://localhost:8000` | Base URL of the NN inference server |
 
-Available AI types: `random`, `greedy`, `mcts`, `nn`. The `nn` type queries the Python inference server's `/predict-player` endpoint.
+Available AI types: `random`, `greedy`, `mcts`, `nn`. The `nn` type queries the Python inference server's `/state/predict-player` endpoint.
 
 ## Python CLI (gimbur-nn)
 
@@ -313,11 +314,16 @@ Endpoints:
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | Health check |
-| `POST` | `/predict` | Batch predict win probabilities for serialized states |
-| `POST` | `/predict-player` | Predict win probability for a specific player |
-| `POST` | `/prior-enqueue` | Enqueue MCTS prior requests into priority queue |
-| `POST` | `/prior-collect` | Collect completed prior inference results |
-| `POST` | `/prior-flush` | Clear priority queue and pending results |
+| `POST` | `/state/predict` | Batch predict win probabilities for full game states |
+| `POST` | `/state/predict-player` | Predict win probability for a specific player |
+| `POST` | `/placement/predict` | Predict placement values and optional dense policies from placement states |
+| `POST` | `/state/prior-enqueue`, `/placement/prior-enqueue` | Enqueue state or placement MCTS prior requests |
+| `POST` | `/state/prior-collect`, `/placement/prior-collect` | Collect completed prior results |
+| `POST` | `/state/prior-flush`, `/placement/prior-flush` | Clear the corresponding server queue |
+
+The `placement_state_v2` model accepts placement states only. A value-only model emits raw value logits of shape `[B,128]`; a combined model also emits raw policy logits of shape `[B,A]`, where `A` is 60, 82, or 144 for mini, small, or standard maps. The placement tokenizer's action vocabulary defines policy output indices only; actions are not model inputs. Training masks policy loss with the exported legal-action mask. `/placement/predict` accepts `{"states": ["..."]}`, applies softmax, and returns `value_probabilities` plus optional full-vocabulary `policy_probabilities`; C# remains authoritative for legality and masks and normalizes those probabilities over legal actions.
+
+Placement checkpoints use `checkpoint_version: 2` and `architecture: "placement_state_v2"`. Older action-conditioned placement checkpoints are incompatible and must be retrained.
 
 ### End-to-End Workflow (Manual)
 
