@@ -58,7 +58,7 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
 | `constraints` | object | MCTS search parameters used for this game. |
 | `board.serialized` | string | Board serialization (tiles and ports only): `tiles\|ports`. See [state-action-serialization.md](state-action-serialization.md) Part I sections 1-2. |
 | `board.permutations` | string[] | Board string under each non-trivial symmetry permutation. Empty array when symmetries are disabled or unavailable. |
-| `states` | State[] | Array of state records, one per MCTS decision point. |
+| `states` | State[] | Array of visited states, including forced transitions. Forced states have zero simulations and empty MCTS win counts. |
 | `priorsCalculated` | object? | Per-depth count of NN prior states evaluated across all decisions. `null` when priors were not used. Keys are depth strings (`"0"`, `"1"`, ...), values are counts. |
 
 ### State Object (GameState)

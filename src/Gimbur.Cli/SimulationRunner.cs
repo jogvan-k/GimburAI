@@ -887,9 +887,25 @@ internal class SimulationRunner
             // TODO: we still need to estimate win chance here
             if (actions.Length == 1)
             {
-                // Forced action (e.g., dice roll) — no decision to make.
-                // Apply it without recording or running MCTS.
-                state = (CatanState)UnwrapCoreAction(actions[0]).DoCoreAction();
+                // Forced states still belong in value training even though no search is needed.
+                var serialized = state.SerializeStateOnly();
+                var actingPlayer = state.CurrentPlayer;
+                var result = (CatanState)UnwrapCoreAction(actions[0]).DoCoreAction();
+                states.Add(new StateRecord
+                {
+                    PlayerTurn = actingPlayer,
+                    SerializedState = serialized,
+                    Wins = Array.Empty<double>(),
+                    Candidates =
+                    [
+                        new CandidateStateRecord
+                        {
+                            SerializedState = result.SerializeStateOnly(),
+                            Wins = Array.Empty<double>(),
+                        },
+                    ],
+                });
+                state = result;
 
                 // Try to follow the tree so prior calculations are reused.
                 mctsRoot = AdvanceMctsRoot(mctsRoot, 0, (ICoreState)state);
