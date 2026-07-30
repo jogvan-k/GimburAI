@@ -128,6 +128,12 @@ internal record SimulationOptions
     /// Only applies when <see cref="ExportType"/> is <see cref="ExportType.InitialPlacement"/>.
     /// </summary>
     public int SimulationsPerAction { get; init; }
+
+    /// <summary>
+    /// Maximum games simulated concurrently. Zero selects the existing default:
+    /// four with NN priors, otherwise all logical processors.
+    /// </summary>
+    public int Parallelism { get; init; }
 }
 
 /// <summary>
@@ -146,6 +152,11 @@ internal record StateRecord
     /// Raw MCTS win counts at the root, 0-indexed (index 0 = player 1). Empty if no search.
     /// </summary>
     public required double[] Wins { get; init; }
+
+    /// <summary>
+    /// Immediate action-result states whose value statistics describe that exact state.
+    /// </summary>
+    public required CandidateStateRecord[] Candidates { get; init; }
 
     /// <summary>
     /// Whether the MCTS search fully resolved the tree via terminal propagation.
@@ -196,6 +207,13 @@ internal record StateRecord
     /// Number of prior responses returned for nodes the search no longer tracks.
     /// </summary>
     public int PriorResponsesOrphaned { get; set; }
+}
+
+internal record CandidateStateRecord
+{
+    public required string SerializedState { get; init; }
+    public required double[] Wins { get; init; }
+    public int Rollouts { get; init; }
 }
 
 /// <summary>
@@ -502,9 +520,11 @@ internal class SimulationRunner
                 // When NN priors are active the inference server is the bottleneck;
                 // limit parallelism to avoid OOM from too many concurrent MCTS
                 // trees blocking on root-prior waits.
-                MaxDegreeOfParallelism = priorClient is not null
-                    ? Math.Min(4, Environment.ProcessorCount)
-                    : Environment.ProcessorCount,
+                MaxDegreeOfParallelism = _options.Parallelism > 0
+                    ? Math.Min(_options.Parallelism, Environment.ProcessorCount)
+                    : priorClient is not null
+                        ? Math.Min(4, Environment.ProcessorCount)
+                        : Environment.ProcessorCount,
             }, gameIndex =>
             {
                 // Each game gets a deterministic seed derived from the base seed + game index.
@@ -764,6 +784,52 @@ internal class SimulationRunner
         return (Array.Empty<double>(), 0.0, 0);
     }
 
+    private static CandidateStateRecord[] GetCandidateStateRecords(
+        CoreAction[] coreActions,
+        Kjarni.MCTS.Types.MCTSState root)
+    {
+        var candidates = new List<CandidateStateRecord>();
+        for (var actionIndex = 0; actionIndex < coreActions.Length; actionIndex++)
+        {
+            var coreAction = coreActions[actionIndex];
+            var treeAction = root.Actions[actionIndex];
+            if (coreAction.IsDeterministic)
+            {
+                var result = (CatanState)((CoreAction.Deterministic)coreAction).Item.State();
+                var (wins, _, rollouts) = GetChildWinData(treeAction, (int)root.State.PlayerTurn);
+                candidates.Add(new CandidateStateRecord
+                {
+                    SerializedState = result.SerializeStateOnly(),
+                    Wins = wins,
+                    Rollouts = rollouts,
+                });
+                continue;
+            }
+
+            var outcomes = ((CoreAction.Stochastic)coreAction).Item.Outcomes();
+            Kjarni.MCTS.Types.StochasticOutcome[]? treeOutcomes = treeAction.IsStochasticAction
+                ? ((Kjarni.MCTS.Types.Action.StochasticAction)treeAction).Item
+                : null;
+            for (var outcomeIndex = 0; outcomeIndex < outcomes.Length; outcomeIndex++)
+            {
+                var result = (CatanState)outcomes[outcomeIndex].Item2;
+                var treeState = treeOutcomes is not null && outcomeIndex < treeOutcomes.Length
+                    ? treeOutcomes[outcomeIndex].State
+                    : null;
+                candidates.Add(new CandidateStateRecord
+                {
+                    SerializedState = result.SerializeStateOnly(),
+                    Wins = treeState?.WinCounts is { Length: > 0 } wins
+                        ? (double[])wins.Clone()
+                        : Array.Empty<double>(),
+                    Rollouts = treeState?.Rollouts ?? 0,
+                });
+            }
+        }
+
+        return candidates.ToArray();
+    }
+
     private static double? ComputePlacementValueTarget(IReadOnlyList<PlacementActionRecord> actions)
     {
         var totalRollouts = actions.Sum(action => action.Rollouts);
@@ -868,6 +934,7 @@ internal class SimulationRunner
                     ElapsedMs = (int)logInfo.elapsedTime.TotalMilliseconds,
                     WinRate = winRate,
                     Wins = winCounts,
+                    Candidates = GetCandidateStateRecords(actions, mctsRoot),
                     ReachedTerminal = logInfo.reachedTerminal,
                     PriorNodesRequested = logInfo.priorNodesRequested,
                     PriorResponsesOrphaned = logInfo.priorResponsesOrphaned,
@@ -1532,6 +1599,15 @@ internal class SimulationRunner
                 s.ElapsedMs,
                 s.WinRate,
                 s.Wins,
+                candidates = s.Candidates.Select(candidate => new
+                {
+                    candidate.SerializedState,
+                    candidate.Wins,
+                    candidate.Rollouts,
+                    permutations = symmetryPerms.Length > 0
+                        ? symmetryPerms.Select(p => BoardSymmetry.PermuteState(candidate.SerializedState, p)).ToArray()
+                        : Array.Empty<string>(),
+                }).ToArray(),
                 s.ReachedTerminal,
                 s.PriorNodesRequested,
                 s.PriorActionsApplied,
