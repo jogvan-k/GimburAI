@@ -148,23 +148,6 @@ internal record StateRecord
     public required double[] Wins { get; init; }
 
     /// <summary>
-    /// Win rate of the acting player at the child state reached by the best action.
-    /// </summary>
-    public double BestActionWinRate { get; init; }
-
-    /// <summary>
-    /// Raw MCTS win counts at the child state reached by the best action,
-    /// 0-indexed (index 0 = player 1). Empty if no search.
-    /// </summary>
-    public required double[] BestActionWins { get; init; }
-
-    /// <summary>
-    /// Total rollouts at the child state reached by the best action.
-    /// For stochastic actions, this is the sum of rollouts across all outcomes.
-    /// </summary>
-    public int BestActionRollouts { get; init; }
-
-    /// <summary>
     /// Whether the MCTS search fully resolved the tree via terminal propagation.
     /// When true, all root actions are Terminal and the win estimates are exact.
     /// </summary>
@@ -877,16 +860,6 @@ internal class SimulationRunner
                     ? winCounts[playerIndex] / mctsRoot.Rollouts
                     : 0.0;
 
-                // Read win data from the child state reached by the best action.
-                var bestActionWins = Array.Empty<double>();
-                var bestActionWinRate = 0.0;
-                var bestActionRollouts = 0;
-                if (!bestPath.IsEmpty && bestPath.Head < mctsRoot.Actions.Length)
-                {
-                    var bestChild = mctsRoot.Actions[bestPath.Head];
-                    (bestActionWins, bestActionWinRate, bestActionRollouts) = GetChildWinData(bestChild, playerIndex);
-                }
-
                 states.Add(new StateRecord
                 {
                     PlayerTurn = state.CurrentPlayer,
@@ -895,9 +868,6 @@ internal class SimulationRunner
                     ElapsedMs = (int)logInfo.elapsedTime.TotalMilliseconds,
                     WinRate = winRate,
                     Wins = winCounts,
-                    BestActionWinRate = bestActionWinRate,
-                    BestActionWins = bestActionWins,
-                    BestActionRollouts = bestActionRollouts,
                     ReachedTerminal = logInfo.reachedTerminal,
                     PriorNodesRequested = logInfo.priorNodesRequested,
                     PriorResponsesOrphaned = logInfo.priorResponsesOrphaned,
@@ -1562,9 +1532,6 @@ internal class SimulationRunner
                 s.ElapsedMs,
                 s.WinRate,
                 s.Wins,
-                s.BestActionWinRate,
-                s.BestActionWins,
-                s.BestActionRollouts,
                 s.ReachedTerminal,
                 s.PriorNodesRequested,
                 s.PriorActionsApplied,
