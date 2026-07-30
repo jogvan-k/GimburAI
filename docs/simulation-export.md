@@ -105,9 +105,10 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
 | `priorStatesEvaluated` | int | Number of individual states evaluated by the NN server. |
 | `permutations` | string[] | `serializedState` under each non-trivial symmetry permutation. Same order as `board.permutations`. |
 
-State-value training pairs `serializedState` with `wins`, because both describe the
-same MCTS root state. Selected-child estimates are intentionally not exported: using
-the maximum noisy child estimate as its own label introduces maximization bias.
+State-value training uses the completed game's one-hot `winner` outcome for every
+visited root and candidate state. MCTS `wins` remain available as search diagnostics,
+but are not treated as eventual win probabilities. Games ending without a winner are
+excluded from state-value training.
 
 ### Symmetry Permutations (GameState)
 

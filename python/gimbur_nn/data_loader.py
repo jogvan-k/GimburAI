@@ -210,15 +210,15 @@ def _process_game(
     tokenizer: StateTokenizer,
 ) -> None:
     """Expand one game record into training samples."""
+    winner = int(game.get("winner", 0))
+    if winner < 1 or winner > n_players:
+        return
     board_serialized: str = game["board"]["serialized"]
     board_permutations: list[str] = game["board"]["permutations"]
 
     for state_entry in game["states"]:
         value_states = [state_entry, *state_entry.get("candidates", [])]
         for value_state in value_states:
-            wins: list[float] = value_state["wins"]
-            if not wins:
-                continue
             state_serialized: str = value_state["serializedState"]
             state_permutations: list[str] = value_state["permutations"]
 
@@ -234,7 +234,7 @@ def _process_game(
                 for player in range(1, n_players + 1):
                     rotated = tokenizer.rotate_player_state(compact, player)
                     token_ids = tokenizer.tokenize(rotated)
-                    prob = _win_probability(wins, player)
+                    prob = 1.0 if player == winner else 0.0
                     bucket = _prob_to_bucket(prob, n_buckets)
                     samples.append((token_ids, bucket))
 

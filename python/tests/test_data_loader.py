@@ -31,6 +31,7 @@ def _make_game(
     states: list[dict],
     n_players: int,
     map_name: str = "mini",
+    winner: int = 1,
 ) -> dict:
     """Create a minimal JSONL game record."""
     return {
@@ -38,7 +39,7 @@ def _make_game(
         "seed": 42,
         "map": map_name,
         "players": n_players,
-        "winner": 1,
+        "winner": winner,
         "turns": 10,
         "constraints": {
             "searchTimeMs": 500,
@@ -406,7 +407,7 @@ class TestLoadSamples:
 
 
 class TestExpandGames:
-    def test_uses_root_wins_for_root_serialization(self) -> None:
+    def test_uses_completed_game_winner(self) -> None:
         game = _make_game(
             board=MINI_BOARD,
             board_perms=[],
@@ -422,8 +423,8 @@ class TestExpandGames:
 
         samples = expand_games([game], MINI_2P)
 
-        assert samples[0][1] == _prob_to_bucket(0.9, 128)
-        assert samples[1][1] == _prob_to_bucket(0.1, 128)
+        assert samples[0][1] == _prob_to_bucket(1.0, 128)
+        assert samples[1][1] == _prob_to_bucket(0.0, 128)
 
     def test_includes_labeled_candidate_states(self) -> None:
         game = _make_game(
@@ -455,9 +456,15 @@ class TestExpandGames:
 
         samples = expand_games([game], MINI_2P)
 
-        assert len(samples) == 4
-        assert samples[2][1] == _prob_to_bucket(0.8, 128)
-        assert samples[3][1] == _prob_to_bucket(0.2, 128)
+        assert len(samples) == 6
+        assert samples[2][1] == _prob_to_bucket(1.0, 128)
+        assert samples[3][1] == _prob_to_bucket(0.0, 128)
+
+    def test_skips_games_without_a_winner(self) -> None:
+        game = _simple_game()
+        game["winner"] = 0
+
+        assert expand_games([game], MINI_2P) == []
 
     def test_expand_single_game(self) -> None:
         games = [_simple_game()]
