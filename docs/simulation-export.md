@@ -71,9 +71,6 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
   "elapsedMs": 1000,
   "winRate": 0.64,
   "wins": [3200.0, 1800.0],
-  "bestActionWinRate": 0.68,
-  "bestActionWins": [340.0, 160.0],
-  "bestActionRollouts": 500,
   "reachedTerminal": false,
   "priorsRequested": 0,
   "priorsApplied": 0,
@@ -93,9 +90,6 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
 | `elapsedMs` | int | Wall-clock time spent on MCTS search (milliseconds). |
 | `winRate` | float | Acting player's win rate at the MCTS root (wins / rollouts). |
 | `wins` | float[] | Raw MCTS win counts at the root, 0-indexed (index 0 = player 1). |
-| `bestActionWinRate` | float | Acting player's win rate at the child state reached by the best action. |
-| `bestActionWins` | float[] | MCTS win counts at the best action's child state. Retained for search diagnostics; state-value training does not pair these child statistics with the serialized root state. |
-| `bestActionRollouts` | int | Total rollouts at the best action's child state. For stochastic actions this is summed across outcomes. |
 | `reachedTerminal` | bool | Whether MCTS fully resolved the tree (all root actions are Terminal). |
 | `priorsRequested` | int | Number of NN prior requests sent during this search. |
 | `priorsApplied` | int | Number of NN prior responses applied to tree nodes. |
@@ -103,8 +97,8 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
 | `permutations` | string[] | `serializedState` under each non-trivial symmetry permutation. Same order as `board.permutations`. |
 
 State-value training pairs `serializedState` with `wins`, because both describe the
-same MCTS root state. `bestActionWins` describes a different, post-action state and
-must not be used as the target for this serialization.
+same MCTS root state. Selected-child estimates are intentionally not exported: using
+the maximum noisy child estimate as its own label introduces maximization bias.
 
 ### Symmetry Permutations (GameState)
 

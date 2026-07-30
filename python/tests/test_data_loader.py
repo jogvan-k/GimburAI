@@ -58,7 +58,7 @@ def _make_state(
     *,
     state_str: str,
     state_perms: list[str],
-    best_action_wins: list[float],
+    best_action_wins: list[float] | None = None,
     wins: list[float] | None = None,
     player_turn: int = 1,
 ) -> dict:
@@ -70,9 +70,6 @@ def _make_state(
         "elapsedMs": 50,
         "winRate": 0.5,
         "wins": wins if wins is not None else best_action_wins,
-        "bestActionWinRate": 0.5,
-        "bestActionWins": best_action_wins,
-        "bestActionRollouts": 50,
         "permutations": state_perms,
     }
 
@@ -416,7 +413,6 @@ class TestExpandGames:
                     state_str=MINI_STATE_ONLY,
                     state_perms=[],
                     wins=[90.0, 10.0],
-                    best_action_wins=[10.0, 90.0],
                 )
             ],
             n_players=2,
