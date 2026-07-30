@@ -168,6 +168,10 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
                 a.Arg2 == bestAction.Arg2).WinRate,
             TotalSimulations = logInfo.simulations,
             ElapsedMs = (int)sw.ElapsedMilliseconds,
+            PriorNodesRequested = logInfo.priorNodesRequested,
+            PriorActionsApplied = logInfo.priorActionsApplied,
+            PriorActionsRequested = logInfo.priorActionsRequested,
+            PriorInferencesRequested = logInfo.priorInferencesRequested,
             AllActions = allActions,
         });
     }
@@ -327,6 +331,10 @@ record ChooseActionResponse
     public double WinRate { get; init; }
     public int TotalSimulations { get; init; }
     public int ElapsedMs { get; init; }
+    public int PriorNodesRequested { get; init; }
+    public int PriorActionsApplied { get; init; }
+    public int PriorActionsRequested { get; init; }
+    public int PriorInferencesRequested { get; init; }
     public required List<ActionInfo> AllActions { get; init; }
 }
 

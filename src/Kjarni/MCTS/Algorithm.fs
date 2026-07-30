@@ -507,19 +507,24 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                         nodeReg.[node.NodeId] <- node
                         layoutReg.[node.NodeId] <- (layout, outcomeWeights)
                         let inferenceCount = client.RequestPrior(node.NodeId, node.State, actionStates, int node.State.PlayerTurn + 1, depth)
-                        priorStats.priorNodesRequested <- priorStats.priorNodesRequested + 1
-                        priorStats.priorActionsRequested <- priorStats.priorActionsRequested + actionStates.Length
-                        priorStats.priorInferencesRequested <- priorStats.priorInferencesRequested + inferenceCount
-                        let aCount =
-                            match priorStats.priorActionsPerDepth.TryGetValue(depth) with
-                            | true, v -> v
-                            | _ -> 0
-                        priorStats.priorActionsPerDepth.[depth] <- aCount + actionStates.Length
-                        let iCount =
-                            match priorStats.priorInferencesPerDepth.TryGetValue(depth) with
-                            | true, v -> v
-                            | _ -> 0
-                        priorStats.priorInferencesPerDepth.[depth] <- iCount + inferenceCount
+                        if inferenceCount > 0 then
+                            priorStats.priorNodesRequested <- priorStats.priorNodesRequested + 1
+                            priorStats.priorActionsRequested <- priorStats.priorActionsRequested + actionStates.Length
+                            priorStats.priorInferencesRequested <- priorStats.priorInferencesRequested + inferenceCount
+                            let aCount =
+                                match priorStats.priorActionsPerDepth.TryGetValue(depth) with
+                                | true, v -> v
+                                | _ -> 0
+                            priorStats.priorActionsPerDepth.[depth] <- aCount + actionStates.Length
+                            let iCount =
+                                match priorStats.priorInferencesPerDepth.TryGetValue(depth) with
+                                | true, v -> v
+                                | _ -> 0
+                            priorStats.priorInferencesPerDepth.[depth] <- iCount + inferenceCount
+                        else
+                            nodeReg.Remove(node.NodeId) |> ignore
+                            layoutReg.Remove(node.NodeId) |> ignore
+                            priorStats.priorNodesSkipped <- priorStats.priorNodesSkipped + 1
         | _ -> ()
 
     /// Collect completed prior responses and apply them to tree nodes.

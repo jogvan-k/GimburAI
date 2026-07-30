@@ -538,32 +538,38 @@ def create_app(
             batch: list[PlacementPriorRequest],
         ) -> list[PriorResponseItem]:
             """Return full-vocabulary priors and state values for placement states."""
-            results: list[PriorResponseItem] = []
-            for req in batch:
+            valid: list[tuple[int, PlacementPriorRequest]] = []
+            results: list[PriorResponseItem | None] = [None] * len(batch)
+            tokens: list[torch.Tensor] = []
+            for index, req in enumerate(batch):
                 try:
-                    token_batch = placement_tokenizer.tokenize_batch([req.state]).to(
-                        placement_device
-                    )
+                    tokens.append(placement_tokenizer.tokenize_state(req.state))
+                    valid.append((index, req))
                 except (KeyError, ValueError):
-                    results.append(PriorResponseItem(id=req.id, priors=[]))
-                    continue
+                    results[index] = PriorResponseItem(id=req.id, priors=[])
+
+            if tokens:
+                token_batch = torch.stack(tokens).to(placement_device)
                 with torch.no_grad():
                     output = placement_model(token_batch)
                     value_logits = output["value"] if isinstance(output, dict) else output
                     value_probs = F.softmax(value_logits, dim=-1)
-                    priors = (
-                        F.softmax(output["policy"], dim=-1)[0].cpu().tolist()
+                    policy_probs = (
+                        F.softmax(output["policy"], dim=-1).cpu().tolist()
                         if isinstance(output, dict)
-                        else []
+                        else [[] for _ in valid]
                     )
-                results.append(
-                    PriorResponseItem(
+
+                for batch_index, ((result_index, req), priors) in enumerate(
+                    zip(valid, policy_probs)
+                ):
+                    results[result_index] = PriorResponseItem(
                         id=req.id,
                         priors=priors,
-                        value_estimate=_expected_win_prob(value_probs[0]),
+                        value_estimate=_expected_win_prob(value_probs[batch_index]),
                     )
-                )
-            return results
+
+            return [result for result in results if result is not None]
 
         async def _placement_prior_worker() -> None:
             """Background task that continuously processes the placement prior queue."""

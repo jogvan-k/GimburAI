@@ -12,7 +12,7 @@ namespace Gimbur.Cli;
 /// via the <c>/choose-action</c> HTTP endpoint. Supports both pure MCTS
 /// (<c>mcts-ai</c>) and NN-guided MCTS (<c>mcts-nn-ai</c>) server modes.
 /// </summary>
-internal sealed class ServerPlayer : IBenchmarkPlayer, IDisposable
+internal sealed class ServerPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDisposable
 {
     private readonly HttpClient _http;
     private readonly string _aiMode;
@@ -23,6 +23,12 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IDisposable
     private readonly string? _nnUrl;
     private readonly string? _priorMode;
     private readonly int? _maxPriorDepth;
+
+    public int TotalNnRequests { get; private set; }
+    public int TotalNnStatesEvaluated { get; private set; }
+    public int TotalPriorActionsApplied { get; private set; }
+    public int TotalPriorActionsRequested { get; private set; }
+    public int TotalPriorInferencesRequested => TotalNnStatesEvaluated;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -109,6 +115,11 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IDisposable
         if (result is null)
             throw new InvalidOperationException("Server returned null response");
 
+        TotalNnRequests += result.PriorNodesRequested;
+        TotalNnStatesEvaluated += result.PriorInferencesRequested;
+        TotalPriorActionsApplied += result.PriorActionsApplied;
+        TotalPriorActionsRequested += result.PriorActionsRequested;
+
         // Find the matching action by (typeTag, arg1, arg2).
         for (var i = 0; i < actions.Length; i++)
         {
@@ -174,5 +185,9 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IDisposable
         public double WinRate { get; init; }
         public int TotalSimulations { get; init; }
         public int ElapsedMs { get; init; }
+        public int PriorNodesRequested { get; init; }
+        public int PriorActionsApplied { get; init; }
+        public int PriorActionsRequested { get; init; }
+        public int PriorInferencesRequested { get; init; }
     }
 }

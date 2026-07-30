@@ -13,10 +13,16 @@ namespace Gimbur.Cli;
 /// <c>nn-mcts-placement-random</c>) so that the post-placement strategy
 /// matches the opponent and the comparison isolates placement quality.
 /// </summary>
-internal sealed class ServerPlacementPlayer : IBenchmarkPlayer, IDisposable
+internal sealed class ServerPlacementPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDisposable
 {
     private readonly ServerPlayer _placement;
     private readonly IBenchmarkPlayer _fallback;
+
+    public int TotalNnRequests => _placement.TotalNnRequests;
+    public int TotalNnStatesEvaluated => _placement.TotalNnStatesEvaluated;
+    public int TotalPriorActionsApplied => _placement.TotalPriorActionsApplied;
+    public int TotalPriorActionsRequested => _placement.TotalPriorActionsRequested;
+    public int TotalPriorInferencesRequested => _placement.TotalPriorInferencesRequested;
 
     public ServerPlacementPlayer(ServerPlayer placement, IBenchmarkPlayer? fallback = null)
     {

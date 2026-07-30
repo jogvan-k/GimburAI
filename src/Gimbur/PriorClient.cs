@@ -194,25 +194,31 @@ public sealed class PriorClient : IPriorClient, IDisposable
         };
 
         Interlocked.Increment(ref _enqueueFireCount);
-        _ = Task.Run(async () =>
-        {
-            await _enqueueThrottle.WaitAsync();
-            try
-            {
-                using var response = await _http.PostAsJsonAsync("state/prior-enqueue", request, JsonOptions);
-            }
-            catch
-            {
-                // Server unreachable — degrade gracefully (no priors for this node).
-                Interlocked.Increment(ref _enqueueErrorCount);
-            }
-            finally
-            {
-                _enqueueThrottle.Release();
-            }
-        });
+        _ = EnqueueAsync("state/prior-enqueue", request, null);
 
         return states.Length;
+    }
+
+    private async Task EnqueueAsync<T>(
+        string endpoint,
+        T request,
+        Action? onFailure)
+    {
+        await _enqueueThrottle.WaitAsync();
+        try
+        {
+            using var response = await _http.PostAsJsonAsync(endpoint, request, JsonOptions);
+            response.EnsureSuccessStatusCode();
+        }
+        catch
+        {
+            onFailure?.Invoke();
+            Interlocked.Increment(ref _enqueueErrorCount);
+        }
+        finally
+        {
+            _enqueueThrottle.Release();
+        }
     }
 
     /// <summary>
@@ -245,7 +251,9 @@ public sealed class PriorClient : IPriorClient, IDisposable
 
             var priors = _actionSerializer.MaskAndNormalize(policy, legalIndices);
             _mailbox.Enqueue(new PriorResponse(nodeId, priors, double.NaN));
-            return 0;
+            // Signal that a prior response was accepted even though it was
+            // satisfied from the settlement prediction cache.
+            return 1;
         }
 
         if (parent.Stage is not (TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement))
@@ -271,42 +279,60 @@ public sealed class PriorClient : IPriorClient, IDisposable
         if (groups.Any(group => group.Length == 0))
             return 0;
 
-        _pendingPlacement[nodeId] = new PendingPlacementRequest(groups, roadKeys);
+        return RequestPlacementRootPrior(nodeId, parent, groups, roadKeys);
+    }
 
-        var request = new PlacementPriorEnqueuePayload
+    private int RequestPlacementRootPrior(
+        long nodeId,
+        CatanState parent,
+        int[][] groups,
+        string[] roadKeys)
+    {
+        try
         {
-            Requests =
-            [
-                new PlacementPriorRequestItem
-                {
-                    Id = nodeId.ToString(),
-                    State = parent.SerializePlacementPhaseCompact(),
-                    Priority = depth,
-                }
-            ],
-        };
+            var request = new PlacementPredictRequest
+            {
+                States = [parent.SerializePlacementPhaseCompact()],
+            };
+            using var response = _http.PostAsJsonAsync(
+                "placement/predict", request, JsonOptions).GetAwaiter().GetResult();
+            response.EnsureSuccessStatusCode();
+            var prediction = response.Content
+                .ReadFromJsonAsync<PlacementPredictResponse>(JsonOptions)
+                .GetAwaiter().GetResult();
+            var dense = prediction?.PolicyProbabilities.FirstOrDefault();
+            if (dense is null)
+                return 0;
 
-        Interlocked.Increment(ref _enqueueFireCount);
-        _ = Task.Run(async () =>
+            var priors = Array.ConvertAll(dense, value => (double)value);
+            var settlementPriors = _actionSerializer!.SettlementMarginals(priors, groups);
+            if (_actionSerializer.IsValidDensePolicy(priors))
+            {
+                foreach (var key in roadKeys)
+                    _roadPolicies[key] = priors;
+            }
+
+            var valueEstimate = ExpectedValue(
+                prediction!.ValueProbabilities.FirstOrDefault());
+            _mailbox.Enqueue(new PriorResponse(nodeId, settlementPriors, valueEstimate));
+            return 1;
+        }
+        catch
         {
-            await _enqueueThrottle.WaitAsync();
-            try
-            {
-                using var response = await _http.PostAsJsonAsync("placement/prior-enqueue", request, JsonOptions);
-            }
-            catch
-            {
-                // Server unreachable — degrade gracefully (no priors for this node).
-                _pendingPlacement.TryRemove(nodeId, out _);
-                Interlocked.Increment(ref _enqueueErrorCount);
-            }
-            finally
-            {
-                _enqueueThrottle.Release();
-            }
-        });
+            Interlocked.Increment(ref _enqueueErrorCount);
+            return 0;
+        }
+    }
 
-        return 1;
+    private static double ExpectedValue(float[]? buckets)
+    {
+        if (buckets is null || buckets.Length == 0)
+            return double.NaN;
+
+        var expected = 0.0;
+        for (var i = 0; i < buckets.Length; i++)
+            expected += buckets[i] * (i + 0.5) / buckets.Length;
+        return expected;
     }
 
     private static CatanAction UnwrapAction(CoreAction action)
@@ -524,6 +550,20 @@ public sealed class PriorClient : IPriorClient, IDisposable
         public string Id { get; init; } = "";
         public string State { get; init; } = "";
         public int Priority { get; init; }
+    }
+
+    private sealed class PlacementPredictRequest
+    {
+        public string[] States { get; init; } = [];
+    }
+
+    private sealed class PlacementPredictResponse
+    {
+        [JsonPropertyName("value_probabilities")]
+        public float[][] ValueProbabilities { get; init; } = [];
+
+        [JsonPropertyName("policy_probabilities")]
+        public float[][] PolicyProbabilities { get; init; } = [];
     }
 
     private sealed record PendingPlacementRequest(

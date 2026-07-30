@@ -123,6 +123,13 @@ internal interface INnStatsProvider
     int TotalNnStatesEvaluated { get; }
 }
 
+internal interface IPriorStatsProvider : INnStatsProvider
+{
+    int TotalPriorActionsApplied { get; }
+    int TotalPriorActionsRequested { get; }
+    int TotalPriorInferencesRequested { get; }
+}
+
 /// <summary>
 /// Picks a random action from the available actions.
 /// </summary>
@@ -607,13 +614,13 @@ internal class BenchmarkRunner
                 new ServerPlayer(
                     _options.ServerUrl, "mcts-nn-ai", _options.MapConfig ?? "standard",
                     _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth,
-                    _options.NnUrl, _options.ServerPriorMode ?? "placement", _options.ServerMaxPriorDepth),
+                    _options.NnUrl, "placement", _options.ServerMaxPriorDepth),
                 new GreedyPlayer()),
             AiKind.NnMctsPlacementRandom => new ServerPlacementPlayer(
                 new ServerPlayer(
                     _options.ServerUrl, "mcts-nn-ai", _options.MapConfig ?? "standard",
                     _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth,
-                    _options.NnUrl, _options.ServerPriorMode ?? "placement", _options.ServerMaxPriorDepth),
+                    _options.NnUrl, "placement", _options.ServerMaxPriorDepth),
                 new RandomPlayer()),
             AiKind.MctsPlacement => new ServerPlacementPlayer(
                 new ServerPlayer(
@@ -709,6 +716,13 @@ internal class BenchmarkRunner
                         priorInferencesPerDepth[kv.Key] = existing + kv.Value;
                     }
                 }
+            }
+            else if (player is IPriorStatsProvider priorStats)
+            {
+                priorNodesRequested += priorStats.TotalNnRequests;
+                priorActionsApplied += priorStats.TotalPriorActionsApplied;
+                priorActionsRequested += priorStats.TotalPriorActionsRequested;
+                priorInferencesRequested += priorStats.TotalPriorInferencesRequested;
             }
             else if (player is INnStatsProvider nnStats)
             {
