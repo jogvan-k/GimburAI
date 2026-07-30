@@ -13,6 +13,7 @@ to resume from by scanning artifact directories.
 Usage:
     python -m gimbur_nn.pipeline --config pipeline.json
     python -m gimbur_nn.pipeline --config pipeline.json --start-gen 3
+    python -m gimbur_nn.pipeline --config pipeline.json --chart-only
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -49,6 +51,7 @@ class SimulateConfig:
     symmetries: bool = True
     verbosity: str = "quiet"
     oversample: float = 1.0
+    parallelism: int | None = None
 
 
 @dataclass
@@ -66,6 +69,7 @@ class TrainConfig:
     loss: str = "hard"
     loss_sigma: float = 2.0
     resume_from_previous: bool = True
+    replay_generations: int = 3
     target: str = "winrate"
     output_mode: str = "value"
     advantage: bool = False
@@ -877,6 +881,8 @@ def _step_simulate(
         sim_config["maxPriorDepth"] = sim.max_prior_depth
     if sim.simulations_per_action is not None:
         sim_config["simulationsPerAction"] = sim.simulations_per_action
+    if sim.parallelism is not None:
+        sim_config["parallelism"] = sim.parallelism
     if not sim.symmetries:
         sim_config["noSymmetries"] = True
     if sim.verbosity:
@@ -928,7 +934,12 @@ def _step_simulate(
         return
 
     # Oversample mode: launch as a background process and monitor the folder.
-    proc = subprocess.Popen(args, cwd=project_root, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(
+        args,
+        cwd=project_root,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
     try:
         while proc.poll() is None:
             count = _count_json_files(out_dir)
@@ -936,11 +947,11 @@ def _step_simulate(
                 print(
                     f"  Target reached: {count}/{target_games} games. Terminating simulation early."
                 )
-                proc.send_signal(signal.SIGINT)
+                os.killpg(proc.pid, signal.SIGINT)
                 try:
                     proc.wait(timeout=30)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
+                    os.killpg(proc.pid, signal.SIGKILL)
                     proc.wait()
                 return
             time.sleep(1.0)
@@ -966,7 +977,7 @@ def _step_simulate(
     except BaseException:
         # Ensure subprocess is cleaned up on any error (including KeyboardInterrupt).
         if proc.poll() is None:
-            proc.kill()
+            os.killpg(proc.pid, signal.SIGKILL)
             proc.wait()
         raise
 
@@ -989,7 +1000,8 @@ def _step_train(
         print(f"  Train: Model already exists at {out_path}, skipping.")
         return
 
-    data_path = _data_path(cfg, gen, model_type)
+    replay_start = max(0, gen - max(1, cfg.train.replay_generations) + 1)
+    data_paths = [_data_path(cfg, replay_gen, model_type) for replay_gen in range(replay_start, gen + 1)]
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     tr = cfg.train
@@ -1011,7 +1023,7 @@ def _step_train(
 
     # Build config JSON for training.
     train_config: dict[str, Any] = {
-        "data": str(data_path),
+        "data": [str(path) for path in data_paths],
         "gameConfig": cfg.game_config,
         "modelConfig": effective_model_config,
         "modelType": effective_type,
@@ -1320,7 +1332,7 @@ def _save_summary(cfg: PipelineConfig, all_results: dict[int, dict[str, Any]]) -
     print(f"Summary saved to {summary_path}")
 
 
-def _save_progress_chart(cfg: PipelineConfig, all_results: dict[int, dict[str, Any]]) -> None:
+def _save_progress_chart(cfg: PipelineConfig, all_results: dict[int, dict[str, Any]]) -> bool:
     """Save a win-rate progress chart (PNG) covering all generations so far.
 
     Plots the subject (first AI in each benchmark config) win rate on the
@@ -1345,10 +1357,10 @@ def _save_progress_chart(cfg: PipelineConfig, all_results: dict[int, dict[str, A
         matplotlib.use("Agg")  # non-interactive backend
         import matplotlib.pyplot as plt
     except ImportError:
-        return
+        return False
 
     if not all_results:
-        return
+        return False
 
     # Build a lookup from benchmark name -> subject AI name (C# lowercase).
     bench_subjects: dict[str, str] = {}
@@ -1371,7 +1383,7 @@ def _save_progress_chart(cfg: PipelineConfig, all_results: dict[int, dict[str, A
                 series.setdefault(bench_name, []).append((gen, rate))
 
     if not series:
-        return
+        return False
 
     fig, ax = plt.subplots(figsize=(8, 5))
 
@@ -1428,9 +1440,23 @@ def _save_progress_chart(cfg: PipelineConfig, all_results: dict[int, dict[str, A
 
     chart_path = Path(cfg.results_dir) / "progress.png"
     chart_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(chart_path, dpi=120, bbox_inches="tight")
-    plt.close(fig)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=chart_path.parent,
+            prefix=f".{chart_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+        fig.savefig(temporary_path, format="png", dpi=120, bbox_inches="tight")
+        os.replace(temporary_path, chart_path)
+    finally:
+        plt.close(fig)
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
     print(f"Progress chart saved to {chart_path}")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1815,6 +1841,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Project root directory. Default: auto-detect from config file location.",
     )
+    parser.add_argument(
+        "--chart-only",
+        action="store_true",
+        help="Regenerate progress.png from completed benchmark results, then exit.",
+    )
     return parser.parse_args()
 
 
@@ -1826,6 +1857,24 @@ def main() -> None:
         sys.exit(1)
 
     cfg = _load_config(args.config)
+
+    if args.chart_only:
+        summary_path = Path(cfg.results_dir) / "summary.json"
+        if not summary_path.exists():
+            print(f"Error: Summary file not found: {summary_path}", file=sys.stderr)
+            sys.exit(1)
+        all_results = {
+            entry["generation"]: entry.get("benchmarks", {})
+            for entry in json.loads(summary_path.read_text())
+        }
+        if not _save_progress_chart(cfg, all_results):
+            print(
+                "Error: Progress chart could not be generated. Install the pipeline "
+                "dependencies and ensure the summary contains benchmark results.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return
 
     # Resolve project root: explicit arg > two levels up from python/gimbur_nn/.
     if args.project_root is not None:
