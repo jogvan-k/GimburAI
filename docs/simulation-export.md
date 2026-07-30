@@ -115,6 +115,10 @@ when training a state model. Configure `train.replayGenerations` to bound this w
 replay reduces forgetting and prevents the latest guided search distribution from
 entirely replacing earlier state coverage.
 
+State training reports decoded-probability MAE, Brier score, and expected calibration
+error in addition to bucket loss. `gimbur_nn.metrics.candidate_ranking_accuracy` is
+provided for grouped candidate evaluation against an independent deeper-search corpus.
+
 ### Symmetry Permutations (GameState)
 
 Board symmetry permutations rearrange position-dependent data (tile indices, vertex indices, edge indices) while leaving player-identity and per-player sections unchanged.

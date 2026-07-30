@@ -54,6 +54,7 @@ from .loss_config import (
     build_loss_fn,
     masked_soft_target_cross_entropy,
 )
+from .metrics import value_metrics
 from .transformer_model import (
     MODEL_CONFIGS_BY_NAME,
     OUTPUT_MODES,
@@ -491,6 +492,7 @@ def _run_epoch(
 
     total_loss = 0.0
     total_samples = 0
+    metric_totals = {"mae": 0.0, "brier": 0.0, "ece": 0.0}
 
     ctx = torch.no_grad() if not is_train else torch.enable_grad()
     with ctx:
@@ -514,6 +516,9 @@ def _run_epoch(
                 targets = batch[1].to(device)
                 logits = output if output.ndim == 2 else output[:, -1, :]
                 loss = loss_fn(logits, targets)
+                metrics = value_metrics(logits.detach(), targets)
+                for name, value in metrics.items():
+                    metric_totals[name] += value * token_ids.shape[0]
 
             if is_train:
                 assert optimizer is not None
@@ -532,6 +537,11 @@ def _run_epoch(
                     f"loss {loss.item():.4f} (running avg {avg:.4f})"
                 )
 
+    if total_samples > 0 and output_mode != "combined":
+        summary = " | ".join(
+            f"{name} {value / total_samples:.4f}" for name, value in metric_totals.items()
+        )
+        print(f"  [{phase}] value metrics | {summary}")
     return total_loss / total_samples if total_samples > 0 else 0.0
 
 
