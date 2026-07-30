@@ -71,6 +71,14 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
   "elapsedMs": 1000,
   "winRate": 0.64,
   "wins": [3200.0, 1800.0],
+  "candidates": [
+    {
+      "serializedState": "...",
+      "wins": [70.0, 30.0],
+      "rollouts": 100,
+      "permutations": ["..."]
+    }
+  ],
   "reachedTerminal": false,
   "priorsRequested": 0,
   "priorsApplied": 0,
@@ -90,6 +98,7 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
 | `elapsedMs` | int | Wall-clock time spent on MCTS search (milliseconds). |
 | `winRate` | float | Acting player's win rate at the MCTS root (wins / rollouts). |
 | `wins` | float[] | Raw MCTS win counts at the root, 0-indexed (index 0 = player 1). |
+| `candidates` | Candidate[] | Immediate deterministic result states and individual stochastic outcome states. Candidate statistics always describe the serialized candidate itself. Unexplored candidates have empty `wins` and are skipped by MCTS-target training. |
 | `reachedTerminal` | bool | Whether MCTS fully resolved the tree (all root actions are Terminal). |
 | `priorsRequested` | int | Number of NN prior requests sent during this search. |
 | `priorsApplied` | int | Number of NN prior responses applied to tree nodes. |

@@ -214,25 +214,29 @@ def _process_game(
     board_permutations: list[str] = game["board"]["permutations"]
 
     for state_entry in game["states"]:
-        wins: list[float] = state_entry["wins"]
-        state_serialized: str = state_entry["serializedState"]
-        state_permutations: list[str] = state_entry["permutations"]
+        value_states = [state_entry, *state_entry.get("candidates", [])]
+        for value_state in value_states:
+            wins: list[float] = value_state["wins"]
+            if not wins:
+                continue
+            state_serialized: str = value_state["serializedState"]
+            state_permutations: list[str] = value_state["permutations"]
 
-        # Identity combo + one combo per symmetry permutation.
-        board_variants = [board_serialized, *board_permutations]
-        state_variants = [state_serialized, *state_permutations]
+            # Identity combo + one combo per symmetry permutation.
+            board_variants = [board_serialized, *board_permutations]
+            state_variants = [state_serialized, *state_permutations]
 
-        for board_str, state_str in zip(board_variants, state_variants):
-            # Reconstruct full human-readable form, then compact.
-            full_hr = board_str + "|" + state_str
-            compact = _compact(full_hr)
+            for board_str, state_str in zip(board_variants, state_variants):
+                # Reconstruct full human-readable form, then compact.
+                full_hr = board_str + "|" + state_str
+                compact = _compact(full_hr)
 
-            for player in range(1, n_players + 1):
-                rotated = tokenizer.rotate_player_state(compact, player)
-                token_ids = tokenizer.tokenize(rotated)
-                prob = _win_probability(wins, player)
-                bucket = _prob_to_bucket(prob, n_buckets)
-                samples.append((token_ids, bucket))
+                for player in range(1, n_players + 1):
+                    rotated = tokenizer.rotate_player_state(compact, player)
+                    token_ids = tokenizer.tokenize(rotated)
+                    prob = _win_probability(wins, player)
+                    bucket = _prob_to_bucket(prob, n_buckets)
+                    samples.append((token_ids, bucket))
 
 
 # ── Legacy convenience (used by tests) ───────────────────────────────
