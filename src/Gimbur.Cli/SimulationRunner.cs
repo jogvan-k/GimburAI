@@ -781,6 +781,44 @@ internal class SimulationRunner
         return actions.Sum(action => action.WinRate * action.Rollouts) / totalRollouts;
     }
 
+    private static StateRecord CreateStateRecord(
+        CatanState state,
+        string serialized,
+        Kjarni.MCTS.Types.MCTSState mctsRoot,
+        Kjarni.MCTS.Types.LogInfo logInfo)
+    {
+        var winCounts = mctsRoot.WinCounts is { Length: > 0 }
+            ? (double[])mctsRoot.WinCounts.Clone()
+            : Array.Empty<double>();
+        var playerIndex = (int)state.PlayerTurn;
+        var winRate = mctsRoot.Rollouts > 0 && playerIndex < winCounts.Length
+            ? winCounts[playerIndex] / mctsRoot.Rollouts
+            : 0.0;
+
+        return new StateRecord
+        {
+            PlayerTurn = state.CurrentPlayer,
+            SerializedState = serialized,
+            Simulations = logInfo.simulations,
+            ElapsedMs = (int)logInfo.elapsedTime.TotalMilliseconds,
+            WinRate = winRate,
+            Wins = winCounts,
+            ReachedTerminal = logInfo.reachedTerminal,
+            PriorNodesRequested = logInfo.priorNodesRequested,
+            PriorResponsesOrphaned = logInfo.priorResponsesOrphaned,
+            PriorActionsApplied = logInfo.priorActionsApplied,
+            PriorActionsRequested = logInfo.priorActionsRequested,
+            PriorInferencesRequested = logInfo.priorInferencesRequested,
+            PriorActionsPerDepth = logInfo.priorActionsPerDepth is { Count: > 0 }
+                ? new Dictionary<int, int>(logInfo.priorActionsPerDepth)
+                : null,
+            PriorInferencesPerDepth = logInfo.priorInferencesPerDepth is { Count: > 0 }
+                ? new Dictionary<int, int>(logInfo.priorInferencesPerDepth)
+                : null,
+            PriorNodesSkipped = logInfo.priorNodesSkipped,
+        };
+    }
+
     private GameResult RunSingleGame(
         GameConfig config,
         int playerCount,
@@ -826,13 +864,20 @@ internal class SimulationRunner
             var actions = state.Actions();
             if (actions.Length == 0) break;
 
-            // TODO: we still need to estimate win chance here
             if (actions.Length == 1)
             {
-                // Forced action (e.g., dice roll) — no decision or MCTS value to record.
+                var serialized = state.SerializeStateOnly();
+                mctsRoot ??= new Kjarni.MCTS.Types.MCTSState((ICoreState)state);
+                mcts.RunSimulation(mctsRoot);
+                var logInfo = mcts.LatestLogInfo();
+                states.Add(CreateStateRecord(state, serialized, mctsRoot, logInfo));
+
+                if (mctsRoot.Actions[0].IsHorizonAction)
+                    break;
+
                 state = (CatanState)UnwrapCoreAction(actions[0]).DoCoreAction();
 
-                // Try to follow the tree so prior calculations are reused.
+                // Reuse inherited rollouts and top up the resulting root next iteration.
                 mctsRoot = AdvanceMctsRoot(mctsRoot, 0, (ICoreState)state);
             }
             else
@@ -856,39 +901,7 @@ internal class SimulationRunner
                 var bestPath = extractBestPath(mctsRoot);
                 var logInfo = mcts.LatestLogInfo();
 
-                // Read win data from the MCTS root node directly (LogInfo fields
-                // estimatedAiWinChance and winCounts are not currently populated).
-                // Clone the array since WinCounts is mutable and may change with tree reuse.
-                var winCounts = mctsRoot.WinCounts is { Length: > 0 }
-                    ? (double[])mctsRoot.WinCounts.Clone()
-                    : Array.Empty<double>();
-                var playerIndex = (int)state.PlayerTurn;
-                var winRate = mctsRoot.Rollouts > 0 && playerIndex < winCounts.Length
-                    ? winCounts[playerIndex] / mctsRoot.Rollouts
-                    : 0.0;
-
-                states.Add(new StateRecord
-                {
-                    PlayerTurn = state.CurrentPlayer,
-                    SerializedState = serialized,
-                    Simulations = logInfo.simulations,
-                    ElapsedMs = (int)logInfo.elapsedTime.TotalMilliseconds,
-                    WinRate = winRate,
-                    Wins = winCounts,
-                    ReachedTerminal = logInfo.reachedTerminal,
-                    PriorNodesRequested = logInfo.priorNodesRequested,
-                    PriorResponsesOrphaned = logInfo.priorResponsesOrphaned,
-                    PriorActionsApplied = logInfo.priorActionsApplied,
-                    PriorActionsRequested = logInfo.priorActionsRequested,
-                    PriorInferencesRequested = logInfo.priorInferencesRequested,
-                    PriorActionsPerDepth = logInfo.priorActionsPerDepth is { Count: > 0 }
-                        ? new Dictionary<int, int>(logInfo.priorActionsPerDepth)
-                        : null,
-                    PriorInferencesPerDepth = logInfo.priorInferencesPerDepth is { Count: > 0 }
-                        ? new Dictionary<int, int>(logInfo.priorInferencesPerDepth)
-                        : null,
-                    PriorNodesSkipped = logInfo.priorNodesSkipped,
-                });
+                states.Add(CreateStateRecord(state, serialized, mctsRoot, logInfo));
 
                 // Apply the best action from MCTS and advance the tree.
                 if (!bestPath.IsEmpty && bestPath.Head < actions.Length)

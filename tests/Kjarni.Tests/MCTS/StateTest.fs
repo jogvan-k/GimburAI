@@ -3,6 +3,7 @@ module KjarniTest.MCTS.StateTest
 open System
 open Kjarni
 open Kjarni.MCTS.Algorithm
+open Kjarni.MCTS.AI
 open NUnit.Framework
 open Kjarni.MCTS.Types
 open KjarniTest.TestTypes
@@ -33,6 +34,19 @@ type rootState() =
         member this.Actions() =
             [| Stochastic (stochasticRootAction() :> IStochasticCoreAction) |]
         member _.Scores() = Array.zeroCreate<float> 2
+
+type forcedLoopAction(state: ICoreState) =
+    interface IDeterministicCoreAction with
+        member _.State() = state
+
+type forcedLoopState() as this =
+    interface ICoreState with
+        member _.PlayerTurn = Player.Player1
+        member _.NumberOfPlayers = 2
+        member _.TurnNumber = 0
+        member _.Actions() =
+            [| Deterministic(forcedLoopAction(this :> ICoreState) :> IDeterministicCoreAction) |]
+        member _.Scores() = [| 1.; 0. |]
 
 let registerOutcome (state: MCTSState) (outcome: float array) =
     state.Rollouts <- state.Rollouts + 1
@@ -96,3 +110,19 @@ type StateTest() =
         // With 1000 trials, rates should be within ~0.05 of expected values.
         p1Rate |> should (equalWithin 0.1) 0.25
         p2Rate |> should (equalWithin 0.1) 0.75
+
+    [<Test>]
+    member _.RunSimulation_TopsUpInheritedForcedRootToTarget() =
+        let root = MCTSState(forcedLoopState() :> ICoreState)
+        root.Rollouts <- 4
+        root.WinCounts <- [| 2.; 2. |]
+        let mcts =
+            MonteCarloTreeSearch(
+                { MCTSConfig.Default with
+                    MaxSimulations = 10
+                    MaxRolloutDepth = 2 })
+
+        mcts.RunSimulation(root) |> ignore
+
+        root.Rollouts |> should equal 10
+        Array.sum root.WinCounts |> should equal 10.
