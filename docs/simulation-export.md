@@ -58,7 +58,7 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
 | `constraints` | object | MCTS search parameters used for this game. |
 | `board.serialized` | string | Board serialization (tiles and ports only): `tiles\|ports`. See [state-action-serialization.md](state-action-serialization.md) Part I sections 1-2. |
 | `board.permutations` | string[] | Board string under each non-trivial symmetry permutation. Empty array when symmetries are disabled or unavailable. |
-| `states` | State[] | Array of visited states, including forced transitions. Forced states have zero simulations and empty MCTS win counts. |
+| `states` | State[] | Array of states evaluated by MCTS. Forced transitions are omitted because they have no search-derived probability target. |
 | `priorsCalculated` | object? | Per-depth count of NN prior states evaluated across all decisions. `null` when priors were not used. Keys are depth strings (`"0"`, `"1"`, ...), values are counts. |
 
 ### State Object (GameState)
@@ -71,14 +71,6 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
   "elapsedMs": 1000,
   "winRate": 0.64,
   "wins": [3200.0, 1800.0],
-  "candidates": [
-    {
-      "serializedState": "...",
-      "wins": [70.0, 30.0],
-      "rollouts": 100,
-      "permutations": ["..."]
-    }
-  ],
   "reachedTerminal": false,
   "priorsRequested": 0,
   "priorsApplied": 0,
@@ -98,17 +90,17 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
 | `elapsedMs` | int | Wall-clock time spent on MCTS search (milliseconds). |
 | `winRate` | float | Acting player's win rate at the MCTS root (wins / rollouts). |
 | `wins` | float[] | Raw MCTS win counts at the root, 0-indexed (index 0 = player 1). |
-| `candidates` | Candidate[] | Immediate deterministic result states and individual stochastic outcome states. Candidate statistics always describe the serialized candidate itself. Unexplored candidates have empty `wins` and are skipped by MCTS-target training. |
 | `reachedTerminal` | bool | Whether MCTS fully resolved the tree (all root actions are Terminal). |
 | `priorsRequested` | int | Number of NN prior requests sent during this search. |
 | `priorsApplied` | int | Number of NN prior responses applied to tree nodes. |
 | `priorStatesEvaluated` | int | Number of individual states evaluated by the NN server. |
 | `permutations` | string[] | `serializedState` under each non-trivial symmetry permutation. Same order as `board.permutations`. |
 
-State-value training uses the completed game's one-hot `winner` outcome for every
-visited root and candidate state. MCTS `wins` remain available as search diagnostics,
-but are not treated as eventual win probabilities. Games ending without a winner are
-excluded from state-value training.
+State-value training pairs each serialized MCTS root with its per-player search win
+probabilities, computed as `wins[player] / sum(wins)`. This retains uncertainty from
+the stochastic game instead of collapsing a state to the eventual game's 0/1 result.
+Candidate result states are not exported or trained unless they naturally become a
+later searched root.
 
 The iterative pipeline replays the current and recent generations (three by default)
 when training a state model. Configure `train.replayGenerations` to bound this window;
@@ -120,9 +112,7 @@ error in addition to bucket loss. `gimbur_nn.metrics.candidate_ranking_accuracy`
 provided for grouped candidate evaluation against an independent deeper-search corpus.
 
 State training defaults to ordinal CDF loss, so nearby bucket errors cost less than
-distant errors. Completed-game labels are individual Bernoulli outcomes with equal
-confidence; MCTS rollout counts are therefore diagnostics and are intentionally not
-used as sample weights.
+distant errors. MCTS rollout counts remain available as diagnostics.
 
 ### Symmetry Permutations (GameState)
 

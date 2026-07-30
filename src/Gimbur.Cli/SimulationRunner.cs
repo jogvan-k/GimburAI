@@ -154,11 +154,6 @@ internal record StateRecord
     public required double[] Wins { get; init; }
 
     /// <summary>
-    /// Immediate action-result states whose value statistics describe that exact state.
-    /// </summary>
-    public required CandidateStateRecord[] Candidates { get; init; }
-
-    /// <summary>
     /// Whether the MCTS search fully resolved the tree via terminal propagation.
     /// When true, all root actions are Terminal and the win estimates are exact.
     /// </summary>
@@ -207,13 +202,6 @@ internal record StateRecord
     /// Number of prior responses returned for nodes the search no longer tracks.
     /// </summary>
     public int PriorResponsesOrphaned { get; set; }
-}
-
-internal record CandidateStateRecord
-{
-    public required string SerializedState { get; init; }
-    public required double[] Wins { get; init; }
-    public int Rollouts { get; init; }
 }
 
 /// <summary>
@@ -784,52 +772,6 @@ internal class SimulationRunner
         return (Array.Empty<double>(), 0.0, 0);
     }
 
-    private static CandidateStateRecord[] GetCandidateStateRecords(
-        CoreAction[] coreActions,
-        Kjarni.MCTS.Types.MCTSState root)
-    {
-        var candidates = new List<CandidateStateRecord>();
-        for (var actionIndex = 0; actionIndex < coreActions.Length; actionIndex++)
-        {
-            var coreAction = coreActions[actionIndex];
-            var treeAction = root.Actions[actionIndex];
-            if (coreAction.IsDeterministic)
-            {
-                var result = (CatanState)((CoreAction.Deterministic)coreAction).Item.State();
-                var (wins, _, rollouts) = GetChildWinData(treeAction, (int)root.State.PlayerTurn);
-                candidates.Add(new CandidateStateRecord
-                {
-                    SerializedState = result.SerializeStateOnly(),
-                    Wins = wins,
-                    Rollouts = rollouts,
-                });
-                continue;
-            }
-
-            var outcomes = ((CoreAction.Stochastic)coreAction).Item.Outcomes();
-            Kjarni.MCTS.Types.StochasticOutcome[]? treeOutcomes = treeAction.IsStochasticAction
-                ? ((Kjarni.MCTS.Types.Action.StochasticAction)treeAction).Item
-                : null;
-            for (var outcomeIndex = 0; outcomeIndex < outcomes.Length; outcomeIndex++)
-            {
-                var result = (CatanState)outcomes[outcomeIndex].Item2;
-                var treeState = treeOutcomes is not null && outcomeIndex < treeOutcomes.Length
-                    ? treeOutcomes[outcomeIndex].State
-                    : null;
-                candidates.Add(new CandidateStateRecord
-                {
-                    SerializedState = result.SerializeStateOnly(),
-                    Wins = treeState?.WinCounts is { Length: > 0 } wins
-                        ? (double[])wins.Clone()
-                        : Array.Empty<double>(),
-                    Rollouts = treeState?.Rollouts ?? 0,
-                });
-            }
-        }
-
-        return candidates.ToArray();
-    }
-
     private static double? ComputePlacementValueTarget(IReadOnlyList<PlacementActionRecord> actions)
     {
         var totalRollouts = actions.Sum(action => action.Rollouts);
@@ -887,25 +829,8 @@ internal class SimulationRunner
             // TODO: we still need to estimate win chance here
             if (actions.Length == 1)
             {
-                // Forced states still belong in value training even though no search is needed.
-                var serialized = state.SerializeStateOnly();
-                var actingPlayer = state.CurrentPlayer;
-                var result = (CatanState)UnwrapCoreAction(actions[0]).DoCoreAction();
-                states.Add(new StateRecord
-                {
-                    PlayerTurn = actingPlayer,
-                    SerializedState = serialized,
-                    Wins = Array.Empty<double>(),
-                    Candidates =
-                    [
-                        new CandidateStateRecord
-                        {
-                            SerializedState = result.SerializeStateOnly(),
-                            Wins = Array.Empty<double>(),
-                        },
-                    ],
-                });
-                state = result;
+                // Forced action (e.g., dice roll) — no decision or MCTS value to record.
+                state = (CatanState)UnwrapCoreAction(actions[0]).DoCoreAction();
 
                 // Try to follow the tree so prior calculations are reused.
                 mctsRoot = AdvanceMctsRoot(mctsRoot, 0, (ICoreState)state);
@@ -950,7 +875,6 @@ internal class SimulationRunner
                     ElapsedMs = (int)logInfo.elapsedTime.TotalMilliseconds,
                     WinRate = winRate,
                     Wins = winCounts,
-                    Candidates = GetCandidateStateRecords(actions, mctsRoot),
                     ReachedTerminal = logInfo.reachedTerminal,
                     PriorNodesRequested = logInfo.priorNodesRequested,
                     PriorResponsesOrphaned = logInfo.priorResponsesOrphaned,
@@ -1615,15 +1539,6 @@ internal class SimulationRunner
                 s.ElapsedMs,
                 s.WinRate,
                 s.Wins,
-                candidates = s.Candidates.Select(candidate => new
-                {
-                    candidate.SerializedState,
-                    candidate.Wins,
-                    candidate.Rollouts,
-                    permutations = symmetryPerms.Length > 0
-                        ? symmetryPerms.Select(p => BoardSymmetry.PermuteState(candidate.SerializedState, p)).ToArray()
-                        : Array.Empty<string>(),
-                }).ToArray(),
                 s.ReachedTerminal,
                 s.PriorNodesRequested,
                 s.PriorActionsApplied,

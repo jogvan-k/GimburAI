@@ -61,7 +61,6 @@ def _make_state(
     state_perms: list[str],
     best_action_wins: list[float] | None = None,
     wins: list[float] | None = None,
-    candidates: list[dict] | None = None,
     player_turn: int = 1,
 ) -> dict:
     """Create a minimal state entry within a game."""
@@ -72,7 +71,6 @@ def _make_state(
         "elapsedMs": 50,
         "winRate": 0.5,
         "wins": wins if wins is not None else best_action_wins,
-        "candidates": candidates or [],
         "permutations": state_perms,
     }
 
@@ -407,7 +405,7 @@ class TestLoadSamples:
 
 
 class TestExpandGames:
-    def test_uses_completed_game_winner(self) -> None:
+    def test_uses_root_mcts_win_probability(self) -> None:
         game = _make_game(
             board=MINI_BOARD,
             board_perms=[],
@@ -423,48 +421,14 @@ class TestExpandGames:
 
         samples = expand_games([game], MINI_2P)
 
-        assert samples[0][1] == _prob_to_bucket(1.0, 128)
-        assert samples[1][1] == _prob_to_bucket(0.0, 128)
+        assert samples[0][1] == _prob_to_bucket(0.9, 128)
+        assert samples[1][1] == _prob_to_bucket(0.1, 128)
 
-    def test_includes_labeled_candidate_states(self) -> None:
-        game = _make_game(
-            board=MINI_BOARD,
-            board_perms=[],
-            states=[
-                _make_state(
-                    state_str=MINI_STATE_ONLY,
-                    state_perms=[],
-                    wins=[50.0, 50.0],
-                    candidates=[
-                        {
-                            "serializedState": MINI_STATE_ONLY,
-                            "wins": [80.0, 20.0],
-                            "rollouts": 100,
-                            "permutations": [],
-                        },
-                        {
-                            "serializedState": MINI_STATE_ONLY,
-                            "wins": [],
-                            "rollouts": 0,
-                            "permutations": [],
-                        },
-                    ],
-                )
-            ],
-            n_players=2,
-        )
-
-        samples = expand_games([game], MINI_2P)
-
-        assert len(samples) == 6
-        assert samples[2][1] == _prob_to_bucket(1.0, 128)
-        assert samples[3][1] == _prob_to_bucket(0.0, 128)
-
-    def test_skips_games_without_a_winner(self) -> None:
+    def test_keeps_mcts_probabilities_from_unfinished_games(self) -> None:
         game = _simple_game()
         game["winner"] = 0
 
-        assert expand_games([game], MINI_2P) == []
+        assert len(expand_games([game], MINI_2P)) == 2
 
     def test_expand_single_game(self) -> None:
         games = [_simple_game()]
