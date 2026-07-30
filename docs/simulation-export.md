@@ -119,6 +119,11 @@ State training reports decoded-probability MAE, Brier score, and expected calibr
 error in addition to bucket loss. `gimbur_nn.metrics.candidate_ranking_accuracy` is
 provided for grouped candidate evaluation against an independent deeper-search corpus.
 
+State training defaults to ordinal CDF loss, so nearby bucket errors cost less than
+distant errors. Completed-game labels are individual Bernoulli outcomes with equal
+confidence; MCTS rollout counts are therefore diagnostics and are intentionally not
+used as sample weights.
+
 ### Symmetry Permutations (GameState)
 
 Board symmetry permutations rearrange position-dependent data (tile indices, vertex indices, edge indices) while leaving player-identity and per-player sections unchanged.

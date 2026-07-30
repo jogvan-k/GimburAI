@@ -66,7 +66,7 @@ class TrainConfig:
     test_split: float = 0.0
     log_interval: int = 50
     checkpoint_dir: bool = True
-    loss: str = "hard"
+    loss: str = "ordinal"
     loss_sigma: float = 2.0
     resume_from_previous: bool = True
     replay_generations: int = 3

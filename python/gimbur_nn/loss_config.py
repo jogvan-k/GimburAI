@@ -57,7 +57,7 @@ class LossConfig:
             units).  Only used when ``mode="gaussian"``.  Default 2.0.
     """
 
-    mode: str = "hard"
+    mode: str = "ordinal"
     sigma: float = 2.0
 
 
@@ -75,6 +75,15 @@ def _hard_cross_entropy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Te
         Scalar loss.
     """
     return F.cross_entropy(logits, targets)
+
+
+def _ordinal_cdf_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    """Squared Earth-mover loss between predicted and target bucket CDFs."""
+    probabilities = torch.softmax(logits, dim=-1)
+    predicted_cdf = probabilities.cumsum(dim=-1)
+    indices = torch.arange(logits.shape[-1], device=logits.device)
+    target_cdf = (indices.unsqueeze(0) >= targets.unsqueeze(1)).to(logits.dtype)
+    return (predicted_cdf - target_cdf).square().mean()
 
 
 # ── Loss mode: gaussian (label-smoothed soft targets) ────────────────
@@ -126,7 +135,7 @@ def _build_gaussian_loss(n_buckets: int, sigma: float) -> LossFn:
 # ── Public API ───────────────────────────────────────────────────────
 
 # Valid mode names for CLI / config validation.
-LOSS_MODES = ("hard", "gaussian")
+LOSS_MODES = ("hard", "gaussian", "ordinal")
 
 
 def build_loss_fn(cfg: LossConfig, *, n_buckets: int) -> LossFn:
@@ -146,4 +155,6 @@ def build_loss_fn(cfg: LossConfig, *, n_buckets: int) -> LossFn:
         return _hard_cross_entropy
     if cfg.mode == "gaussian":
         return _build_gaussian_loss(n_buckets, cfg.sigma)
+    if cfg.mode == "ordinal":
+        return _ordinal_cdf_loss
     raise ValueError(f"Unknown loss mode {cfg.mode!r}. Valid modes: {', '.join(LOSS_MODES)}")

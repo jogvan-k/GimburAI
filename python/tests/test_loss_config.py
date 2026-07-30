@@ -35,7 +35,7 @@ def test_masked_soft_target_cross_entropy_ignores_illegal_logits() -> None:
 class TestLossConfig:
     def test_default_mode(self) -> None:
         cfg = LossConfig()
-        assert cfg.mode == "hard"
+        assert cfg.mode == "ordinal"
 
     def test_default_sigma(self) -> None:
         cfg = LossConfig()
@@ -61,6 +61,10 @@ class TestBuildLossFn:
         fn = build_loss_fn(LossConfig(mode="gaussian"), n_buckets=16)
         assert callable(fn)
 
+    def test_ordinal_mode_returns_callable(self) -> None:
+        fn = build_loss_fn(LossConfig(mode="ordinal"), n_buckets=16)
+        assert callable(fn)
+
     def test_unknown_mode_raises(self) -> None:
         with pytest.raises(ValueError, match="Unknown loss mode"):
             build_loss_fn(LossConfig(mode="invalid"), n_buckets=16)
@@ -68,6 +72,7 @@ class TestBuildLossFn:
     def test_loss_modes_constant(self) -> None:
         assert "hard" in LOSS_MODES
         assert "gaussian" in LOSS_MODES
+        assert "ordinal" in LOSS_MODES
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +110,31 @@ class TestHardLoss:
         loss = fn(logits, targets)
         loss.backward()
         assert logits.grad is not None
+
+
+# ---------------------------------------------------------------------------
+# Ordinal CDF loss
+# ---------------------------------------------------------------------------
+
+
+class TestOrdinalLoss:
+    def test_adjacent_prediction_costs_less_than_distant_prediction(self) -> None:
+        targets = torch.tensor([8])
+        adjacent = torch.full((1, 16), -100.0)
+        adjacent[0, 7] = 100.0
+        distant = torch.full((1, 16), -100.0)
+        distant[0, 0] = 100.0
+        fn = build_loss_fn(LossConfig(mode="ordinal"), n_buckets=16)
+
+        assert fn(adjacent, targets) < fn(distant, targets)
+
+    def test_exact_prediction_has_zero_loss(self) -> None:
+        targets = torch.tensor([8])
+        logits = torch.full((1, 16), -100.0)
+        logits[0, 8] = 100.0
+        fn = build_loss_fn(LossConfig(mode="ordinal"), n_buckets=16)
+
+        assert fn(logits, targets).item() == pytest.approx(0.0, abs=1e-6)
 
 
 # ---------------------------------------------------------------------------

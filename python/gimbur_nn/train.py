@@ -232,9 +232,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--loss",
         type=str,
-        default="hard",
+        default="ordinal",
         choices=sorted(LOSS_MODES),
-        help="Loss function mode (default: hard).",
+        help="Loss function mode (default: ordinal).",
     )
     parser.add_argument(
         "--loss-sigma",
