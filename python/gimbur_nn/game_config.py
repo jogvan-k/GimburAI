@@ -10,12 +10,12 @@ Two token-size formulas are provided:
 
 Game state (compact form, no separators)::
 
-    (3*T + 2*V + E + P + 5) + 11*N + 4
+    (3*T + 2*V + E + P + 5) + 11*N + 7
 
 where T = tiles, V = vertices, E = edges, P = ports, N = players.
 The constant 5 = robber(1) + current-turn(2) + awards(2).
-The trailing 4 = new dev cards purchased this turn (active player only,
-excluding victory points).
+The trailing 7 = five new dev-card counts for the active player plus two
+development-card-resolution tokens.
 
 Placement phase state::
 
@@ -105,9 +105,9 @@ def _state_token_size(t: int, v: int, e: int, p: int, n: int) -> int:
 
     Sections: tiles (3*T) + ports (P) + robber (1) + currentTurn (2) +
     longestLargest (2) + vertices (2*V) + edges (E) + resources (5*N) +
-    knights (N) + devCards (5*N) + newDevCards (4) + devCardResolution (2).
+    knights (N) + devCards (5*N) + newDevCards (5) + devCardResolution (2).
     """
-    return (3 * t + 2 * v + e + p + 5) + 11 * n + 4 + 2
+    return (3 * t + 2 * v + e + p + 5) + 11 * n + 5 + 2
 
 
 def _placement_token_size(t: int, v: int, e: int, p: int) -> int:

@@ -7,10 +7,10 @@ public sealed class CatanState : ICoreState
 {
     internal const int ResourceCount = 5;
     internal const int DevCardCount = 5;
-    /// Dev card types serialized in the "new this turn" section (excludes VictoryPoint).
+    /// Dev card types serialized in the "new this turn" section.
     internal static readonly DevCardType[] NewDevCardTypes =
-        [DevCardType.Knight, DevCardType.RoadBuilding, DevCardType.Monopoly, DevCardType.YearOfPlenty];
-    internal const int NewDevCardSerializedCount = 4;
+        [DevCardType.Knight, DevCardType.RoadBuilding, DevCardType.Monopoly, DevCardType.YearOfPlenty, DevCardType.VictoryPoint];
+    internal const int NewDevCardSerializedCount = 5;
 
     internal readonly int[,] _resources;
     internal readonly int[] _knightsPlayed;

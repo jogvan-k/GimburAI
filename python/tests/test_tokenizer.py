@@ -31,7 +31,7 @@ MINI_STATE = (
     "|21010/00130"
     "|0/0"
     "|00000/00000"
-    "|0000|0_"
+    "|00000|0_"
 )
 
 SMALL_STATE = (
@@ -45,7 +45,7 @@ SMALL_STATE = (
     "|10010/00100"
     "|0/0"
     "|00000/00000"
-    "|0000|0_"
+    "|00000|0_"
 )
 
 STANDARD_STATE = (
@@ -59,7 +59,7 @@ STANDARD_STATE = (
     "|31201/02143/10320"
     "|2/0/1"
     "|10000/01010/00100"
-    "|0000|0_"
+    "|00000|0_"
 )
 
 # fmt: off
@@ -78,7 +78,7 @@ MINI_EXPECTED = [
     9, 8, 7, 8, 7, 7, 7, 8, 10, 7,
     7, 7,
     7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
-    7, 7, 7, 7,
+    7, 7, 7, 7, 7,
     7, 19,
 ]
 
@@ -93,7 +93,7 @@ SMALL_EXPECTED = [
     8, 7, 7, 8, 7, 7, 7, 8, 7, 7,
     7, 7,
     7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
-    7, 7, 7, 7,
+    7, 7, 7, 7, 7,
     7, 19,
 ]
 
@@ -108,7 +108,7 @@ STANDARD_EXPECTED = [
     10, 8, 9, 7, 8, 7, 9, 8, 11, 10, 8, 7, 10, 9, 7,
     9, 7, 8,
     8, 7, 7, 7, 7, 7, 8, 7, 8, 7, 7, 7, 8, 7, 7,
-    7, 7, 7, 7,
+    7, 7, 7, 7, 7,
     7, 19,
 ]
 
@@ -163,7 +163,7 @@ class TestMiniMap:
     def test_full_tensor(self) -> None:
         tok = StateTokenizer(MINI_2P)
         t = tok.tokenize(MINI_STATE)
-        assert t.shape == (138,)
+        assert t.shape == (139,)
         assert t.dtype == torch.int32
         assert t.tolist() == MINI_EXPECTED
 
@@ -172,7 +172,7 @@ class TestSmallMap:
     def test_full_tensor(self) -> None:
         tok = StateTokenizer(SMALL_2P)
         t = tok.tokenize(SMALL_STATE)
-        assert t.shape == (174,)
+        assert t.shape == (175,)
         assert t.dtype == torch.int32
         assert t.tolist() == SMALL_EXPECTED
 
@@ -181,7 +181,7 @@ class TestStandardMap:
     def test_full_tensor(self) -> None:
         tok = StateTokenizer(STANDARD_3P)
         t = tok.tokenize(STANDARD_STATE)
-        assert t.shape == (290,)
+        assert t.shape == (291,)
         assert t.dtype == torch.int32
         assert t.tolist() == STANDARD_EXPECTED
 
@@ -210,7 +210,7 @@ class TestBatch:
     def test_same_map_batch(self) -> None:
         tok = StateTokenizer(MINI_2P)
         t = tok.tokenize_batch([MINI_STATE, MINI_STATE])
-        assert t.shape == (2, 138)
+        assert t.shape == (2, 139)
         assert t.dtype == torch.int32
 
     def test_batch_matches_single(self) -> None:
@@ -337,13 +337,13 @@ class TestRotatePlayerState:
             "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t|__|"
             "._._._._._._v-._._._._._._._v+._._._._._._._._._|"
             "_____-_______+________________|"
-            "21010/00130|0/0|00000/00000|0000|0_"
+            "21010/00130|0/0|00000/00000|00000|0_"
         )
         expected_hr = (
             "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|+t|__|"
             "._._._._._._v+._._._._._._._v-._._._._._._._._._|"
             "_____+_______-________________|"
-            "00130/21010|0/0|00000/00000|0000|0_"
+            "00130/21010|0/0|00000/00000|00000|0_"
         )
         original = original_hr.translate(_STRIP)
         expected = expected_hr.translate(_STRIP)

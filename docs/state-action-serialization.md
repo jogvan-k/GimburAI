@@ -194,15 +194,15 @@ Pip count digits and count digits share the same characters (`0`–`5`). These a
 
 ### 11) New Dev Cards This Turn (active player only)
 
-Order: `[knight, roadBuilding, monopoly, yearOfPlenty]` (victory points excluded — they are never "played" and always count toward VP immediately)
+Order: `[knight, roadBuilding, monopoly, yearOfPlenty, victoryPoint]`
 
-- `newDevCards[4]` — **count** (Crockford base-32; typically `0` or `1`)
+- `newDevCards[5]` — **count** (Crockford base-32; typically `0` or `1`)
 
-These are the development cards purchased by the **current player** during their current turn. Per Catan rules, dev cards bought on the current turn cannot be played until the next turn. Victory point cards are excluded because they take effect immediately and are never "played" as an action.
+These are the development cards purchased by the **current player** during their current turn. Per Catan rules, non-VP dev cards bought on the current turn cannot be played until the next turn. Victory-point cards are included so their immediate score contribution is not lost from the serialized state.
 
 This section is not per-player — it always represents the active player's newly purchased cards. During [player rotation](#player-rotation-invariance), these tokens are left unchanged (they are always relative to the current player).
 
-**Tokens**: 4 (fixed, player-count-independent).
+**Tokens**: 5 (fixed, player-count-independent).
 
 ### 12) Dev Card Resolution State
 
@@ -237,7 +237,7 @@ Board state:
 
 Full serialized (sections separated by `|`):
 ```
-w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t|__|._._._._._._v-._._._._._._._v+._._._._._._._._._|_____-_______+________________|21010/00130|0/0|00000/00000|0000|0_
+w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t|__|._._._._._._v-._._._._._._._v+._._._._._._._._._|_____-_______+________________|21010/00130|0/0|00000/00000|00000|0_
 ```
 
 ### Small Map (2 players, early game)
@@ -260,7 +260,7 @@ Board state:
 
 Full serialized (sections separated by `|`):
 ```
-W2lb3ls4lw3hb2hw1ho5lW4hs5hd0n|gwWgsb|9|+r|__|v-v+v+._._._._v-._._._._._._._._._._._._._._._._._._._._._._._._|-_+_+_-__________________________________|10010/00100|0/0|00000/00000|0000|0_
+W2lb3ls4lw3hb2hw1ho5lW4hs5hd0n|gwWgsb|9|+r|__|v-v+v+._._._._v-._._._._._._._._._._._._._._._._._._._._._._._._|-_+_+_-__________________________________|10010/00100|0/0|00000/00000|00000|0_
 ```
 
 ### Standard Map (3 players, mid-game)
@@ -284,7 +284,7 @@ Board state:
 
 Full serialized:
 ```
-w4lo1lb5lW2lw5hs3hW4ho1hs2hw3lb5hs3hW4ho3ls4lb5lw2lW2hd0n|ggwgbsWog|5|+t|_-|._._._._._._._._v-._._._._._._._._._c+._._._._._v*._._._._._._v*._._._v-._._._._._._._._v+._._._._._._._._._|______-_________-________+______+_**_____-*_____*-_____+_____+__________|31201/02143/10320|2/0/1|10000/01010/00100|0000|0_
+w4lo1lb5lW2lw5hs3hW4ho1hs2hw3lb5hs3hW4ho3ls4lb5lw2lW2hd0n|ggwgbsWog|5|+t|_-|._._._._._._._._v-._._._._._._._._._c+._._._._._v*._._._._._._v*._._._v-._._._._._._._._v+._._._._._._._._._|______-_________-________+______+_**_____-*_____*-_____+_____+__________|31201/02143/10320|2/0/1|10000/01010/00100|00000|0_
 ```
 
 ## Player Rotation Invariance
@@ -349,12 +349,12 @@ Using the mini map game state example (2 players, player 1's turn):
 
 **Original (human-readable):**
 ```
-w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t|__|._._._._._._v-._._._._._._._v+._._._._._._._._._|_____-_______+________________|21010/00130|0/0|00000/00000|0000|0_
+w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t|__|._._._._._._v-._._._._._._._v+._._._._._._._._._|_____-_______+________________|21010/00130|0/0|00000/00000|00000|0_
 ```
 
 **Rotated for player 2** (R = 1, N = 2 — player 1 and player 2 swap):
 ```
-w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|+t|__|._._._._._._v+._._._._._._._v-._._._._._._._._._|_____+_______-________________|00130/21010|0/0|00000/00000|0000|0_
+w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|+t|__|._._._._._._v+._._._._._._._v-._._._._._._._._._|_____+_______-________________|00130/21010|0/0|00000/00000|00000|0_
 ```
 
 Changes:
@@ -364,7 +364,7 @@ Changes:
 - Resources: `21010/00130` reordered to `00130/21010`
 - Knights: `0/0` reordered (no visible change since both are `0`)
 - Dev cards: `00000/00000` reordered (no visible change)
-- New dev cards this turn: `0000` unchanged (always current-player relative)
+- New dev cards this turn: `00000` unchanged (always current-player relative)
 - Dev card resolution state: `0_` unchanged (always current-player relative)
 
 ### Implementation
@@ -562,7 +562,7 @@ Compact form: strip all `/` and `|` separators from the human-readable form. The
 = (3*T + 2*V + E + P + 5) + 11*N + 6
 ```
 
-The constant 5 = robber(1) + current-turn(2) + awards(2). The trailing 6 = new dev cards this turn (4, section 11, active player only, excluding victory points) + dev card resolution state (2, section 12).
+The constant 5 = robber(1) + current-turn(2) + awards(2). The trailing 7 = new dev cards this turn (5, section 11, active player only) + dev card resolution state (2, section 12).
 
 ## Placement Phase State
 

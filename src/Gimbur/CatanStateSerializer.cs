@@ -111,8 +111,8 @@ internal static class CatanStateSerializer
             }
         }
 
-        // Section 11: New Dev Cards This Turn (4 chars, active player only)
-        // Order: knight, roadBuilding, monopoly, yearOfPlenty (VP excluded).
+        // Section 11: New Dev Cards This Turn (5 chars, active player only)
+        // Order: knight, roadBuilding, monopoly, yearOfPlenty, victoryPoint.
         sb.Append('|');
         foreach (var cardType in CatanState.NewDevCardTypes)
         {
@@ -274,8 +274,8 @@ internal static class CatanStateSerializer
             }
         }
 
-        // Section 11: New Dev Cards This Turn (4 chars, active player only)
-        // Order: knight, roadBuilding, monopoly, yearOfPlenty (VP excluded).
+        // Section 11: New Dev Cards This Turn (5 chars, active player only)
+        // Order: knight, roadBuilding, monopoly, yearOfPlenty, victoryPoint.
         var newDevSection = sections[10];
         if (newDevSection.Length != CatanState.NewDevCardSerializedCount)
         {
