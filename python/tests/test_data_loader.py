@@ -59,6 +59,7 @@ def _make_state(
     state_str: str,
     state_perms: list[str],
     best_action_wins: list[float],
+    wins: list[float] | None = None,
     player_turn: int = 1,
 ) -> dict:
     """Create a minimal state entry within a game."""
@@ -68,7 +69,7 @@ def _make_state(
         "simulations": 100,
         "elapsedMs": 50,
         "winRate": 0.5,
-        "wins": best_action_wins,
+        "wins": wins if wins is not None else best_action_wins,
         "bestActionWinRate": 0.5,
         "bestActionWins": best_action_wins,
         "bestActionRollouts": 50,
@@ -129,6 +130,10 @@ class TestWinProbability:
     def test_zero_total_returns_uniform(self) -> None:
         assert _win_probability([0.0, 0.0], 1) == pytest.approx(0.5)
         assert _win_probability([0.0, 0.0, 0.0], 2) == pytest.approx(1.0 / 3)
+
+    def test_empty_counts_are_rejected(self) -> None:
+        with pytest.raises(ValueError, match="at least one player"):
+            _win_probability([], 1)
 
 
 class TestProbToBucket:
@@ -402,6 +407,26 @@ class TestLoadSamples:
 
 
 class TestExpandGames:
+    def test_uses_root_wins_for_root_serialization(self) -> None:
+        game = _make_game(
+            board=MINI_BOARD,
+            board_perms=[],
+            states=[
+                _make_state(
+                    state_str=MINI_STATE_ONLY,
+                    state_perms=[],
+                    wins=[90.0, 10.0],
+                    best_action_wins=[10.0, 90.0],
+                )
+            ],
+            n_players=2,
+        )
+
+        samples = expand_games([game], MINI_2P)
+
+        assert samples[0][1] == _prob_to_bucket(0.9, 128)
+        assert samples[1][1] == _prob_to_bucket(0.1, 128)
+
     def test_expand_single_game(self) -> None:
         games = [_simple_game()]
         samples = expand_games(games, MINI_2P)

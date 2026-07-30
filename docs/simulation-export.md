@@ -94,13 +94,17 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
 | `winRate` | float | Acting player's win rate at the MCTS root (wins / rollouts). |
 | `wins` | float[] | Raw MCTS win counts at the root, 0-indexed (index 0 = player 1). |
 | `bestActionWinRate` | float | Acting player's win rate at the child state reached by the best action. |
-| `bestActionWins` | float[] | MCTS win counts at the best action's child state. |
+| `bestActionWins` | float[] | MCTS win counts at the best action's child state. Retained for search diagnostics; state-value training does not pair these child statistics with the serialized root state. |
 | `bestActionRollouts` | int | Total rollouts at the best action's child state. For stochastic actions this is summed across outcomes. |
 | `reachedTerminal` | bool | Whether MCTS fully resolved the tree (all root actions are Terminal). |
 | `priorsRequested` | int | Number of NN prior requests sent during this search. |
 | `priorsApplied` | int | Number of NN prior responses applied to tree nodes. |
 | `priorStatesEvaluated` | int | Number of individual states evaluated by the NN server. |
 | `permutations` | string[] | `serializedState` under each non-trivial symmetry permutation. Same order as `board.permutations`. |
+
+State-value training pairs `serializedState` with `wins`, because both describe the
+same MCTS root state. `bestActionWins` describes a different, post-action state and
+must not be used as the target for this serialization.
 
 ### Symmetry Permutations (GameState)
 

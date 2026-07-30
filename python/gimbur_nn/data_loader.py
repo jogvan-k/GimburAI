@@ -49,16 +49,18 @@ def _compact(human_readable: str) -> str:
     return human_readable.translate(_STRIP)
 
 
-def _win_probability(best_action_wins: list[float], player: int) -> float:
+def _win_probability(wins: list[float], player: int) -> float:
     """Compute win probability for *player* (1-based) from MCTS win counts.
 
-    Returns ``bestActionWins[player - 1] / sum(bestActionWins)``.
+    Returns ``wins[player - 1] / sum(wins)``.
     If the total is zero, returns ``1 / n_players`` (uniform).
     """
-    total = sum(best_action_wins)
+    if not wins:
+        raise ValueError("win counts must contain at least one player")
+    total = sum(wins)
     if total == 0.0:
-        return 1.0 / len(best_action_wins)
-    return best_action_wins[player - 1] / total
+        return 1.0 / len(wins)
+    return wins[player - 1] / total
 
 
 def _prob_to_bucket(prob: float, n_buckets: int) -> int:
@@ -212,7 +214,7 @@ def _process_game(
     board_permutations: list[str] = game["board"]["permutations"]
 
     for state_entry in game["states"]:
-        best_action_wins: list[float] = state_entry["bestActionWins"]
+        wins: list[float] = state_entry["wins"]
         state_serialized: str = state_entry["serializedState"]
         state_permutations: list[str] = state_entry["permutations"]
 
@@ -228,7 +230,7 @@ def _process_game(
             for player in range(1, n_players + 1):
                 rotated = tokenizer.rotate_player_state(compact, player)
                 token_ids = tokenizer.tokenize(rotated)
-                prob = _win_probability(best_action_wins, player)
+                prob = _win_probability(wins, player)
                 bucket = _prob_to_bucket(prob, n_buckets)
                 samples.append((token_ids, bucket))
 
