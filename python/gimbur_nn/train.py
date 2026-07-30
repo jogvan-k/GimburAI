@@ -127,7 +127,7 @@ _CONFIG_KEYS: dict[str, str] = {
 }
 
 # Attributes whose CLI type is Path.
-_PATH_ATTRS = {"data", "out", "resume", "checkpoint_dir"}
+_PATH_ATTRS = {"out", "resume", "checkpoint_dir"}
 
 
 def _apply_config(args: argparse.Namespace, config: dict[str, object]) -> None:
@@ -158,7 +158,11 @@ def _apply_config(args: argparse.Namespace, config: dict[str, object]) -> None:
             continue
 
         value = config[json_key]
-        if attr in _PATH_ATTRS and value is not None:
+        if attr == "data" and isinstance(value, list):
+            value = [Path(str(item)) for item in value]
+        elif attr == "data" and value is not None:
+            value = Path(str(value))
+        elif attr in _PATH_ATTRS and value is not None:
             value = Path(str(value))
         setattr(args, attr, value)
 

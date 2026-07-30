@@ -110,6 +110,11 @@ visited root and candidate state. MCTS `wins` remain available as search diagnos
 but are not treated as eventual win probabilities. Games ending without a winner are
 excluded from state-value training.
 
+The iterative pipeline replays the current and recent generations (three by default)
+when training a state model. Configure `train.replayGenerations` to bound this window;
+replay reduces forgetting and prevents the latest guided search distribution from
+entirely replacing earlier state coverage.
+
 ### Symmetry Permutations (GameState)
 
 Board symmetry permutations rearrange position-dependent data (tile indices, vertex indices, edge indices) while leaving player-identity and per-player sections unchanged.

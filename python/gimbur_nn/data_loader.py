@@ -76,7 +76,7 @@ def _prob_to_bucket(prob: float, n_buckets: int) -> int:
 # ── Loading games ────────────────────────────────────────────────────
 
 
-def load_games(path: str | Path) -> list[dict]:
+def load_games(path: str | Path | list[str | Path]) -> list[dict]:
     """Load game records from a JSONL file, JSON file, or a directory.
 
     Supported inputs:
@@ -92,6 +92,9 @@ def load_games(path: str | Path) -> list[dict]:
     Returns:
         A list of parsed game dicts.
     """
+    if isinstance(path, list):
+        return [game for item in path for game in load_games(item)]
+
     p = Path(path)
     if p.is_dir():
         jsonl_files = sorted(p.glob("*.jsonl"))
