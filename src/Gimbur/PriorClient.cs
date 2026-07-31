@@ -306,6 +306,7 @@ public sealed class PriorClient : IPriorClient, IDisposable
 
             var priors = Array.ConvertAll(dense, value => (double)value);
             var settlementPriors = _actionSerializer!.SettlementMarginals(priors, groups);
+            var legalDensePriors = _actionSerializer.LegalDensePolicy(priors, groups);
             if (_actionSerializer.IsValidDensePolicy(priors))
             {
                 foreach (var key in roadKeys)
@@ -314,7 +315,8 @@ public sealed class PriorClient : IPriorClient, IDisposable
 
             var valueEstimate = ExpectedValue(
                 prediction!.ValueProbabilities.FirstOrDefault());
-            _mailbox.Enqueue(new PriorResponse(nodeId, settlementPriors, valueEstimate));
+            _mailbox.Enqueue(new PriorResponse(
+                nodeId, settlementPriors, valueEstimate, legalDensePriors));
             return 1;
         }
         catch
@@ -471,12 +473,15 @@ public sealed class PriorClient : IPriorClient, IDisposable
                                     var valid = _actionSerializer!.IsValidDensePolicy(priors);
                                     var settlementPriors = _actionSerializer.SettlementMarginals(
                                         priors, pending.SettlementCompositeIndices);
+                                    var legalDensePriors = _actionSerializer.LegalDensePolicy(
+                                        priors, pending.SettlementCompositeIndices);
                                     if (valid)
                                     {
                                         foreach (var key in pending.RoadStateKeys)
                                             _roadPolicies[key] = priors;
                                     }
-                                    _mailbox.Enqueue(new PriorResponse(nodeId, settlementPriors, valueEstimate));
+                                    _mailbox.Enqueue(new PriorResponse(
+                                        nodeId, settlementPriors, valueEstimate, legalDensePriors));
                                 }
                                 else if (_mode == PriorMode.State)
                                 {

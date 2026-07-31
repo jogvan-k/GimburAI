@@ -119,6 +119,32 @@ public sealed class PlacementActionSerializer
         return result;
     }
 
+    /// <summary>
+    /// Masks a dense policy to all legal composite groups while retaining dense
+    /// vocabulary indexing. Legal mass is normalized globally; illegal entries are zero.
+    /// </summary>
+    public double[] LegalDensePolicy(
+        IReadOnlyList<double> policy,
+        IReadOnlyList<int[]> settlementCompositeIndices)
+    {
+        var result = new double[VocabularySize];
+        var legalIndices = settlementCompositeIndices.SelectMany(indices => indices).ToArray();
+        if (legalIndices.Length == 0)
+            return result;
+
+        if (IsValidDensePolicy(policy))
+        {
+            foreach (var index in legalIndices)
+                result[index] = policy[index];
+        }
+
+        var legalValues = legalIndices.Select(index => result[index]).ToArray();
+        NormalizeOrUniform(legalValues);
+        for (var i = 0; i < legalIndices.Length; i++)
+            result[legalIndices[i]] = legalValues[i];
+        return result;
+    }
+
     private static void NormalizeOrUniform(double[] values)
     {
         if (values.Length == 0)

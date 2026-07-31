@@ -1171,7 +1171,7 @@ internal class SimulationRunner
 
                 // Build composite actions by iterating settlement children and their road grandchildren.
                 var compositeActions = new List<PlacementActionRecord>();
-                var priors = mctsRoot.Priors;
+                var densePriors = mctsRoot.DensePriors;
                 for (var si = 0; si < mctsRoot.Actions.Length; si++)
                 {
                     var settlementAction = mctsRoot.Actions[si];
@@ -1179,10 +1179,6 @@ internal class SimulationRunner
                     var coreSettlement = UnwrapCoreAction(actions[si]);
                     if (coreSettlement is not PlaceSettlementAction psa) continue;
                     var vertex = psa.VertexIndex;
-
-                    double? settlementPrior = priors != null && priors.Value is { } p && si < p.Length
-                        ? p[si]
-                        : null;
 
                     // Get the child MCTSState for this settlement action.
                     Kjarni.MCTS.Types.MCTSState? childMctsState = null;
@@ -1205,10 +1201,10 @@ internal class SimulationRunner
                             && ri < childMctsState.Actions.Length
                             ? GetChildWinData(childMctsState.Actions[ri], playerIndex)
                             : (Array.Empty<double>(), 0.0, 0);
-                        double? modelPrior = settlementPrior.HasValue
-                            && childMctsState?.Priors is { } roadPriors
-                            && ri < roadPriors.Value.Length
-                            ? settlementPrior.Value * roadPriors.Value[ri]
+                        var denseIndex = actionSerializer.IndexOf(vertex, edge);
+                        double? modelPrior = densePriors is { } modelPolicy
+                            && denseIndex < modelPolicy.Value.Length
+                            ? modelPolicy.Value[denseIndex]
                             : null;
                         var actionString = actionSerializer.Serialize(vertex, edge);
 

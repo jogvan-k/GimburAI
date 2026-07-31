@@ -115,6 +115,23 @@ type AutoRespondPriorClient(winProbFn: ICoreState[] -> float[]) =
             _flushed <- true
             _responses.Clear()
 
+type DenseRespondPriorClient(densePriors: float[]) =
+    let _responses = Queue<PriorResponse>()
+
+    interface IPriorClient with
+        member _.ShouldRequestPrior(_parentState) = true
+
+        member _.RequestPrior(nodeId, _parentState, states, _actingPlayer, _depth) =
+            _responses.Enqueue(
+                PriorResponse(nodeId, Array.create states.Length 1., Double.NaN, densePriors))
+            states.Length
+
+        member _.CollectPriors(knownNodeIds: IReadOnlySet<int64>) =
+            _responses |> Seq.filter (fun r -> knownNodeIds.Contains(r.NodeId)) |> Seq.toArray
+
+        member _.Flush(_knownNodeIds: IReadOnlySet<int64>) =
+            _responses.Clear()
+
 
 // ────────────────────────────────────────────────────────────────
 // MCTSState.NodeId uniqueness
@@ -538,6 +555,28 @@ type PriorSearchIntegrationTests() =
         logInfo.priorActionsRequested |> should be (greaterThan 0)
         logInfo.priorActionsApplied |> should be (greaterThan 0)
         logInfo.priorNodesApplied |> should be (greaterThan 0)
+
+    [<Test>]
+    member _.SearchWithDenseResponse_RetainsDensePolicyOnRoot() =
+        let rootNode =
+            node_builder(p1, 0, 0, 0)
+                .addChildren([
+                    node_builder(p2, 1, 0, 10, node_builder(p1, 2, 0, 20))
+                    node_builder(p2, 1, 0, 11, node_builder(p1, 2, 0, 21))
+                ])
+                .build()
+        let mctsRoot = MCTSState(rootNode :> ICoreState)
+        let dense = [| 0.1; 0.2; 0.7 |]
+        let client = DenseRespondPriorClient(dense)
+        let mcts =
+            MonteCarloTreeSearch(
+                { MCTSConfig.Default with
+                    MaxSimulations = 2
+                    PriorClient = Some (client :> IPriorClient) })
+
+        mcts.RunSimulation(mctsRoot) |> ignore
+
+        mctsRoot.DensePriors |> should equal (Some dense)
 
     [<Test>]
     member _.SearchWithoutPriorClient_PriorStatsAreZero() =

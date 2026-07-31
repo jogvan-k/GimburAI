@@ -542,6 +542,8 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                             let policy = computePriorPolicy resp.Priors layout outcomeWeights
                             node.Priors <- Some policy
                             priorStats.priorActionsApplied <- priorStats.priorActionsApplied + resp.Priors.Length
+                        if resp.DensePriors.Length > 0 then
+                            node.DensePriors <- Some resp.DensePriors
                         if System.Double.IsFinite(resp.ValueEstimate) then
                             node.ValueEstimate <- resp.ValueEstimate
                         priorStats.priorNodesApplied <- priorStats.priorNodesApplied + 1

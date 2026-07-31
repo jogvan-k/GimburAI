@@ -237,7 +237,7 @@ Each action represents a composite settlement + road placement. The action strin
 | `wins` | float[] | MCTS win counts at the road grandchild node, 0-indexed (index 0 = player 1). See [Composite Action Stats](#composite-action-stats). |
 | `rollouts` | int | Total rollouts at the road grandchild node. |
 | `winRate` | float | Acting player's win rate (wins[playerIndex] / rollouts). |
-| `modelPrior` | float? | Masked, normalized NN probability for this legal composite when both settlement and road priors were applied; otherwise `null`. |
+| `modelPrior` | float? | Masked, globally normalized NN probability for this legal composite. The root inference retains the complete legal dense policy, so unexpanded actions receive priors too. `null` only when no valid root model response was applied. |
 | `permutations` | string[] | Action string under each symmetry permutation. Same order as `board.permutations`. The wins, rollouts, and winRate are identical under permutation and are not repeated. |
 
 ### Composite Action Stats

@@ -157,6 +157,26 @@ public class PlacementSerializationTests
         Assert.That(conditional, Is.EqualTo(new[] { 0.4, 0.6 }).Within(1e-12));
     }
 
+    [Test]
+    public void DensePolicy_RetainsNormalizedLegalVocabularyEntries()
+    {
+        var serializer = PlacementActionSerializer.Mini;
+        var policy = new double[serializer.VocabularySize];
+        policy[2] = 2;
+        policy[4] = 3;
+        policy[7] = 5;
+        policy[9] = 100; // Illegal for these groups.
+
+        var dense = serializer.LegalDensePolicy(
+            policy, new[] { new[] { 2, 4 }, new[] { 7 } });
+
+        Assert.That(dense[2], Is.EqualTo(0.2).Within(1e-12));
+        Assert.That(dense[4], Is.EqualTo(0.3).Within(1e-12));
+        Assert.That(dense[7], Is.EqualTo(0.5).Within(1e-12));
+        Assert.That(dense[9], Is.Zero);
+        Assert.That(dense.Sum(), Is.EqualTo(1.0).Within(1e-12));
+    }
+
     [TestCaseSource(nameof(MalformedDensePolicies))]
     public void DensePolicy_MalformedInputFallsBackToUniform(double[] policy)
     {
