@@ -52,6 +52,7 @@ public sealed class PriorClient : IPriorClient, IDisposable
     private readonly PriorMode _mode;
     private readonly PlacementActionSerializer? _actionSerializer;
     private readonly ConcurrentDictionary<long, PendingPlacementRequest> _pendingPlacement = new();
+    private readonly ConcurrentDictionary<long, int> _pendingStatePlayerCounts = new();
     private readonly ConcurrentDictionary<string, double[]> _roadPolicies = new();
 
     /// <summary>
@@ -194,7 +195,11 @@ public sealed class PriorClient : IPriorClient, IDisposable
         };
 
         Interlocked.Increment(ref _enqueueFireCount);
-        _ = EnqueueAsync("state/prior-enqueue", request, null);
+        _pendingStatePlayerCounts[nodeId] = parentState.NumberOfPlayers;
+        _ = EnqueueAsync(
+            "state/prior-enqueue",
+            request,
+            () => _pendingStatePlayerCounts.TryRemove(nodeId, out _));
 
         return states.Length;
     }
@@ -250,7 +255,7 @@ public sealed class PriorClient : IPriorClient, IDisposable
                 return 0;
 
             var priors = _actionSerializer.MaskAndNormalize(policy, legalIndices);
-            _mailbox.Enqueue(new PriorResponse(nodeId, priors, double.NaN));
+            _mailbox.Enqueue(new PriorResponse(nodeId, priors, Array.Empty<double>()));
             // Signal that a prior response was accepted even though it was
             // satisfied from the settlement prediction cache.
             return 1;
@@ -313,10 +318,10 @@ public sealed class PriorClient : IPriorClient, IDisposable
                     _roadPolicies[key] = priors;
             }
 
-            var valueEstimate = ExpectedValue(
-                prediction!.ValueProbabilities.FirstOrDefault());
+            var valueEstimates = NormalizePlayerValues(
+                prediction!.PlayerWinProbabilities.FirstOrDefault(), parent.NumberOfPlayers);
             _mailbox.Enqueue(new PriorResponse(
-                nodeId, settlementPriors, valueEstimate, legalDensePriors));
+                nodeId, settlementPriors, valueEstimates, legalDensePriors));
             return 1;
         }
         catch
@@ -326,15 +331,27 @@ public sealed class PriorClient : IPriorClient, IDisposable
         }
     }
 
-    private static double ExpectedValue(float[]? buckets)
+    private static double[] NormalizePlayerValues(float[]? values, int playerCount)
     {
-        if (buckets is null || buckets.Length == 0)
-            return double.NaN;
+        if (values is null || values.Length != playerCount)
+            return [];
 
-        var expected = 0.0;
-        for (var i = 0; i < buckets.Length; i++)
-            expected += buckets[i] * (i + 0.5) / buckets.Length;
-        return expected;
+        var normalized = new double[values.Length];
+        var total = 0.0;
+        for (var i = 0; i < values.Length; i++)
+        {
+            if (!float.IsFinite(values[i]) || values[i] < 0)
+                return [];
+            normalized[i] = values[i];
+            total += values[i];
+        }
+
+        if (!double.IsFinite(total) || total <= 0)
+            return [];
+
+        for (var i = 0; i < normalized.Length; i++)
+            normalized[i] /= total;
+        return normalized;
     }
 
     private static CatanAction UnwrapAction(CoreAction action)
@@ -409,7 +426,10 @@ public sealed class PriorClient : IPriorClient, IDisposable
         }
 
         foreach (var nodeId in knownNodeIds)
+        {
             _pendingPlacement.TryRemove(nodeId, out _);
+            _pendingStatePlayerCounts.TryRemove(nodeId, out _);
+        }
     }
 
     public void Dispose()
@@ -461,12 +481,6 @@ public sealed class PriorClient : IPriorClient, IDisposable
                             if (long.TryParse(r.Id, out var nodeId))
                             {
                                 var priors = Array.ConvertAll(r.Priors, value => (double)value);
-                                var valueEstimate = r.ValueEstimate.HasValue
-                                    ? (double)r.ValueEstimate.Value
-                                    : double.NaN;
-                                if (!double.IsFinite(valueEstimate))
-                                    valueEstimate = double.NaN;
-
                                 if (_mode == PriorMode.Placement
                                     && _pendingPlacement.TryRemove(nodeId, out var pending))
                                 {
@@ -480,12 +494,17 @@ public sealed class PriorClient : IPriorClient, IDisposable
                                         foreach (var key in pending.RoadStateKeys)
                                             _roadPolicies[key] = priors;
                                     }
+                                    var valueEstimates = NormalizePlayerValues(
+                                        r.PlayerWinProbabilities, pending.PlayerCount);
                                     _mailbox.Enqueue(new PriorResponse(
-                                        nodeId, settlementPriors, valueEstimate, legalDensePriors));
+                                        nodeId, settlementPriors, valueEstimates, legalDensePriors));
                                 }
                                 else if (_mode == PriorMode.State)
                                 {
-                                    _mailbox.Enqueue(new PriorResponse(nodeId, priors, valueEstimate));
+                                    _pendingStatePlayerCounts.TryRemove(nodeId, out var playerCount);
+                                    var valueEstimates = NormalizePlayerValues(
+                                        r.PlayerWinProbabilities, playerCount);
+                                    _mailbox.Enqueue(new PriorResponse(nodeId, priors, valueEstimates));
                                 }
                                 Interlocked.Increment(ref _pollResponsesReceived);
                             }
@@ -564,8 +583,8 @@ public sealed class PriorClient : IPriorClient, IDisposable
 
     private sealed class PlacementPredictResponse
     {
-        [JsonPropertyName("value_probabilities")]
-        public float[][] ValueProbabilities { get; init; } = [];
+        [JsonPropertyName("player_win_probabilities")]
+        public float[][] PlayerWinProbabilities { get; init; } = [];
 
         [JsonPropertyName("policy_probabilities")]
         public float[][] PolicyProbabilities { get; init; } = [];
@@ -573,7 +592,8 @@ public sealed class PriorClient : IPriorClient, IDisposable
 
     private sealed record PendingPlacementRequest(
         int[][] SettlementCompositeIndices,
-        string[] RoadStateKeys);
+        string[] RoadStateKeys,
+        int PlayerCount);
 
     // Shared response payloads (same format for both modes)
     private sealed class PriorCollectPayload
@@ -588,7 +608,8 @@ public sealed class PriorClient : IPriorClient, IDisposable
         [JsonPropertyName("priors")]
         public float[] Priors { get; init; } = [];
 
-        [JsonPropertyName("value_estimate")]
-        public float? ValueEstimate { get; init; }
+        [JsonPropertyName("player_win_probabilities")]
+        public float[]? PlayerWinProbabilities { get; init; }
+
     }
 }

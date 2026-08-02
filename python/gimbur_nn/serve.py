@@ -66,23 +66,29 @@ from .transformer_model import (
 logger = logging.getLogger(__name__)
 
 
-def _load_checkpoint(path: Path, device: torch.device) -> dict:
-    """Load a metadata checkpoint or normalize a legacy bare state dict."""
+def _load_checkpoint(path: Path, device: torch.device, architecture: str) -> dict:
+    """Load a version-3 player-value checkpoint or reject it."""
     raw = torch.load(path, map_location=device, weights_only=False)
-    if isinstance(raw, dict) and "model_state_dict" in raw:
-        raw.setdefault("target", "winrate")
-        raw.setdefault("output_mode", "value")
-        return raw
-    return {"model_state_dict": raw, "target": "winrate", "output_mode": "value"}
+    if (
+        not isinstance(raw, dict)
+        or "model_state_dict" not in raw
+        or raw.get("checkpoint_version") != 3
+        or raw.get("architecture") != architecture
+    ):
+        raise ValueError(
+            f"incompatible checkpoint; expected checkpoint_version=3 and "
+            f"architecture={architecture!r}"
+        )
+    return raw
 
 
 def _extract_logits(
     output: torch.Tensor | dict[str, torch.Tensor], head: str = "value"
 ) -> torch.Tensor:
-    """Extract last-token logits, selecting a head from combined models."""
+    """Select a head from model output containing pooled logits."""
     if isinstance(output, dict):
-        return output[head][:, -1, :]
-    return output[:, -1, :]
+        return output[head]
+    return output
 
 
 class PredictRequest(BaseModel):
@@ -95,8 +101,8 @@ class PredictRequest(BaseModel):
 class PredictResponse(BaseModel):
     """Response body for the /state/predict endpoint."""
 
-    probabilities: list[list[float]]
-    """Per-state bucket probabilities, shape (n_states, n_buckets)."""
+    player_win_probabilities: list[list[float]]
+    """Per-state player win distributions."""
 
 
 class PredictPlayerRequest(BaseModel):
@@ -106,8 +112,7 @@ class PredictPlayerRequest(BaseModel):
     """Compact serialized game state strings."""
 
     players: list[int]
-    """1-based target player for each state.  The state is rotated so
-    that this player becomes player 1 before inference."""
+    """1-based target player for each state."""
 
 
 class PredictPlayerResponse(BaseModel):
@@ -130,8 +135,8 @@ class PredictPlacementRequest(BaseModel):
 class PredictPlacementResponse(BaseModel):
     """Response body for the /placement/predict endpoint."""
 
-    value_probabilities: list[list[float]]
-    """Per-state value bucket probabilities, shape (n, n_buckets)."""
+    player_win_probabilities: list[list[float]]
+    """Per-state player win distributions."""
 
     policy_probabilities: list[list[float]] | None = None
     """Full canonical action probabilities for combined models."""
@@ -175,6 +180,9 @@ class PriorResponseItem(BaseModel):
 
     value_estimate: float | None = None
     """Scalar value estimate for the node's state. None if not available."""
+
+    player_win_probabilities: list[float] | None = None
+    """Full player value distribution when a value head is available."""
 
 
 class PriorCollectResponse(BaseModel):
@@ -414,14 +422,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _expected_win_prob(probs: torch.Tensor) -> float:
-    """Compute expected win probability from a 1-D bucket distribution."""
-    n = probs.shape[0]
-    centres = torch.arange(n, dtype=probs.dtype, device=probs.device)
-    centres = (centres + 0.5) / n
-    return float((probs * centres).sum())
-
-
 def create_app(
     state_model: GimburTransformer | None = None,
     state_device: torch.device | None = None,
@@ -468,13 +468,12 @@ def create_app(
                     continue
                 try:
                     inference_states = req.states
-                    has_parent = req.parent_state is not None and state_output_mode == "combined"
+                    has_parent = req.parent_state is not None
                     if has_parent:
                         inference_states = [req.parent_state, *inference_states]
-                    rotated = [
-                        tokenizer.rotate_player_state(s, req.player) for s in inference_states
-                    ]
-                    token_ids = tokenizer.tokenize_batch(rotated).to(state_device)
+                    if not 1 <= req.player <= state_game_cfg.player_count:
+                        raise ValueError("player is outside the configured player range")
+                    token_ids = tokenizer.tokenize_batch(inference_states).to(state_device)
                 except (KeyError, ValueError):
                     # Bad state — return zeros so the MCTS falls back to uniform.
                     results.append(
@@ -487,25 +486,23 @@ def create_app(
 
                 with torch.no_grad():
                     output = state_model(token_ids)
-                    prior_head = "policy" if state_output_mode == "combined" else "value"
-                    prior_logits = _extract_logits(output, head=prior_head)
+                    prior_logits = _extract_logits(output)
                     prior_probs = F.softmax(prior_logits, dim=-1)
 
                 prior_offset = 1 if has_parent else 0
-                priors = [
-                    _expected_win_prob(prior_probs[i])
-                    for i in range(prior_offset, prior_probs.shape[0])
-                ]
+                player_index = req.player - 1
+                priors = prior_probs[prior_offset:, player_index].cpu().tolist()
                 value_estimate: float | None = None
-                if has_parent and state_output_mode != "policy":
-                    value_logits = _extract_logits(output, head="value")
-                    value_probs = F.softmax(value_logits, dim=-1)
-                    value_estimate = _expected_win_prob(value_probs[0])
+                player_probs: list[float] | None = None
+                if has_parent:
+                    player_probs = prior_probs[0].cpu().tolist()
+                    value_estimate = player_probs[player_index]
                 results.append(
                     PriorResponseItem(
                         id=req.id,
                         priors=priors,
                         value_estimate=value_estimate,
+                        player_win_probabilities=player_probs,
                     )
                 )
 
@@ -566,7 +563,8 @@ def create_app(
                     results[result_index] = PriorResponseItem(
                         id=req.id,
                         priors=priors,
-                        value_estimate=_expected_win_prob(value_probs[batch_index]),
+                        value_estimate=float(value_probs[batch_index, 0]),
+                        player_win_probabilities=value_probs[batch_index].cpu().tolist(),
                     )
 
             return [result for result in results if result is not None]
@@ -614,19 +612,17 @@ def create_app(
                 token_ids = tokenizer.tokenize_batch(request.states).to(state_device)
             except (KeyError, ValueError) as exc:
                 logger.error(
-                    "Tokenization failed in /state/predict: %s\n"
-                    "  First state (truncated): %.200s",
+                    "Tokenization failed in /state/predict: %s\n  First state (truncated): %.200s",
                     exc,
                     request.states[0] if request.states else "<empty>",
                 )
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
             with torch.no_grad():
-                output = state_model(token_ids)  # (batch, seq_len, n_buckets) or dict
-                last_logits = _extract_logits(output)  # (batch, n_buckets)
-                probs = F.softmax(last_logits, dim=-1)
+                output = state_model(token_ids)
+                probs = F.softmax(_extract_logits(output), dim=-1)
 
-            return PredictResponse(probabilities=probs.cpu().tolist())
+            return PredictResponse(player_win_probabilities=probs.cpu().tolist())
 
         @app.post("/state/predict-player", response_model=PredictPlayerResponse)
         async def predict_player(
@@ -634,9 +630,7 @@ def create_app(
         ) -> PredictPlayerResponse:
             """Predict win probability for specific target players.
 
-            Each state is rotated so that the corresponding target player
-            becomes player 1, then the model's player-1 win probability is
-            returned as a scalar expected value.
+            Runs one full-vector inference per state and gathers each requested player.
             """
             if not request.states:
                 raise HTTPException(
@@ -653,11 +647,11 @@ def create_app(
                 )
 
             try:
-                rotated = [
-                    tokenizer.rotate_player_state(s, p)
-                    for s, p in zip(request.states, request.players)
-                ]
-                token_ids = tokenizer.tokenize_batch(rotated).to(state_device)
+                if any(
+                    not 1 <= player <= state_game_cfg.player_count for player in request.players
+                ):
+                    raise ValueError("player is outside the configured player range")
+                token_ids = tokenizer.tokenize_batch(request.states).to(state_device)
             except (KeyError, ValueError) as exc:
                 logger.error(
                     "Tokenization failed in /state/predict-player: %s\n"
@@ -670,10 +664,9 @@ def create_app(
 
             with torch.no_grad():
                 output = state_model(token_ids)
-                last_logits = _extract_logits(output)
-                probs = F.softmax(last_logits, dim=-1)
+                probs = F.softmax(_extract_logits(output), dim=-1)
 
-            win_probs = [_expected_win_prob(probs[i]) for i in range(probs.shape[0])]
+            win_probs = [float(probs[i, player - 1]) for i, player in enumerate(request.players)]
             return PredictPlayerResponse(win_probabilities=win_probs)
 
         # ── Prior endpoints ───────────────────────────────────────────────────
@@ -747,7 +740,7 @@ def create_app(
                 )
 
             return PredictPlacementResponse(
-                value_probabilities=probs.cpu().tolist(),
+                player_win_probabilities=probs.cpu().tolist(),
                 policy_probabilities=policy_probs,
             )
 
@@ -850,14 +843,16 @@ def main() -> None:
     if has_state:
         state_game_cfg = CONFIGS_BY_NAME[args.game_config]
         state_model_cfg = MODEL_CONFIGS_BY_NAME[args.model_config]
-        state_ckpt = _load_checkpoint(args.model, device)
+        try:
+            state_ckpt = _load_checkpoint(args.model, device, "state_player_value_v1")
+        except ValueError as exc:
+            raise SystemExit(f"Error: {exc}") from exc
         state_output_mode = str(state_ckpt.get("output_mode", "value"))
         if state_output_mode != getattr(state_model_cfg, "output_mode", "value"):
             state_model_cfg = _make_model_config(
                 d_model=state_model_cfg.d_model,
                 n_heads=state_model_cfg.n_heads,
                 n_layers=state_model_cfg.n_layers,
-                n_buckets=state_model_cfg.n_buckets,
                 ffn_hidden_mult=state_model_cfg.ffn_hidden_mult,
                 dropout=state_model_cfg.dropout,
                 output_mode=state_output_mode,
@@ -880,15 +875,10 @@ def main() -> None:
     if has_placement:
         placement_game_cfg = CONFIGS_BY_NAME[args.game_config]
         placement_model_cfg = MODEL_CONFIGS_BY_NAME[args.placement_model_config]
-        placement_ckpt = _load_checkpoint(args.placement_model, device)
-        if (
-            placement_ckpt.get("checkpoint_version") != 2
-            or placement_ckpt.get("architecture") != "placement_state_v2"
-        ):
-            raise SystemExit(
-                "Error: incompatible placement checkpoint; expected checkpoint_version=2 "
-                "and architecture='placement_state_v2'. Retrain the placement model."
-            )
+        try:
+            placement_ckpt = _load_checkpoint(args.placement_model, device, "placement_state_v3")
+        except ValueError as exc:
+            raise SystemExit(f"Error: {exc}") from exc
         placement_target = str(placement_ckpt.get("target", "winrate"))
         placement_output_mode = str(placement_ckpt.get("output_mode", "value"))
         state_dict = placement_ckpt["model_state_dict"]
@@ -899,15 +889,12 @@ def main() -> None:
                 d_model=placement_model_cfg.d_model,
                 n_heads=placement_model_cfg.n_heads,
                 n_layers=placement_model_cfg.n_layers,
-                n_buckets=placement_model_cfg.n_buckets,
                 ffn_hidden_mult=placement_model_cfg.ffn_hidden_mult,
                 dropout=placement_model_cfg.dropout,
                 output_mode=placement_output_mode,
             )
 
-        loaded_placement_model = GimburPlacementTransformer(
-            placement_game_cfg, placement_model_cfg
-        )
+        loaded_placement_model = GimburPlacementTransformer(placement_game_cfg, placement_model_cfg)
         loaded_placement_model.load_state_dict(state_dict)
         loaded_placement_model.to(device)
         loaded_placement_model.eval()

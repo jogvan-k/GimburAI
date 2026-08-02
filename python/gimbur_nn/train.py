@@ -3,8 +3,7 @@ Training loop for GimburTransformer and GimburPlacementTransformer.
 
 Reads data exported by ``gimbur simulate --export``, expands states via
 symmetry permutations and player rotation, and trains the model to predict
-a win-probability bucket distribution.  The loss function is
-configurable — see ``--loss`` and :mod:`gimbur_nn.loss_config`.
+a per-player win distribution using soft-target cross entropy.
 
 ``--data`` may point to a single ``.jsonl`` file, a single ``.json``
 file, **or** a directory containing any mix of ``.jsonl`` and ``.json``
@@ -42,19 +41,11 @@ import time
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from .data_loader import PlacementDataset, SimulationDataset, load_games, split_games
 from .game_config import CONFIGS_BY_NAME
-from .loss_config import (
-    LOSS_MODES,
-    LossConfig,
-    LossFn,
-    build_loss_fn,
-    masked_soft_target_cross_entropy,
-)
-from .metrics import value_metrics
+from .loss_config import masked_soft_target_cross_entropy, soft_target_cross_entropy
 from .transformer_model import (
     MODEL_CONFIGS_BY_NAME,
     OUTPUT_MODES,
@@ -118,8 +109,6 @@ _CONFIG_KEYS: dict[str, str] = {
     "testSplit": "test_split",
     "logInterval": "log_interval",
     "checkpointDir": "checkpoint_dir",
-    "loss": "loss",
-    "lossSigma": "loss_sigma",
     "target": "target",
     "outputMode": "output_mode",
     "advantage": "advantage",
@@ -175,7 +164,6 @@ def _build_dataset(
     dataset_class: type,
     games: list[dict],
     game_cfg,
-    n_buckets: int,
     args: argparse.Namespace,
 ):
     """Construct a dataset, forwarding the placement-specific ``target`` arg
@@ -188,10 +176,12 @@ def _build_dataset(
     if args.model_type == "placement":
         effective_target = "combined" if args.output_mode == "combined" else "winrate"
         return dataset_class(
-            games, game_cfg, n_buckets=n_buckets, target=effective_target,
+            games,
+            game_cfg,
+            target=effective_target,
             advantage=args.advantage,
         )
-    return dataset_class(games, game_cfg, n_buckets=n_buckets)
+    return dataset_class(games, game_cfg)
 
 
 def parse_args() -> argparse.Namespace:
@@ -228,19 +218,6 @@ def parse_args() -> argparse.Namespace:
         default="state",
         choices=["state", "placement"],
         help="Model type: 'state' (default) or 'placement'.",
-    )
-    parser.add_argument(
-        "--loss",
-        type=str,
-        default="ordinal",
-        choices=sorted(LOSS_MODES),
-        help="Loss function mode (default: ordinal).",
-    )
-    parser.add_argument(
-        "--loss-sigma",
-        type=float,
-        default=2.0,
-        help="Gaussian sigma for label smoothing (only used with --loss=gaussian, default: 2.0).",
     )
     parser.add_argument(
         "--target",
@@ -347,8 +324,6 @@ _ARG_DEFAULTS: dict[str, object] = {
     "val_split": 0.1,
     "test_split": 0.0,
     "log_interval": 50,
-    "loss": "hard",
-    "loss_sigma": 2.0,
     "target": "winrate",
     "output_mode": "value",
     "advantage": False,
@@ -381,8 +356,13 @@ def _save_epoch_checkpoint(
     best_val_loss: float,
     epochs_without_improvement: int,
 ) -> None:
+    model_type = "placement" if isinstance(model, GimburPlacementTransformer) else "state"
     torch.save(
         {
+            "checkpoint_version": 3,
+            "architecture": (
+                "placement_state_v3" if model_type == "placement" else "state_player_value_v1"
+            ),
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
@@ -409,8 +389,10 @@ def _save_final_model(
     """
     torch.save(
         {
-            "checkpoint_version": 2,
-            "architecture": "placement_state_v2" if args.model_type == "placement" else "state",
+            "checkpoint_version": 3,
+            "architecture": (
+                "placement_state_v3" if args.model_type == "placement" else "state_player_value_v1"
+            ),
             "model_state_dict": model.state_dict(),
             "model_type": args.model_type,
             "model_config": args.model_config,
@@ -422,21 +404,18 @@ def _save_final_model(
     )
 
 
-def _load_model_state(path: Path, device: torch.device) -> dict:
-    """Load a checkpoint and normalise to the new dict format.
-
-    Accepts both:
-      * Legacy bare ``state_dict()`` files (returned with ``model_state_dict``
-        key only, ``target='winrate'``, and ``output_mode='value'`` for
-        backward compatibility).
-      * New format dicts with ``model_state_dict`` and metadata keys.
-    """
+def _load_model_state(path: Path, device: torch.device, model_type: str) -> dict:
+    """Load a player-value checkpoint and reject incompatible architectures."""
     raw = torch.load(path, map_location=device, weights_only=False)
-    if isinstance(raw, dict) and "model_state_dict" in raw:
-        raw.setdefault("output_mode", "value")
-        return raw
-    # Legacy: bare state_dict.
-    return {"model_state_dict": raw, "target": "winrate", "output_mode": "value"}
+    architecture = "placement_state_v3" if model_type == "placement" else "state_player_value_v1"
+    if (
+        not isinstance(raw, dict)
+        or "model_state_dict" not in raw
+        or raw.get("checkpoint_version") != 3
+        or raw.get("architecture") != architecture
+    ):
+        raise ValueError(f"incompatible checkpoint; expected version 3 {architecture!r}")
+    return raw
 
 
 def _append_epoch_stats(
@@ -470,7 +449,6 @@ def _run_epoch(
     log_interval: int,
     epoch: int,
     phase: str,
-    loss_fn: LossFn = F.cross_entropy,
     output_mode: str = "value",
     advantage: bool = False,
     value_loss_weight: float = 1.0,
@@ -481,7 +459,7 @@ def _run_epoch(
     When *optimizer* is ``None`` the model runs in eval mode with no
     gradient updates (validation).
 
-    In combined mode each batch contains state tokens, a value bucket,
+    In combined mode each batch contains state tokens, a player value distribution,
     a dense policy target, and a legal-action mask. Loss weights control
     the contribution of the value and masked soft-policy losses.
 
@@ -492,8 +470,6 @@ def _run_epoch(
 
     total_loss = 0.0
     total_samples = 0
-    metric_totals = {"mae": 0.0, "brier": 0.0, "ece": 0.0}
-
     ctx = torch.no_grad() if not is_train else torch.enable_grad()
     with ctx:
         for batch_idx, batch in enumerate(loader):
@@ -506,7 +482,7 @@ def _run_epoch(
                 policy_targets = batch[2].to(device)
                 value_logits = output["value"]
                 policy_logits = output["policy"]
-                value_loss = loss_fn(value_logits, value_targets)
+                value_loss = soft_target_cross_entropy(value_logits, value_targets)
                 legal_mask = batch[3].to(device)
                 policy_loss = masked_soft_target_cross_entropy(
                     policy_logits, policy_targets, legal_mask
@@ -514,11 +490,7 @@ def _run_epoch(
                 loss = value_loss_weight * value_loss + policy_loss_weight * policy_loss
             else:
                 targets = batch[1].to(device)
-                logits = output if output.ndim == 2 else output[:, -1, :]
-                loss = loss_fn(logits, targets)
-                metrics = value_metrics(logits.detach(), targets)
-                for name, value in metrics.items():
-                    metric_totals[name] += value * token_ids.shape[0]
+                loss = soft_target_cross_entropy(output, targets)
 
             if is_train:
                 assert optimizer is not None
@@ -537,11 +509,6 @@ def _run_epoch(
                     f"loss {loss.item():.4f} (running avg {avg:.4f})"
                 )
 
-    if total_samples > 0 and output_mode != "combined":
-        summary = " | ".join(
-            f"{name} {value / total_samples:.4f}" for name, value in metric_totals.items()
-        )
-        print(f"  [{phase}] value metrics | {summary}")
     return total_loss / total_samples if total_samples > 0 else 0.0
 
 
@@ -582,7 +549,6 @@ def main() -> None:
             d_model=model_cfg.d_model,
             n_heads=model_cfg.n_heads,
             n_layers=model_cfg.n_layers,
-            n_buckets=model_cfg.n_buckets,
             ffn_hidden_mult=model_cfg.ffn_hidden_mult,
             dropout=model_cfg.dropout,
             output_mode=args.output_mode,
@@ -602,10 +568,6 @@ def main() -> None:
     # ── Model ────────────────────────────────────────────────────────
     model = model_class(game_cfg, model_cfg)
 
-    # ── Loss function ────────────────────────────────────────────────
-    loss_cfg = LossConfig(mode=args.loss, sigma=args.loss_sigma)
-    loss_fn = build_loss_fn(loss_cfg, n_buckets=model_cfg.n_buckets)
-
     # ── Resume handling ──────────────────────────────────────────────
     start_epoch = 0
     best_val_loss = float("inf")
@@ -622,6 +584,13 @@ def main() -> None:
                     f"Error: --resume directory {resume_path} contains no epoch_*.pt checkpoints."
                 )
             ckpt = torch.load(ckpt_file, map_location=device, weights_only=False)
+            architecture = (
+                "placement_state_v3" if args.model_type == "placement" else "state_player_value_v1"
+            )
+            if ckpt.get("checkpoint_version") != 3 or ckpt.get("architecture") != architecture:
+                raise SystemExit(
+                    f"Error: incompatible checkpoint; expected version 3 {architecture!r}"
+                )
             model.load_state_dict(ckpt["model_state_dict"])
             resume_optimizer_state = ckpt["optimizer_state_dict"]
             start_epoch = ckpt["epoch"]
@@ -633,17 +602,19 @@ def main() -> None:
             )
         else:
             # .pt file: load model weights only (handles both legacy and new format).
-            ckpt = _load_model_state(resume_path, device)
+            try:
+                ckpt = _load_model_state(resume_path, device, args.model_type)
+            except ValueError as exc:
+                raise SystemExit(f"Error: {exc}") from exc
             model.load_state_dict(ckpt["model_state_dict"])
             print(f"Resumed model weights from {resume_path}")
 
     model.to(device)
 
     param_count = sum(p.numel() for p in model.parameters())
-    loss_label = args.loss if args.loss == "hard" else f"{args.loss}(sigma={args.loss_sigma})"
     print(
         f"Model: {args.model_config} ({args.model_type}) for {args.game_config} "
-        f"({param_count:,} parameters) on {device}, loss={loss_label}"
+        f"({param_count:,} parameters) on {device}"
     )
 
     # ── Data ─────────────────────────────────────────────────────────
@@ -662,23 +633,17 @@ def main() -> None:
         all_games, val=args.val_split, test=args.test_split
     )
 
-    train_dataset = _build_dataset(
-        dataset_class, train_games, game_cfg, model_cfg.n_buckets, args
-    )
+    train_dataset = _build_dataset(dataset_class, train_games, game_cfg, args)
     print(f"Train: {len(train_games):,} games -> {len(train_dataset):,} samples")
 
     val_dataset: SimulationDataset | PlacementDataset | None = None
     if val_games:
-        val_dataset = _build_dataset(
-            dataset_class, val_games, game_cfg, model_cfg.n_buckets, args
-        )
+        val_dataset = _build_dataset(dataset_class, val_games, game_cfg, args)
         print(f"Val:   {len(val_games):,} games -> {len(val_dataset):,} samples")
 
     test_dataset: SimulationDataset | PlacementDataset | None = None
     if test_games:
-        test_dataset = _build_dataset(
-            dataset_class, test_games, game_cfg, model_cfg.n_buckets, args
-        )
+        test_dataset = _build_dataset(dataset_class, test_games, game_cfg, args)
         print(f"Test:  {len(test_games):,} games -> {len(test_dataset):,} samples")
 
     if len(train_dataset) == 0:
@@ -723,8 +688,13 @@ def main() -> None:
         t_start = time.monotonic()
 
         train_loss = _run_epoch(
-            model, train_loader, device, optimizer, args.log_interval, epoch, "train",
-            loss_fn=loss_fn,
+            model,
+            train_loader,
+            device,
+            optimizer,
+            args.log_interval,
+            epoch,
+            "train",
             output_mode=args.output_mode,
             advantage=args.advantage,
             value_loss_weight=args.value_loss_weight,
@@ -738,7 +708,13 @@ def main() -> None:
         val_loss: float | None = None
         if val_loader is not None:
             val_loss = _run_epoch(
-                model, val_loader, device, None, 0, epoch, "val", loss_fn=loss_fn,
+                model,
+                val_loader,
+                device,
+                None,
+                0,
+                epoch,
+                "val",
                 output_mode=args.output_mode,
                 advantage=args.advantage,
                 value_loss_weight=args.value_loss_weight,
@@ -785,10 +761,16 @@ def main() -> None:
             shuffle=False,
         )
         # Reload best checkpoint for test evaluation (handles both legacy and new format).
-        ckpt = _load_model_state(args.out, device)
+        ckpt = _load_model_state(args.out, device, args.model_type)
         model.load_state_dict(ckpt["model_state_dict"])
         test_loss = _run_epoch(
-            model, test_loader, device, None, 0, 0, "test", loss_fn=loss_fn,
+            model,
+            test_loader,
+            device,
+            None,
+            0,
+            0,
+            "test",
             output_mode=args.output_mode,
             advantage=args.advantage,
             value_loss_weight=args.value_loss_weight,

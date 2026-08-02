@@ -314,13 +314,13 @@ internal record PlacementStateRecord
     public int PriorResponsesOrphaned { get; set; }
 
     /// <summary>
-    /// NN value estimate for this state (from the acting player's perspective).
+    /// NN value distribution for this state, indexed by player.
     /// Null when no value estimate is available (non-combined model or no NN prior).
     /// </summary>
-    public double? ModelValue { get; init; }
+    public double[]? ModelValue { get; init; }
 
-    /// <summary>Rollout-weighted acting-player win rate across legal actions.</summary>
-    public double? ValueTarget { get; init; }
+    /// <summary>Rollout-weighted per-player win distribution across legal actions.</summary>
+    public double[]? ValueTarget { get; init; }
 }
 
 /// <summary>
@@ -777,13 +777,26 @@ internal class SimulationRunner
         return (Array.Empty<double>(), 0.0, 0);
     }
 
-    private static double? ComputePlacementValueTarget(IReadOnlyList<PlacementActionRecord> actions)
+    private static double[]? ComputePlacementValueTarget(IReadOnlyList<PlacementActionRecord> actions)
     {
         var totalRollouts = actions.Sum(action => action.Rollouts);
         if (totalRollouts == 0)
             return null;
 
-        return actions.Sum(action => action.WinRate * action.Rollouts) / totalRollouts;
+        var playerCount = actions.Max(action => action.Wins.Length);
+        if (playerCount == 0)
+            return null;
+
+        var target = new double[playerCount];
+        foreach (var action in actions)
+        {
+            for (var player = 0; player < action.Wins.Length; player++)
+                target[player] += action.Wins[player];
+        }
+
+        for (var player = 0; player < target.Length; player++)
+            target[player] /= totalRollouts;
+        return target;
     }
 
     private static StateRecord CreateStateRecord(
@@ -1246,7 +1259,9 @@ internal class SimulationRunner
                         : null,
                     PriorNodesSkipped = logInfo.priorNodesSkipped,
                     Actions = compositeActions,
-                    ModelValue = double.IsNaN(mctsRoot.ValueEstimate) ? null : mctsRoot.ValueEstimate,
+                    ModelValue = mctsRoot.ValueEstimates is { } modelValues
+                        ? (double[])modelValues.Value.Clone()
+                        : null,
                     ValueTarget = ComputePlacementValueTarget(compositeActions),
                 });
 

@@ -34,19 +34,19 @@ type IEvaluator =
 /// A completed prior response from the inference server.
 /// NodeId is an opaque identifier used to correlate the response back to the
 /// parent MCTSState. Priors contains per-action prior policy weights in the
-/// same order as the node's actions. ValueEstimate is a scalar value for the
-/// node's state from the acting player's perspective (NaN if unavailable).
+/// same order as the node's actions. ValueEstimates optionally contains a
+/// normalized per-player value distribution indexed by Player enum value.
 /// DensePriors optionally carries a client-specific dense policy for export.
 type PriorResponse =
   struct
     val NodeId: int64
     val Priors: float[]
-    val ValueEstimate: float
+    val ValueEstimates: float[]
     val DensePriors: float[]
-    new(nodeId, priors, valueEstimate) =
-        { NodeId = nodeId; Priors = priors; ValueEstimate = valueEstimate; DensePriors = Array.empty }
-    new(nodeId, priors, valueEstimate, densePriors) =
-        { NodeId = nodeId; Priors = priors; ValueEstimate = valueEstimate; DensePriors = densePriors }
+    new(nodeId, priors, valueEstimates) =
+        { NodeId = nodeId; Priors = priors; ValueEstimates = valueEstimates; DensePriors = Array.empty }
+    new(nodeId, priors, valueEstimates, densePriors) =
+        { NodeId = nodeId; Priors = priors; ValueEstimates = valueEstimates; DensePriors = densePriors }
   end
 
 /// Asynchronous prior client for NN-guided MCTS search.

@@ -12,7 +12,7 @@ namespace Gimbur.Cli;
 /// (defaults to <see cref="GreedyPlayer"/>).  Once the main game begins
 /// (stage ≥ 4), the player uses the same evaluation strategy as
 /// <see cref="NnPlayer"/>: enumerating all actions, evaluating resulting
-/// states via the <c>/predict-player</c> endpoint, and picking the action
+/// states via the <c>/state/predict</c> endpoint, and picking the action
 /// with the highest expected win probability.
 /// </summary>
 internal sealed class NnStatePlayer : IBenchmarkPlayer, INnStatsProvider
@@ -62,7 +62,6 @@ internal sealed class NnStatePlayer : IBenchmarkPlayer, INnStatsProvider
         var actingPlayer = state.CurrentPlayer;
 
         var allStates = new List<string>();
-        var allPlayers = new List<int>();
         var actionDescriptors = new List<ActionDescriptor>();
 
         for (var i = 0; i < coreActions.Length; i++)
@@ -75,7 +74,6 @@ internal sealed class NnStatePlayer : IBenchmarkPlayer, INnStatsProvider
                 var resultState = (CatanState)deterministicAction.State();
                 var stateIndex = allStates.Count;
                 allStates.Add(resultState.SerializeCompact());
-                allPlayers.Add(actingPlayer);
                 actionDescriptors.Add(new ActionDescriptor(i, stateIndex, 1, null));
             }
             else if (coreAction.IsStochastic)
@@ -89,14 +87,13 @@ internal sealed class NnStatePlayer : IBenchmarkPlayer, INnStatsProvider
                     weights[j] = outcomes[j].Item1;
                     var outcomeState = (CatanState)outcomes[j].Item2;
                     allStates.Add(outcomeState.SerializeCompact());
-                    allPlayers.Add(actingPlayer);
                 }
 
                 actionDescriptors.Add(new ActionDescriptor(i, stateIndex, outcomes.Length, weights));
             }
         }
 
-        var winProbs = _client.PredictPlayerAsync(allStates, allPlayers).GetAwaiter().GetResult();
+        var playerValues = _client.PredictAsync(allStates).GetAwaiter().GetResult();
         TotalNnRequests++;
         TotalNnStatesEvaluated += allStates.Count;
 
@@ -108,7 +105,7 @@ internal sealed class NnStatePlayer : IBenchmarkPlayer, INnStatsProvider
             float score;
             if (desc.Weights is null)
             {
-                score = winProbs[desc.StartIndex];
+                score = playerValues[desc.StartIndex][actingPlayer - 1];
             }
             else
             {
@@ -118,7 +115,7 @@ internal sealed class NnStatePlayer : IBenchmarkPlayer, INnStatsProvider
                 {
                     var w = desc.Weights[j];
                     totalWeight += w;
-                    weightedSum += w * winProbs[desc.StartIndex + j];
+                    weightedSum += w * playerValues[desc.StartIndex + j][actingPlayer - 1];
                 }
 
                 score = totalWeight > 0 ? weightedSum / totalWeight : 0;

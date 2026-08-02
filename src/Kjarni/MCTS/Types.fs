@@ -13,7 +13,7 @@ type MCTSState(state: ICoreState) =
     let mutable _actions = state.Actions() |> Array.map Unexplored
     let mutable _priors: float[] option = None
     let mutable _densePriors: float[] option = None
-    let mutable _valueEstimate: float = System.Double.NaN
+    let mutable _valueEstimates: float[] option = None
     /// Unique identifier for this node, used to correlate prior responses.
     member _.NodeId = _nodeId
     member _.Rollouts
@@ -36,11 +36,11 @@ type MCTSState(state: ICoreState) =
     member _.DensePriors
       with get () = _densePriors
       and set value = _densePriors <- value
-    /// NN value estimate for this node's state (from the acting player's
-    /// perspective). NaN when no estimate is available.
-    member _.ValueEstimate
-      with get () = _valueEstimate
-      and set value = _valueEstimate <- value
+    /// Optional normalized NN value distribution for this node's state,
+    /// indexed by Player enum value.
+    member _.ValueEstimates
+      with get () = _valueEstimates
+      and set value = _valueEstimates <- value
 
 and Action =
     | Unexplored of CoreAction

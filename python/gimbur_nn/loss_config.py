@@ -46,6 +46,11 @@ def masked_soft_target_cross_entropy(
     return per_sample.mean()
 
 
+def soft_target_cross_entropy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    """Cross entropy between raw logits and dense probability targets."""
+    return -(targets * F.log_softmax(logits, dim=-1)).sum(dim=-1).mean()
+
+
 @dataclass
 class LossConfig:
     """Configuration for the training loss function.

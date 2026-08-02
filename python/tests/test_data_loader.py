@@ -10,8 +10,7 @@ import torch
 
 from gimbur_nn.data_loader import (
     SimulationDataset,
-    _prob_to_bucket,
-    _win_probability,
+    _normalize_wins,
     expand_games,
     load_games,
     load_samples,
@@ -115,44 +114,13 @@ MINI_STATE_ONLY = (
 # ---------------------------------------------------------------------------
 
 
-class TestWinProbability:
-    def test_player1_wins(self) -> None:
-        assert _win_probability([80.0, 20.0], 1) == pytest.approx(0.8)
+class TestNormalizeWins:
+    def test_normalizes_counts(self) -> None:
+        torch.testing.assert_close(_normalize_wins([80.0, 20.0], 2), torch.tensor([0.8, 0.2]))
 
-    def test_player2_wins(self) -> None:
-        assert _win_probability([80.0, 20.0], 2) == pytest.approx(0.2)
-
-    def test_three_players(self) -> None:
-        assert _win_probability([30.0, 50.0, 20.0], 2) == pytest.approx(0.5)
-
-    def test_zero_total_returns_uniform(self) -> None:
-        assert _win_probability([0.0, 0.0], 1) == pytest.approx(0.5)
-        assert _win_probability([0.0, 0.0, 0.0], 2) == pytest.approx(1.0 / 3)
-
-    def test_empty_counts_are_rejected(self) -> None:
-        with pytest.raises(ValueError, match="at least one player"):
-            _win_probability([], 1)
-
-
-class TestProbToBucket:
-    def test_zero(self) -> None:
-        assert _prob_to_bucket(0.0, 128) == 0
-
-    def test_one(self) -> None:
-        # 1.0 * 128 = 128, clamped to 127
-        assert _prob_to_bucket(1.0, 128) == 127
-
-    def test_half(self) -> None:
-        # 0.5 * 128 = 64
-        assert _prob_to_bucket(0.5, 128) == 64
-
-    def test_just_below_boundary(self) -> None:
-        # 0.5 / 128 = 0.00390625, bucket 0
-        assert _prob_to_bucket(0.003, 128) == 0
-
-    def test_small_bucket_count(self) -> None:
-        # 0.6 * 4 = 2.4 -> bucket 2
-        assert _prob_to_bucket(0.6, 4) == 2
+    @pytest.mark.parametrize("wins", [[], [0.0, 0.0], [1.0]])
+    def test_invalid_evidence_returns_uniform(self, wins: list[float]) -> None:
+        torch.testing.assert_close(_normalize_wins(wins, 2), torch.tensor([0.5, 0.5]))
 
 
 # ---------------------------------------------------------------------------
@@ -259,9 +227,9 @@ class TestLoadSamples:
         assert len(samples) == 2
 
         # All token tensors should have correct length.
-        for token_ids, bucket in samples:
+        for token_ids, target in samples:
             assert token_ids.shape == (MINI_2P.state_token_size,)
-            assert 0 <= bucket < 128
+            torch.testing.assert_close(target.sum(), torch.tensor(1.0))
 
     def test_with_permutations(self, tmp_path: Path) -> None:
         """With 2 permutations: 1 state * 3 combos * 2 players = 6 samples."""
@@ -326,8 +294,7 @@ class TestLoadSamples:
 
         assert len(samples) == 4
 
-    def test_labels_reflect_win_probability(self, tmp_path: Path) -> None:
-        """Player with higher wins should get a higher bucket index."""
+    def test_player_rotation_rotates_target_vector(self, tmp_path: Path) -> None:
         game = _make_game(
             board=MINI_BOARD,
             board_perms=[],
@@ -344,12 +311,8 @@ class TestLoadSamples:
         samples = load_samples(tmp_path / "test.jsonl", MINI_2P)
 
         # samples[0] is player 1 (no rotation), samples[1] is player 2.
-        _, bucket_p1 = samples[0]
-        _, bucket_p2 = samples[1]
-
-        # Player 1 has 90% win rate -> high bucket.
-        # Player 2 has 10% win rate -> low bucket.
-        assert bucket_p1 > bucket_p2
+        torch.testing.assert_close(samples[0][1], torch.tensor([0.9, 0.1]))
+        torch.testing.assert_close(samples[1][1], torch.tensor([0.1, 0.9]))
 
     def test_player_rotation_applied(self, tmp_path: Path) -> None:
         """Token IDs should differ between player 1 and player 2 views."""
@@ -421,8 +384,18 @@ class TestExpandGames:
 
         samples = expand_games([game], MINI_2P)
 
-        assert samples[0][1] == _prob_to_bucket(0.9, 128)
-        assert samples[1][1] == _prob_to_bucket(0.1, 128)
+        torch.testing.assert_close(samples[0][1], torch.tensor([0.9, 0.1]))
+        torch.testing.assert_close(samples[1][1], torch.tensor([0.1, 0.9]))
+
+    def test_geometric_symmetry_keeps_player_target(self) -> None:
+        game = _simple_game([70.0, 30.0])
+        game["board"]["permutations"] = [MINI_BOARD]
+        game["states"][0]["permutations"] = [MINI_STATE_ONLY]
+
+        samples = expand_games([game], MINI_2P)
+
+        torch.testing.assert_close(samples[0][1], samples[2][1])
+        torch.testing.assert_close(samples[1][1], samples[3][1])
 
     def test_keeps_mcts_probabilities_from_unfinished_games(self) -> None:
         game = _simple_game()
@@ -455,8 +428,8 @@ class TestSimulationDataset:
         token_ids, target = ds[0]
         assert token_ids.shape == (MINI_2P.state_token_size,)
         assert token_ids.dtype == torch.int32
-        assert target.dtype == torch.long
-        assert 0 <= target.item() < 128
+        assert target.dtype == torch.float32
+        assert target.shape == (MINI_2P.player_count,)
 
     def test_compatible_with_dataloader(self) -> None:
         games = [_simple_game()]
@@ -465,7 +438,7 @@ class TestSimulationDataset:
 
         batch_tokens, batch_targets = next(iter(loader))
         assert batch_tokens.shape == (2, MINI_2P.state_token_size)
-        assert batch_targets.shape == (2,)
+        assert batch_targets.shape == (2, MINI_2P.player_count)
 
     def test_empty_games_list(self) -> None:
         ds = SimulationDataset([], MINI_2P)
@@ -494,12 +467,14 @@ def _placement_game(*, rollouts: tuple[int, int] = (30, 70)) -> dict:
                     {
                         "action": "0SE",
                         "winRate": 0.2,
+                        "wins": [18.0, 2.0],
                         "rollouts": rollouts[0],
                         "permutations": ["1SW"],
                     },
                     {
                         "action": "5N",
                         "winRate": 0.8,
+                        "wins": [14.0, 56.0],
                         "rollouts": rollouts[1],
                         "permutations": ["6N"],
                     },
@@ -517,7 +492,8 @@ class TestExpandPlacementGames:
 
         assert len(samples) == 2
         assert samples[0][0].shape == (MINI_2P.placement_token_size,)
-        assert samples[0][1] == int(0.62 * 128)
+        torch.testing.assert_close(samples[0][1], torch.tensor([0.41, 0.59]))
+        torch.testing.assert_close(samples[0][1], samples[1][1])
 
     def test_combined_targets_are_dense_and_symmetry_mapped(self) -> None:
         from gimbur_nn.data_loader import expand_placement_games
@@ -539,9 +515,20 @@ class TestExpandPlacementGames:
     def test_combined_skips_zero_total_rollouts(self) -> None:
         from gimbur_nn.data_loader import expand_placement_games
 
-        assert expand_placement_games(
-            [_placement_game(rollouts=(0, 0))], MINI_2P, target="combined"
-        ) == []
+        assert (
+            expand_placement_games([_placement_game(rollouts=(0, 0))], MINI_2P, target="combined")
+            == []
+        )
+
+    def test_value_fallback_is_uniform(self) -> None:
+        from gimbur_nn.data_loader import expand_placement_games
+
+        game = _placement_game()
+        for action in game["states"][0]["actions"]:
+            action.pop("wins")
+        samples = expand_placement_games([game], MINI_2P)
+
+        torch.testing.assert_close(samples[0][1], torch.tensor([0.5, 0.5]))
 
 
 class TestPlacementDataset:
@@ -554,5 +541,5 @@ class TestPlacementDataset:
         tokens, values, policies, masks = next(iter(loader))
 
         assert tokens.shape == (2, MINI_2P.placement_token_size)
-        assert values.shape == (2,)
+        assert values.shape == (2, MINI_2P.player_count)
         assert policies.shape == masks.shape == (2, MINI_2P.action_vocab_size)

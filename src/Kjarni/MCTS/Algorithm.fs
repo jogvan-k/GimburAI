@@ -492,6 +492,17 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
     priorStats.priorActionsPerDepth <- Dictionary<int, int>()
     priorStats.priorInferencesPerDepth <- Dictionary<int, int>()
 
+    let normalizeValueEstimates playerCount (values: float[]) =
+        if values.Length <> playerCount
+           || values |> Array.exists (fun value -> not (Double.IsFinite(value)) || value < 0.) then
+            None
+        else
+            let total = Array.sum values
+            if not (Double.IsFinite(total)) || total <= 0. then
+                None
+            else
+                Some (values |> Array.map (fun value -> value / total))
+
     /// Fire a prior request for the given node (non-blocking).
     /// Skips if the node already has priors or is already registered
     /// (pending response from an earlier request in this search).
@@ -544,8 +555,9 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                             priorStats.priorActionsApplied <- priorStats.priorActionsApplied + resp.Priors.Length
                         if resp.DensePriors.Length > 0 then
                             node.DensePriors <- Some resp.DensePriors
-                        if System.Double.IsFinite(resp.ValueEstimate) then
-                            node.ValueEstimate <- resp.ValueEstimate
+                        match normalizeValueEstimates node.State.NumberOfPlayers resp.ValueEstimates with
+                        | Some values -> node.ValueEstimates <- Some values
+                        | None -> ()
                         priorStats.priorNodesApplied <- priorStats.priorNodesApplied + 1
                         // Remove from registries once applied
                         nodeReg.Remove(resp.NodeId) |> ignore

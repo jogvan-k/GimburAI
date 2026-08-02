@@ -62,7 +62,7 @@ type MockPriorClient() =
 
     /// Schedule a response to be returned on the next CollectPriors call.
     member _.EnqueueResponse(nodeId: int64, winProbs: float[]) =
-        _responses.Enqueue(PriorResponse(nodeId, winProbs, System.Double.NaN))
+        _responses.Enqueue(PriorResponse(nodeId, winProbs, Array.empty))
 
     /// Whether Flush was called at least once.
     member _.WasFlushed = _flushed
@@ -101,7 +101,7 @@ type AutoRespondPriorClient(winProbFn: ICoreState[] -> float[]) =
         member _.RequestPrior(nodeId, parentState, states, actingPlayer, depth) =
             _requests.Add((nodeId, parentState, states, actingPlayer, depth))
             let winProbs = winProbFn states
-            _responses.Enqueue(PriorResponse(nodeId, winProbs, System.Double.NaN))
+            _responses.Enqueue(PriorResponse(nodeId, winProbs, Array.empty))
             states.Length
 
         member _.CollectPriors(knownNodeIds: IReadOnlySet<int64>) =
@@ -123,7 +123,23 @@ type DenseRespondPriorClient(densePriors: float[]) =
 
         member _.RequestPrior(nodeId, _parentState, states, _actingPlayer, _depth) =
             _responses.Enqueue(
-                PriorResponse(nodeId, Array.create states.Length 1., Double.NaN, densePriors))
+                PriorResponse(nodeId, Array.create states.Length 1., Array.empty, densePriors))
+            states.Length
+
+        member _.CollectPriors(knownNodeIds: IReadOnlySet<int64>) =
+            _responses |> Seq.filter (fun r -> knownNodeIds.Contains(r.NodeId)) |> Seq.toArray
+
+        member _.Flush(_knownNodeIds: IReadOnlySet<int64>) =
+            _responses.Clear()
+
+type ValueRespondPriorClient(valueEstimates: float[]) =
+    let _responses = Queue<PriorResponse>()
+
+    interface IPriorClient with
+        member _.ShouldRequestPrior(_parentState) = true
+
+        member _.RequestPrior(nodeId, _parentState, states, _actingPlayer, _depth) =
+            _responses.Enqueue(PriorResponse(nodeId, Array.create states.Length 1., valueEstimates))
             states.Length
 
         member _.CollectPriors(knownNodeIds: IReadOnlySet<int64>) =
@@ -579,6 +595,55 @@ type PriorSearchIntegrationTests() =
         mctsRoot.DensePriors |> should equal (Some dense)
 
     [<Test>]
+    member _.SearchWithValueResponse_NormalizesAndStoresPerPlayerValues() =
+        let rootNode =
+            node_builder(p1, 0, 0, 0)
+                .addChildren([
+                    node_builder(p2, 1, 0, 10, node_builder(p1, 2, 0, 20))
+                    node_builder(p2, 1, 0, 11, node_builder(p1, 2, 0, 21))
+                ])
+                .build()
+        let mctsRoot = MCTSState(rootNode :> ICoreState)
+        let client = ValueRespondPriorClient([| 1.; 3. |])
+        let mcts =
+            MonteCarloTreeSearch(
+                { MCTSConfig.Default with
+                    MaxSimulations = 2
+                    PriorClient = Some (client :> IPriorClient) })
+
+        mcts.RunSimulation(mctsRoot) |> ignore
+
+        mctsRoot.ValueEstimates |> should equal (Some [| 0.25; 0.75 |])
+
+    [<TestCaseSource("InvalidValueEstimates")>]
+    member _.SearchWithInvalidValueResponse_RejectsValues(valueEstimates: float[]) =
+        let rootNode =
+            node_builder(p1, 0, 0, 0)
+                .addChildren([
+                    node_builder(p2, 1, 0, 10, node_builder(p1, 2, 0, 20))
+                    node_builder(p2, 1, 0, 11, node_builder(p1, 2, 0, 21))
+                ])
+                .build()
+        let mctsRoot = MCTSState(rootNode :> ICoreState)
+        let client = ValueRespondPriorClient(valueEstimates)
+        let mcts =
+            MonteCarloTreeSearch(
+                { MCTSConfig.Default with
+                    MaxSimulations = 2
+                    PriorClient = Some (client :> IPriorClient) })
+
+        mcts.RunSimulation(mctsRoot) |> ignore
+
+        mctsRoot.ValueEstimates |> should equal None
+
+    static member InvalidValueEstimates =
+        [| [| 1. |]
+           [| 0.; 0. |]
+           [| -1.; 2. |]
+           [| Double.NaN; 1. |]
+           [| Double.PositiveInfinity; 1. |] |]
+
+    [<Test>]
     member _.SearchWithoutPriorClient_PriorStatsAreZero() =
         let rootNode = node_builder(p1, 0, 0, 0, node_builder(p2, 1, 0, 10)).build()
         let mctsRoot = MCTSState(rootNode :> ICoreState)
@@ -682,3 +747,12 @@ type MCTSStatePriorsTests() =
         s.Priors <- Some [| 0.5; 0.5 |]
         s.Priors <- None
         s.Priors |> should equal None
+
+    [<Test>]
+    member _.ValueEstimates_DefaultToNoneAndStorePerPlayerValues() =
+        let s = MCTSState(node(p1, 0, 0, 0))
+        s.ValueEstimates |> should equal None
+
+        s.ValueEstimates <- Some [| 0.25; 0.75 |]
+
+        s.ValueEstimates |> should equal (Some [| 0.25; 0.75 |])

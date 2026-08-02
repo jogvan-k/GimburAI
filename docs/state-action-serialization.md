@@ -7,7 +7,7 @@ Two neural network models consume these serializations:
 | Model | Input | Output | Used during |
 |-------|-------|--------|-------------|
 | **GimburStateEvaluator** | Game state serialization (full) | Per-player win probability | Normal play (after initial placement) |
-| **Placement model (`placement_state_v2`)** | Placement phase state only | Value logits, optionally dense policy logits | Initial placement phase |
+| **Placement model (`placement_state_v3`)** | Placement phase state only | Per-player value logits, optionally dense policy logits | Initial placement phase |
 
 ## Encoding Overview
 
@@ -375,7 +375,7 @@ The rotation is implemented in `python/gimbur_nn/tokenizer.py` as `rotate_player
 
 # Part II — Placement Phase State Serialization
 
-*Consumed as the complete input to the state-only `placement_state_v2` model during initial placement. Legal actions are not appended to the input.*
+*Consumed as the complete input to the state-only `placement_state_v3` model during initial placement. Legal actions are not appended to the input.*
 
 ## Placement Phase Layout
 
@@ -499,7 +499,7 @@ Each action is serialized as a human-readable string that the placement tokenize
 
 For example: `3S`, `12NW`, `53NE`.
 
-The tokenizer maintains a fixed vocabulary of all topology-valid `(vertex, direction)` combinations for a map size. The index selects one element of the dense policy vector; there is no action embedding in `placement_state_v2`.
+The tokenizer maintains a fixed vocabulary of all topology-valid `(vertex, direction)` combinations for a map size. The index selects one element of the dense policy vector; there is no action embedding in `placement_state_v3`.
 
 ### Vertex Index
 

@@ -112,7 +112,7 @@ The goal is to train a neural network that evaluates board positions (state to w
 - [x] Transformer architecture: serialized state tokens to win probability (scalar 0-1)
 - [x] Training loop, validation, metrics (MSE, win/loss prediction accuracy)
 - [x] Serve model using python endpoint
-- [x] `placement_state_v2`: state-only placement encoder with value-only or combined value/policy heads
+- [x] `placement_state_v3`: state-only placement encoder with per-player value and optional dense policy heads
 
 #### 3c: Self-Play Loop (AlphaZero-style)
 
@@ -321,9 +321,9 @@ Endpoints:
 | `POST` | `/state/prior-collect`, `/placement/prior-collect` | Collect completed prior results |
 | `POST` | `/state/prior-flush`, `/placement/prior-flush` | Clear the corresponding server queue |
 
-The `placement_state_v2` model accepts placement states only. A value-only model emits raw value logits of shape `[B,128]`; a combined model also emits raw policy logits of shape `[B,A]`, where `A` is 60, 82, or 144 for mini, small, or standard maps. The placement tokenizer's action vocabulary defines policy output indices only; actions are not model inputs. Training masks policy loss with the exported legal-action mask. `/placement/predict` accepts `{"states": ["..."]}`, applies softmax, and returns `value_probabilities` plus optional full-vocabulary `policy_probabilities`; C# remains authoritative for legality and masks and normalizes those probabilities over legal actions.
+The `placement_state_v3` model accepts placement states only. Its value head emits raw logits `[B,N]`, where `N` is the configured player count; combined models also emit policy logits `[B,A]`, where `A` is 60, 82, or 144 for mini, small, or standard maps. Softmax over the value logits gives one normalized win probability per player. The placement tokenizer's action vocabulary defines policy output indices only; actions are not model inputs. Training uses soft-target cross entropy for value and masks policy loss with the exported legal-action mask. `/placement/predict` returns `player_win_probabilities` plus optional full-vocabulary `policy_probabilities`; C# remains authoritative for legality.
 
-Placement checkpoints use `checkpoint_version: 2` and `architecture: "placement_state_v2"`. Older action-conditioned placement checkpoints are incompatible and must be retrained.
+State and placement checkpoints use version 3 architectures `state_player_value_v1` and `placement_state_v3`. Older bucket-value checkpoints are incompatible and must be retrained.
 
 ### End-to-End Workflow (Manual)
 

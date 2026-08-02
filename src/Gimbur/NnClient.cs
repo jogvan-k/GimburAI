@@ -7,17 +7,12 @@ namespace Gimbur;
 /// <summary>
 /// HTTP client for the Python GimburNet inference server.
 /// Sends serialized game state strings to <c>/state/predict</c> and returns
-/// per-state win probability distributions (128 buckets).
+/// per-state player win probability distributions.
 /// Placement requests go to <c>/placement/predict</c>.
 /// </summary>
 public sealed class NnClient : IDisposable
 {
     private readonly HttpClient _http;
-
-    /// <summary>
-    /// Number of buckets in the model's output distribution.
-    /// </summary>
-    public const int BucketCount = 128;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -32,11 +27,11 @@ public sealed class NnClient : IDisposable
 
     /// <summary>
     /// Sends one or more serialized game states to the inference server and
-    /// returns the predicted probability distributions.
+    /// returns the predicted per-player win distributions.
     /// </summary>
     /// <returns>
     /// An array of float arrays, one per input state.  Each inner array has
-    /// <see cref="BucketCount"/> elements summing to ~1.0.
+    /// one element per player, summing to approximately 1.0.
     /// </returns>
     public async Task<float[][]> PredictAsync(IReadOnlyList<string> compactStates)
     {
@@ -44,7 +39,8 @@ public sealed class NnClient : IDisposable
         using var response = await SendWithRetryAsync(
             () => _http.PostAsJsonAsync("state/predict", request, JsonOptions));
         var result = await response.Content.ReadFromJsonAsync<PredictResponse>(JsonOptions);
-        return result?.Probabilities ?? [];
+        return NormalizeDistributions(
+            result?.PlayerWinProbabilities ?? [], compactStates.Count);
     }
 
     /// <summary>
@@ -90,7 +86,7 @@ public sealed class NnClient : IDisposable
 
     /// <summary>
     /// Sends compact placement states to <c>/placement/predict</c> and returns
-    /// value buckets plus one dense policy over the full action vocabulary.
+    /// player values plus one dense policy over the full action vocabulary.
     /// </summary>
     /// <param name="compactStates">Compact serialized placement phase states.</param>
     public async Task<PlacementPrediction> PredictPlacementAsync(
@@ -101,30 +97,42 @@ public sealed class NnClient : IDisposable
             () => _http.PostAsJsonAsync("placement/predict", request, JsonOptions));
         var result = await response.Content.ReadFromJsonAsync<PredictPlacementResponse>(JsonOptions);
         return new PlacementPrediction(
-            result?.ValueProbabilities ?? [],
+            NormalizeDistributions(
+                result?.PlayerWinProbabilities ?? [], compactStates.Count),
             result?.PolicyProbabilities ?? []);
     }
 
     public sealed record PlacementPrediction(
-        float[][] ValueProbabilities,
+        float[][] PlayerWinProbabilities,
         float[][] PolicyProbabilities);
 
-
-    /// <summary>
-    /// Converts a 128-bucket probability distribution into a single expected
-    /// win probability in [0, 1].  Bucket centres are evenly spaced:
-    /// centre(i) = (i + 0.5) / BucketCount.
-    /// </summary>
-    public static float ExpectedWinProbability(float[] buckets)
+    private static float[][] NormalizeDistributions(float[][] distributions, int expectedCount)
     {
-        var expected = 0.0f;
-        for (var i = 0; i < buckets.Length; i++)
+        if (distributions.Length != expectedCount)
+            throw new InvalidDataException("NN server returned the wrong number of player value distributions.");
+
+        var playerCount = distributions.FirstOrDefault()?.Length ?? 0;
+        foreach (var values in distributions)
         {
-            var centre = (i + 0.5f) / BucketCount;
-            expected += centre * buckets[i];
+            if (values.Length == 0 || values.Length != playerCount)
+                throw new InvalidDataException("NN server returned inconsistent player value distribution lengths.");
+
+            var total = 0.0f;
+            foreach (var value in values)
+            {
+                if (!float.IsFinite(value) || value < 0)
+                    throw new InvalidDataException("NN server returned an invalid player value distribution.");
+                total += value;
+            }
+
+            if (!float.IsFinite(total) || total <= 0)
+                throw new InvalidDataException("NN server returned a zero-mass player value distribution.");
+
+            for (var i = 0; i < values.Length; i++)
+                values[i] /= total;
         }
 
-        return expected;
+        return distributions;
     }
 
     /// <summary>
@@ -219,7 +227,8 @@ public sealed class NnClient : IDisposable
 
     private sealed class PredictResponse
     {
-        public float[][] Probabilities { get; init; } = [];
+        [JsonPropertyName("player_win_probabilities")]
+        public float[][] PlayerWinProbabilities { get; init; } = [];
     }
 
     private sealed class PredictPlayerRequest
@@ -241,8 +250,8 @@ public sealed class NnClient : IDisposable
 
     private sealed class PredictPlacementResponse
     {
-        [JsonPropertyName("value_probabilities")]
-        public float[][] ValueProbabilities { get; init; } = [];
+        [JsonPropertyName("player_win_probabilities")]
+        public float[][] PlayerWinProbabilities { get; init; } = [];
 
         [JsonPropertyName("policy_probabilities")]
         public float[][] PolicyProbabilities { get; init; } = [];

@@ -4,7 +4,7 @@
   "gameConfig": "mini_2p",
   "modelConfig": "small",
   // Model type: "state", "placement", or "combined" (placement then state).
-  // Placement uses the state-only placement_state_v2 architecture.
+  // Placement uses the state-only placement_state_v3 architecture.
   "modelType": "placement",
 
   // Omit "seed" for non-reproducible runs, or set for reproducibility.
@@ -45,7 +45,7 @@
     "testSplit": 0.0,
     "logInterval": 50,
     // Placement models support "value" or "combined". Combined emits value
-    // [B,128] and dense policy [B,A] logits and trains policy with legal masks.
+    // [B,N] per-player value and dense policy [B,A] logits.
     "outputMode": "combined",
     "target": "combined",
     "valueLossWeight": 1.0,

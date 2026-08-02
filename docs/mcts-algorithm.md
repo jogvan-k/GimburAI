@@ -194,7 +194,7 @@ details.
 After expansion, if a prior client is configured, the search loop enqueues an
 asynchronous prior request for the newly expanded node. Full-state value models
 evaluate serialized action-result states. The placement client instead sends one
-placement state to the state-only `placement_state_v2` model and receives a dense
+placement state to the state-only `placement_state_v3` model and receives a dense
 full-vocabulary policy plus an optional value estimate.
 
 - **Win-rate prior** (legacy): each score is the predicted win probability of
@@ -688,7 +688,7 @@ the model's composite settlement-road distribution.
 - `priors` — dense full-vocabulary placement policy probabilities. C# masks and
   normalizes them over currently legal composites. The abbreviated example has
   four entries; actual widths are 60, 82, or 144.
-- `value_estimate` — scalar expected value from the 128-bucket value head.
+- `player_win_probabilities` — normalized per-player values from the value head.
 
 ### Server Endpoints
 

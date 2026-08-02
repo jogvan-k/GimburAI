@@ -66,8 +66,6 @@ class TrainConfig:
     test_split: float = 0.0
     log_interval: int = 50
     checkpoint_dir: bool = True
-    loss: str = "ordinal"
-    loss_sigma: float = 2.0
     resume_from_previous: bool = True
     replay_generations: int = 3
     target: str = "winrate"
@@ -1002,8 +1000,7 @@ def _step_train(
 
     replay_start = max(0, gen - max(1, cfg.train.replay_generations) + 1)
     data_paths = [
-        _data_path(cfg, replay_gen, model_type)
-        for replay_gen in range(replay_start, gen + 1)
+        _data_path(cfg, replay_gen, model_type) for replay_gen in range(replay_start, gen + 1)
     ]
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1038,8 +1035,6 @@ def _step_train(
         "valSplit": tr.val_split,
         "testSplit": tr.test_split,
         "logInterval": tr.log_interval,
-        "loss": tr.loss,
-        "lossSigma": tr.loss_sigma,
         "target": target,
         "outputMode": output_mode,
         "advantage": advantage,

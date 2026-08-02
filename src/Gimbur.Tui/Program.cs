@@ -488,7 +488,6 @@ internal static class Program
 
         // Collect all resulting states for batch prediction.
         var allStates = new List<string>();
-        var allPlayers = new List<int>();
         var descriptors = new List<(int ActionIndex, int StartIndex, int Count, int[]? Weights)>();
 
         for (var i = 0; i < coreActions.Length; i++)
@@ -501,7 +500,6 @@ internal static class Program
                 var resultState = (CatanState)det.State();
                 var idx = allStates.Count;
                 allStates.Add(resultState.SerializeCompact());
-                allPlayers.Add(actingPlayer);
                 descriptors.Add((i, idx, 1, null));
             }
             else if (coreAction.IsStochastic)
@@ -514,13 +512,12 @@ internal static class Program
                 {
                     weights[j] = outcomes[j].Item1;
                     allStates.Add(((CatanState)outcomes[j].Item2).SerializeCompact());
-                    allPlayers.Add(actingPlayer);
                 }
                 descriptors.Add((i, idx, outcomes.Length, weights));
             }
         }
 
-        var winProbs = _nnClient!.PredictPlayerAsync(allStates, allPlayers).GetAwaiter().GetResult();
+        var playerValues = _nnClient!.PredictAsync(allStates).GetAwaiter().GetResult();
 
         var bestActionIndex = 0;
         var bestScore = float.NegativeInfinity;
@@ -530,7 +527,7 @@ internal static class Program
             float score;
             if (desc.Weights is null)
             {
-                score = winProbs[desc.StartIndex];
+                score = playerValues[desc.StartIndex][actingPlayer - 1];
             }
             else
             {
@@ -540,7 +537,7 @@ internal static class Program
                 {
                     var w = desc.Weights[j];
                     totalWeight += w;
-                    weightedSum += w * winProbs[desc.StartIndex + j];
+                    weightedSum += w * playerValues[desc.StartIndex + j][actingPlayer - 1];
                 }
                 score = totalWeight > 0 ? weightedSum / totalWeight : 0;
             }
@@ -699,19 +696,19 @@ internal static class Program
     }
 
     /// <summary>
-    /// Queries the NN server for the current state's P1 win probability.
+    /// Queries the NN server for the current player's win probability.
     /// </summary>
     private static float ComputeCurrentStateWinRate(CatanState state)
     {
-        return _nnClient!.PredictPlayerSingleAsync(
-            state.SerializeCompact(), state.CurrentPlayer).GetAwaiter().GetResult();
+        var playerValues = _nnClient!.PredictSingleAsync(
+            state.SerializeCompact()).GetAwaiter().GetResult();
+        return playerValues[state.CurrentPlayer - 1];
     }
 
     /// <summary>
     /// Evaluates all actions via the NN server and returns a dictionary
     /// mapping each <see cref="CatanAction"/> to its expected win rate for
-    /// the current player.  The server rotates each state so that the
-    /// current player becomes player 1 before inference.
+    /// the current player.
     /// For stochastic actions the expected value across outcomes is used.
     /// </summary>
     private static Dictionary<CatanAction, float> ComputeActionWinRates(
@@ -720,7 +717,6 @@ internal static class Program
     {
         var actingPlayer = state.CurrentPlayer;
         var allStates = new List<string>();
-        var allPlayers = new List<int>();
         var descriptors = new List<(CatanAction Action, int StartIndex, int Count, int[]? Weights)>();
 
         foreach (var action in actions)
@@ -730,7 +726,6 @@ internal static class Program
                 var resultState = (CatanState)det.State();
                 var idx = allStates.Count;
                 allStates.Add(resultState.SerializeCompact());
-                allPlayers.Add(actingPlayer);
                 descriptors.Add((action, idx, 1, null));
             }
             else if (action is CatanStochasticAction stoch)
@@ -742,7 +737,6 @@ internal static class Program
                 {
                     weights[j] = outcomes[j].Item1;
                     allStates.Add(((CatanState)outcomes[j].Item2).SerializeCompact());
-                    allPlayers.Add(actingPlayer);
                 }
                 descriptors.Add((action, idx, outcomes.Length, weights));
             }
@@ -753,7 +747,7 @@ internal static class Program
             return new Dictionary<CatanAction, float>();
         }
 
-        var winProbs = _nnClient!.PredictPlayerAsync(allStates, allPlayers).GetAwaiter().GetResult();
+        var playerValues = _nnClient!.PredictAsync(allStates).GetAwaiter().GetResult();
 
         var result = new Dictionary<CatanAction, float>();
         foreach (var desc in descriptors)
@@ -761,7 +755,7 @@ internal static class Program
             float score;
             if (desc.Weights is null)
             {
-                score = winProbs[desc.StartIndex];
+                score = playerValues[desc.StartIndex][actingPlayer - 1];
             }
             else
             {
@@ -771,7 +765,7 @@ internal static class Program
                 {
                     var w = desc.Weights[j];
                     totalWeight += w;
-                    weightedSum += w * winProbs[desc.StartIndex + j];
+                    weightedSum += w * playerValues[desc.StartIndex + j][actingPlayer - 1];
                 }
                 score = totalWeight > 0 ? weightedSum / totalWeight : 0;
             }

@@ -11,7 +11,20 @@ from gimbur_nn.loss_config import (
     LossConfig,
     build_loss_fn,
     masked_soft_target_cross_entropy,
+    soft_target_cross_entropy,
 )
+
+
+def test_soft_target_cross_entropy_matches_manual_result() -> None:
+    logits = torch.tensor([[2.0, -1.0]], requires_grad=True)
+    targets = torch.tensor([[0.75, 0.25]])
+
+    loss = soft_target_cross_entropy(logits, targets)
+    expected = -(targets * torch.log_softmax(logits, dim=-1)).sum()
+
+    assert loss.item() == pytest.approx(expected.item())
+    loss.backward()
+    assert logits.grad is not None
 
 
 def test_masked_soft_target_cross_entropy_ignores_illegal_logits() -> None:
@@ -26,6 +39,7 @@ def test_masked_soft_target_cross_entropy_ignores_illegal_logits() -> None:
     loss.backward()
     assert logits.grad is not None
     assert logits.grad[0, 2] == 0
+
 
 # ---------------------------------------------------------------------------
 # LossConfig defaults

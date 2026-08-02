@@ -92,11 +92,11 @@ maps them to Python `snake_case` internally.
 
 ## Placement Architecture
 
-Placement checkpoints use `checkpoint_version: 2` and `architecture: "placement_state_v2"`. The model input is only the serialized placement state; the tokenizer action vocabulary supplies dense policy output indices, not input tokens. Placement models support a value-only head or combined heads: value logits are `[B,128]`, and combined policy logits are `[B,A]` with `A=60/82/144` for mini/small/standard.
+Placement checkpoints use `checkpoint_version: 3` and `architecture: "placement_state_v3"`; state checkpoints use `architecture: "state_player_value_v1"`. Value heads emit `[B,N]` logits for `N` configured players and train with soft-target cross entropy. Player relabeling rotates both serialized ownership and value-vector slots; geometric board symmetry leaves value targets unchanged and permutes placement policy targets. Combined placement policy logits remain `[B,A]` with `A=60/82/144` for mini/small/standard.
 
 The model emits raw logits. Combined training constructs a legal mask from every exported legal composite action and applies it to policy loss. Policy targets must come from standard shared-root MCTS visit shares; `simulationsPerAction` rollout counts are independent evaluation budgets and are unsuitable. Serving softmaxes the full vocabulary, while C# remains authoritative for legality and masks and normalizes policy probabilities before MCTS use.
 
-Old action-conditioned placement checkpoints do not match this architecture and cannot be resumed or served; retrain them as version 2 checkpoints.
+Old action-conditioned and bucket-value checkpoints cannot be resumed or served; retrain them as version 3 checkpoints.
 
 `summary.json` and `progress.png` are refreshed after every individual benchmark result, so partial generation progress is visible while later benchmarks are still running.
 
