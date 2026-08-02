@@ -143,6 +143,8 @@ internal record SimulationOptions
 internal record StateRecord
 {
     public required int PlayerTurn { get; init; }
+    public required int TurnNumber { get; init; }
+    public required string Stage { get; init; }
     public required string SerializedState { get; init; }
     public int Simulations { get; init; }
     public int ElapsedMs { get; init; }
@@ -362,6 +364,7 @@ internal record PlacementGameResult
     public required int Seed { get; init; }
     public required string Map { get; init; }
     public required int Players { get; init; }
+    public required int Winner { get; init; }
     public required int SearchTimeMs { get; init; }
     public required int MaxSimulations { get; init; }
     public required int MaxRolloutDepth { get; init; }
@@ -816,6 +819,8 @@ internal class SimulationRunner
         return new StateRecord
         {
             PlayerTurn = state.CurrentPlayer,
+            TurnNumber = state.TurnNumber,
+            Stage = StateToken.EncodeTurnStage(state.Stage).ToString(),
             SerializedState = serialized,
             Simulations = logInfo.simulations,
             ElapsedMs = (int)logInfo.elapsedTime.TotalMilliseconds,
@@ -1302,6 +1307,19 @@ internal class SimulationRunner
             if (totalActions >= maxTotalActions) break;
         }
 
+        // Placement records stop at the first normal-play state. Continue with
+        // seeded random legal play only to provide the final outcome value target.
+        while (state.WinnerPlayer == 0
+               && state.TurnNumber > 0
+               && totalActions < maxTotalActions)
+        {
+            var actions = state.Actions();
+            if (actions.Length == 0) break;
+            var action = actions[rng.Next(actions.Length)];
+            state = (CatanState)UnwrapCoreAction(action).DoCoreAction();
+            totalActions++;
+        }
+
         // Aggregate per-depth prior stats across all MCTS decisions.
         Dictionary<int, int>? priorActionsPerDepth = null;
         Dictionary<int, int>? priorInferencesPerDepth = null;
@@ -1332,6 +1350,7 @@ internal class SimulationRunner
             Seed = gameSeed,
             Map = _options.MapConfig ?? "standard",
             Players = playerCount,
+            Winner = state.WinnerPlayer,
             SearchTimeMs = _options.SearchTimeMs,
             MaxSimulations = _options.MaxSimulations,
             MaxRolloutDepth = _options.MaxRolloutDepth,
@@ -1532,7 +1551,7 @@ internal class SimulationRunner
     /// Builds the anonymous object representing a game result for JSON serialization.
     /// Shared between JSONL (compact) and JSON (pretty) export formats.
     /// </summary>
-    private static object BuildGameJsonObject(
+    internal static object BuildGameJsonObject(
         GameResult game,
         ImmutableArray<SymmetryPermutation> symmetryPerms)
     {
@@ -1563,6 +1582,8 @@ internal class SimulationRunner
             states = game.States.Select(s => new
             {
                 s.PlayerTurn,
+                s.TurnNumber,
+                s.Stage,
                 s.SerializedState,
                 s.Simulations,
                 s.ElapsedMs,
@@ -1590,7 +1611,7 @@ internal class SimulationRunner
     /// <summary>
     /// Builds the anonymous object representing a placement game result for JSON serialization.
     /// </summary>
-    private static object BuildPlacementGameJsonObject(
+    internal static object BuildPlacementGameJsonObject(
         PlacementGameResult game,
         ImmutableArray<SymmetryPermutation> symmetryPerms)
     {
@@ -1611,6 +1632,7 @@ internal class SimulationRunner
             game.Seed,
             game.Map,
             game.Players,
+            game.Winner,
             exportType = "initialPlacement",
             constraints = new
             {

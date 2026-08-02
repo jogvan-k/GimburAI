@@ -87,12 +87,19 @@ maps them to Python `snake_case` internally.
 | `logInterval` | int   | `50`    | Print training stats every N batches. |
 | `outputMode`  | string | `"value"` | Placement head topology: `value` or `combined`. State pipelines use `value`. |
 | `target`      | string | `"winrate"` | Placement data target; combined output uses dense visit-share policy targets. |
+| `mctsValueWeight` | float | `0.5` | Weight of normalized MCTS wins in value targets; the remainder weights the final one-hot winner. |
+| `earlyGameTurnLimit` | int | `10` | Full-state only: retain every state through this turn. |
+| `maxLateGameStatesPerGame` | int | `20` | Full-state only: deterministic per-game cap for later states. |
 | `valueLossWeight` | float | `1.0` | Value-loss weight for combined placement training. |
 | `policyLossWeight` | float | `1.0` | Masked policy-loss weight for combined placement training. |
 
 ## Placement Architecture
 
 Placement checkpoints use `checkpoint_version: 3` and `architecture: "placement_state_v3"`; state checkpoints use `architecture: "state_player_value_v1"`. Value heads emit `[B,N]` logits for `N` configured players and train with soft-target cross entropy. Player relabeling rotates both serialized ownership and value-vector slots; geometric board symmetry leaves value targets unchanged and permutes placement policy targets. Combined placement policy logits remain `[B,A]` with `A=60/82/144` for mini/small/standard.
+
+Value labels blend normalized per-player MCTS wins with the game's one-hot final winner using `mctsValueWeight`. If either source is invalid or has no positive evidence, the available source is used alone; samples with neither source are skipped rather than assigned a uniform label. Placement MCTS values are rollout-weighted across legal composite actions before blending.
+
+Full-state sampling runs independently inside each dataset after the game-level train/validation/test split and before symmetry or player rotation. It always retains the exact first normal-play state (`turnNumber: 1`, `stage: "r"`), retains every state through `earlyGameTurnLimit`, and chooses at most `maxLateGameStatesPerGame` later states with a deterministic RNG seeded by the exported game seed. Placement datasets do not use this sampling policy.
 
 The model emits raw logits. Combined training constructs a legal mask from every exported legal composite action and applies it to policy loss. Policy targets must come from standard shared-root MCTS visit shares; `simulationsPerAction` rollout counts are independent evaluation budgets and are unsuitable. Serving softmaxes the full vocabulary, while C# remains authoritative for legality and masks and normalizes policy probabilities before MCTS use.
 

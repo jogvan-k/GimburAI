@@ -66,6 +66,8 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
 ```json
 {
   "playerTurn": 1,
+  "turnNumber": 1,
+  "stage": "r",
   "serializedState": "4|-t|__|._._._._._._v-._._._._v+._._._._._._._._._|_____-_______+________________|21010/00130|0/0|00000/00000",
   "simulations": 5000,
   "elapsedMs": 1000,
@@ -85,6 +87,8 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
 | Field | Type | Description |
 |-------|------|-------------|
 | `playerTurn` | int | 1-based player index of the acting player. |
+| `turnNumber` | int | Current game turn number. Initial placement is turn 0; normal play starts at turn 1. |
+| `stage` | string | Encoded turn stage. `r` is `PreRoll`; `turnNumber: 1` with `stage: "r"` identifies the exact post-placement state. |
 | `serializedState` | string | State-only serialization (8 pipe-delimited sections: robber through devCards). See [state-action-serialization.md](state-action-serialization.md) Part I sections 3-10. |
 | `simulations` | int | Total MCTS rollouts performed for this decision. |
 | `elapsedMs` | int | Wall-clock time spent on MCTS search (milliseconds). |
@@ -96,9 +100,10 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
 | `priorStatesEvaluated` | int | Number of individual states evaluated by the NN server. |
 | `permutations` | string[] | `serializedState` under each non-trivial symmetry permutation. Same order as `board.permutations`. |
 
-State-value training pairs each serialized MCTS root with its per-player search win
-probabilities, computed as `wins[player] / sum(wins)`. This retains uncertainty from
-the stochastic game instead of collapsing a state to the eventual game's 0/1 result.
+State-value training blends each root's normalized per-player MCTS wins with the
+one-hot final game winner. The blend weight is configurable as `mctsValueWeight`.
+If one target is unavailable, the other is used alone; if both are unavailable,
+the state is skipped.
 Candidate result states are not exported or trained unless they naturally become a
 later searched root.
 
@@ -126,7 +131,7 @@ Board symmetry permutations rearrange position-dependent data (tile indices, ver
 
 ## InitialPlacement Export Schema
 
-*Produces training data for the state-only `placement_state_v2` model. Records every legal composite settlement-road action, including legal composites with zero rollouts.*
+*Produces training data for the state-only `placement_state_v3` model. Records every legal composite settlement-road action, including legal composites with zero rollouts.*
 
 When `--export-type InitialPlacement` is specified, the game loop runs in placement-only mode. MCTS search is performed at settlement placement steps (`PlaceFirstSettlement` and `PlaceSecondSettlement`). Each MCTS root action is a `PlaceSettlementAction`, and its child state has `PlaceRoadAction` choices. The export combines these into composite actions serialized as `<vertex><direction>` strings (see [state-action-serialization.md](state-action-serialization.md) Part III).
 
@@ -139,6 +144,7 @@ Player 1 is always the player that placed the first settlement. No player rotati
   "seed": 42,
   "map": "mini",
   "players": 2,
+  "winner": 0,
   "exportType": "initialPlacement",
   "constraints": {
     "searchTimeMs": 1000,
@@ -162,13 +168,14 @@ Player 1 is always the player that placed the first settlement. No player rotati
 | `seed` | int | Deterministic random seed for this game. |
 | `map` | string | Map configuration identifier. |
 | `players` | int | Number of players. |
+| `winner` | int | 1-based final winner, or 0 if the seeded continuation does not finish. |
 | `exportType` | string | Always `"initialPlacement"`. |
 | `constraints` | object | MCTS search parameters (same structure as GameState). |
 | `board.serialized` | string | Board serialization (tiles and ports): `tiles\|ports`. |
 | `board.permutations` | string[] | Board string under each symmetry permutation. |
 | `states` | PlacementState[] | Array of placement state records, one per settlement decision. |
 
-Note: The `winner` and `turns` fields from the GameState schema are omitted since placement-only games do not run to completion.
+The `turns` field is omitted. After recording placement decisions, simulation continues with seeded random legal play solely to obtain `winner`; no post-placement states are exported. If that continuation cannot finish within the action safety limit, `winner` is 0 and training uses only the MCTS target.
 
 ### Placement State Object
 

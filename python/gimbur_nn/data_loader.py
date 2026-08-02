@@ -9,8 +9,8 @@ Each sample is a ``(token_ids, player_value_target)`` pair where:
 
 - ``token_ids`` is the tokenized compact state rotated so the target
   player occupies the player-1 slot.
-- ``player_value_target`` is a normalized MCTS win distribution, rotated
-  consistently with the serialized player identities.
+- ``player_value_target`` blends normalized MCTS wins with the final winner,
+  then rotates consistently with the serialized player identities.
 
 The train/val/test split is performed at the **game** level so that all
 samples derived from a single game belong to exactly one split.
@@ -49,15 +49,72 @@ def _compact(human_readable: str) -> str:
     return human_readable.translate(_STRIP)
 
 
-def _normalize_wins(wins: list[float], player_count: int) -> torch.Tensor:
-    """Normalize MCTS wins to a player distribution, falling back to uniform."""
+def _normalize_wins(wins: list[float], player_count: int) -> torch.Tensor | None:
+    """Normalize valid MCTS wins to a player distribution."""
     if len(wins) != player_count:
-        return torch.full((player_count,), 1.0 / player_count, dtype=torch.float32)
+        return None
     target = torch.tensor(wins, dtype=torch.float32).clamp_min(0)
     total = target.sum()
     if total <= 0:
-        return torch.full((player_count,), 1.0 / player_count, dtype=torch.float32)
+        return None
     return target / total
+
+
+def _value_target(
+    wins: list[float],
+    winner: object,
+    player_count: int,
+    mcts_value_weight: float,
+) -> torch.Tensor | None:
+    """Blend MCTS evidence and a valid 1-based terminal winner."""
+    if not 0.0 <= mcts_value_weight <= 1.0:
+        raise ValueError("mcts_value_weight must be between 0 and 1")
+
+    mcts_target = _normalize_wins(wins, player_count)
+    terminal_target = None
+    if isinstance(winner, int) and not isinstance(winner, bool) and 1 <= winner <= player_count:
+        terminal_target = torch.zeros(player_count, dtype=torch.float32)
+        terminal_target[winner - 1] = 1.0
+
+    if mcts_target is None:
+        return terminal_target
+    if terminal_target is None:
+        return mcts_target
+    return mcts_value_weight * mcts_target + (1.0 - mcts_value_weight) * terminal_target
+
+
+def _select_state_entries(
+    game: dict,
+    early_game_turn_limit: int,
+    max_late_game_states_per_game: int,
+) -> list[dict]:
+    """Select full-game states deterministically before augmentation."""
+    if early_game_turn_limit < 0:
+        raise ValueError("early_game_turn_limit must be non-negative")
+    if max_late_game_states_per_game < 0:
+        raise ValueError("max_late_game_states_per_game must be non-negative")
+
+    selected: set[int] = set()
+    late: list[int] = []
+    post_placement_index = next(
+        (
+            index
+            for index, state in enumerate(game["states"])
+            if state["turnNumber"] == 1 and state["stage"] == "r"
+        ),
+        None,
+    )
+    for index, state in enumerate(game["states"]):
+        turn_number = state["turnNumber"]
+        if turn_number <= early_game_turn_limit or index == post_placement_index:
+            selected.add(index)
+        else:
+            late.append(index)
+
+    if len(late) > max_late_game_states_per_game:
+        late = random.Random(game["seed"]).sample(late, max_late_game_states_per_game)
+    selected.update(late)
+    return [game["states"][index] for index in sorted(selected)]
 
 
 # ── Loading games ────────────────────────────────────────────────────
@@ -167,6 +224,9 @@ def expand_games(
     cfg: GameConfig,
     *,
     tokenizer: StateTokenizer | None = None,
+    mcts_value_weight: float = 0.5,
+    early_game_turn_limit: int = 10,
+    max_late_game_states_per_game: int = 20,
 ) -> list[tuple[torch.Tensor, torch.Tensor]]:
     """Expand games into player-rotated state and value-distribution samples.
 
@@ -184,7 +244,16 @@ def expand_games(
     samples: list[tuple[torch.Tensor, torch.Tensor]] = []
     n_players = cfg.player_count
     for game in games:
-        _process_game(game, cfg, n_players, samples, tokenizer)
+        _process_game(
+            game,
+            cfg,
+            n_players,
+            samples,
+            tokenizer,
+            mcts_value_weight,
+            early_game_turn_limit,
+            max_late_game_states_per_game,
+        )
     return samples
 
 
@@ -194,12 +263,18 @@ def _process_game(
     n_players: int,
     samples: list[tuple[torch.Tensor, torch.Tensor]],
     tokenizer: StateTokenizer,
+    mcts_value_weight: float,
+    early_game_turn_limit: int,
+    max_late_game_states_per_game: int,
 ) -> None:
     """Expand one game record into training samples."""
     board_serialized: str = game["board"]["serialized"]
     board_permutations: list[str] = game["board"]["permutations"]
 
-    for state_entry in game["states"]:
+    state_entries = _select_state_entries(
+        game, early_game_turn_limit, max_late_game_states_per_game
+    )
+    for state_entry in state_entries:
         wins: list[float] = state_entry.get("wins") or []
         state_serialized: str = state_entry["serializedState"]
         state_permutations: list[str] = state_entry["permutations"]
@@ -208,7 +283,9 @@ def _process_game(
         board_variants = [board_serialized, *board_permutations]
         state_variants = [state_serialized, *state_permutations]
 
-        target = _normalize_wins(wins, n_players)
+        target = _value_target(wins, game.get("winner"), n_players, mcts_value_weight)
+        if target is None:
+            continue
         for board_str, state_str in zip(board_variants, state_variants):
             # Reconstruct full human-readable form, then compact.
             full_hr = board_str + "|" + state_str
@@ -255,9 +332,20 @@ class SimulationDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         self,
         games: list[dict],
         cfg: GameConfig,
+        *,
+        mcts_value_weight: float = 0.5,
+        early_game_turn_limit: int = 10,
+        max_late_game_states_per_game: int = 20,
     ) -> None:
         tok = StateTokenizer(cfg)
-        raw = expand_games(games, cfg, tokenizer=tok)
+        raw = expand_games(
+            games,
+            cfg,
+            tokenizer=tok,
+            mcts_value_weight=mcts_value_weight,
+            early_game_turn_limit=early_game_turn_limit,
+            max_late_game_states_per_game=max_late_game_states_per_game,
+        )
         self._tokens = [t for t, _ in raw]
         self._targets = [target for _, target in raw]
 
@@ -278,6 +366,7 @@ def expand_placement_games(
     tokenizer: PlacementTokenizer | None = None,
     target: str = "winrate",
     advantage: bool = False,
+    mcts_value_weight: float = 0.5,
 ) -> list:
     """Emit one state sample per exported state and symmetry permutation.
 
@@ -291,7 +380,9 @@ def expand_placement_games(
         raise ValueError("Placement target must be 'winrate' or 'combined'.")
     samples: list = []
     for game in games:
-        _process_placement_game(game, cfg.player_count, samples, tokenizer, target)
+        _process_placement_game(
+            game, cfg.player_count, samples, tokenizer, target, mcts_value_weight
+        )
     return samples
 
 
@@ -301,6 +392,7 @@ def _process_placement_game(
     samples: list,
     tokenizer: PlacementTokenizer,
     target: str = "winrate",
+    mcts_value_weight: float = 0.5,
 ) -> None:
     """Expand one placement game into state-level value/policy samples."""
     for state_entry in game["states"]:
@@ -322,14 +414,17 @@ def _process_placement_game(
                 continue
             wins = action.get("wins", action.get("Wins", []))
             action_value = _normalize_wins(wins, player_count)
-            if len(wins) == player_count and sum(max(0.0, float(win)) for win in wins) > 0:
+            if action_value is not None:
                 weighted_value += action_value * rollout
                 value_weight += rollout
-        value_target = (
-            weighted_value / value_weight
-            if value_weight > 0
-            else torch.full((player_count,), 1.0 / player_count, dtype=torch.float32)
+        mcts_wins = (
+            (weighted_value / value_weight).tolist() if value_weight > 0 else []
         )
+        value_target = _value_target(
+            mcts_wins, game.get("winner"), player_count, mcts_value_weight
+        )
+        if value_target is None:
+            continue
 
         for variant_idx, state_str in enumerate(all_variants):
             token_ids = tokenizer.tokenize_state(_compact(state_str))
@@ -364,6 +459,7 @@ class PlacementDataset(Dataset[tuple[torch.Tensor, ...]]):
         *,
         target: str = "winrate",
         advantage: bool = False,
+        mcts_value_weight: float = 0.5,
     ) -> None:
         tok = PlacementTokenizer(cfg)
         raw = expand_placement_games(
@@ -372,6 +468,7 @@ class PlacementDataset(Dataset[tuple[torch.Tensor, ...]]):
             tokenizer=tok,
             target=target,
             advantage=advantage,
+            mcts_value_weight=mcts_value_weight,
         )
         self._combined = target == "combined"
         self._tokens = [t[0] for t in raw]

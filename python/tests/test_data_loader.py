@@ -11,6 +11,8 @@ import torch
 from gimbur_nn.data_loader import (
     SimulationDataset,
     _normalize_wins,
+    _select_state_entries,
+    _value_target,
     expand_games,
     load_games,
     load_samples,
@@ -61,10 +63,14 @@ def _make_state(
     best_action_wins: list[float] | None = None,
     wins: list[float] | None = None,
     player_turn: int = 1,
+    turn_number: int = 1,
+    stage: str = "r",
 ) -> dict:
     """Create a minimal state entry within a game."""
     return {
         "playerTurn": player_turn,
+        "turnNumber": turn_number,
+        "stage": stage,
         "serializedState": state_str,
         "simulations": 100,
         "elapsedMs": 50,
@@ -119,8 +125,57 @@ class TestNormalizeWins:
         torch.testing.assert_close(_normalize_wins([80.0, 20.0], 2), torch.tensor([0.8, 0.2]))
 
     @pytest.mark.parametrize("wins", [[], [0.0, 0.0], [1.0]])
-    def test_invalid_evidence_returns_uniform(self, wins: list[float]) -> None:
-        torch.testing.assert_close(_normalize_wins(wins, 2), torch.tensor([0.5, 0.5]))
+    def test_invalid_evidence_returns_none(self, wins: list[float]) -> None:
+        assert _normalize_wins(wins, 2) is None
+
+
+class TestValueTarget:
+    def test_blend_endpoints(self) -> None:
+        torch.testing.assert_close(_value_target([80, 20], 2, 2, 1.0), torch.tensor([0.8, 0.2]))
+        torch.testing.assert_close(_value_target([80, 20], 2, 2, 0.0), torch.tensor([0.0, 1.0]))
+
+    def test_blends_mcts_and_terminal_targets(self) -> None:
+        torch.testing.assert_close(_value_target([80, 20], 2, 2, 0.5), torch.tensor([0.4, 0.6]))
+
+    def test_uses_only_available_target(self) -> None:
+        torch.testing.assert_close(_value_target([80, 20], 0, 2, 0.5), torch.tensor([0.8, 0.2]))
+        torch.testing.assert_close(_value_target([], 2, 2, 0.5), torch.tensor([0.0, 1.0]))
+
+    def test_returns_none_without_valid_evidence(self) -> None:
+        assert _value_target([], 0, 2, 0.5) is None
+
+
+class TestControlledStateSampling:
+    @staticmethod
+    def _game(seed: int = 42) -> dict:
+        states = [
+            {"id": "placement", "turnNumber": 0, "stage": "a"},
+            {"id": "post-placement", "turnNumber": 1, "stage": "r"},
+            {"id": "later-pre-roll", "turnNumber": 1, "stage": "r"},
+            {"id": "early", "turnNumber": 2, "stage": "b"},
+            *[
+                {"id": f"late-{turn}", "turnNumber": turn, "stage": "r"}
+                for turn in range(11, 21)
+            ],
+        ]
+        return {"seed": seed, "states": states}
+
+    def test_includes_all_early_and_exact_post_placement(self) -> None:
+        selected = _select_state_entries(
+            self._game(), early_game_turn_limit=0, max_late_game_states_per_game=0
+        )
+
+        assert [state["id"] for state in selected] == ["placement", "post-placement"]
+
+    def test_late_sampling_is_bounded_and_deterministic_by_game_seed(self) -> None:
+        game = self._game()
+        first = _select_state_entries(game, 2, 3)
+        second = _select_state_entries(game, 2, 3)
+        other_seed = _select_state_entries(self._game(seed=43), 2, 3)
+
+        assert first == second
+        assert len(first) == 7
+        assert first != other_seed
 
 
 # ---------------------------------------------------------------------------
@@ -311,8 +366,8 @@ class TestLoadSamples:
         samples = load_samples(tmp_path / "test.jsonl", MINI_2P)
 
         # samples[0] is player 1 (no rotation), samples[1] is player 2.
-        torch.testing.assert_close(samples[0][1], torch.tensor([0.9, 0.1]))
-        torch.testing.assert_close(samples[1][1], torch.tensor([0.1, 0.9]))
+        torch.testing.assert_close(samples[0][1], torch.tensor([0.95, 0.05]))
+        torch.testing.assert_close(samples[1][1], torch.tensor([0.05, 0.95]))
 
     def test_player_rotation_applied(self, tmp_path: Path) -> None:
         """Token IDs should differ between player 1 and player 2 views."""
@@ -384,8 +439,8 @@ class TestExpandGames:
 
         samples = expand_games([game], MINI_2P)
 
-        torch.testing.assert_close(samples[0][1], torch.tensor([0.9, 0.1]))
-        torch.testing.assert_close(samples[1][1], torch.tensor([0.1, 0.9]))
+        torch.testing.assert_close(samples[0][1], torch.tensor([0.95, 0.05]))
+        torch.testing.assert_close(samples[1][1], torch.tensor([0.05, 0.95]))
 
     def test_geometric_symmetry_keeps_player_target(self) -> None:
         game = _simple_game([70.0, 30.0])
@@ -402,6 +457,13 @@ class TestExpandGames:
         game["winner"] = 0
 
         assert len(expand_games([game], MINI_2P)) == 2
+
+    def test_skips_state_without_mcts_or_terminal_target(self) -> None:
+        game = _simple_game()
+        game["winner"] = 0
+        game["states"][0]["wins"] = []
+
+        assert expand_games([game], MINI_2P) == []
 
     def test_expand_single_game(self) -> None:
         games = [_simple_game()]
@@ -459,6 +521,7 @@ MINI_PLACEMENT_STATE_PERM = MINI_PLACEMENT_STATE
 
 def _placement_game(*, rollouts: tuple[int, int] = (30, 70)) -> dict:
     return {
+        "winner": 1,
         "states": [
             {
                 "serializedState": MINI_PLACEMENT_STATE,
@@ -492,7 +555,7 @@ class TestExpandPlacementGames:
 
         assert len(samples) == 2
         assert samples[0][0].shape == (MINI_2P.placement_token_size,)
-        torch.testing.assert_close(samples[0][1], torch.tensor([0.41, 0.59]))
+        torch.testing.assert_close(samples[0][1], torch.tensor([0.705, 0.295]))
         torch.testing.assert_close(samples[0][1], samples[1][1])
 
     def test_combined_targets_are_dense_and_symmetry_mapped(self) -> None:
@@ -520,7 +583,7 @@ class TestExpandPlacementGames:
             == []
         )
 
-    def test_value_fallback_is_uniform(self) -> None:
+    def test_value_fallback_uses_terminal_winner(self) -> None:
         from gimbur_nn.data_loader import expand_placement_games
 
         game = _placement_game()
@@ -528,7 +591,17 @@ class TestExpandPlacementGames:
             action.pop("wins")
         samples = expand_placement_games([game], MINI_2P)
 
-        torch.testing.assert_close(samples[0][1], torch.tensor([0.5, 0.5]))
+        torch.testing.assert_close(samples[0][1], torch.tensor([1.0, 0.0]))
+
+    def test_value_only_skips_without_mcts_or_terminal_target(self) -> None:
+        from gimbur_nn.data_loader import expand_placement_games
+
+        game = _placement_game()
+        game["winner"] = 0
+        for action in game["states"][0]["actions"]:
+            action.pop("wins")
+
+        assert expand_placement_games([game], MINI_2P) == []
 
 
 class TestPlacementDataset:

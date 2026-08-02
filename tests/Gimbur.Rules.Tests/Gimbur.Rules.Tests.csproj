@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Gimbur\Gimbur.csproj" />
+    <ProjectReference Include="..\..\src\Gimbur.Cli\Gimbur.Cli.csproj" />
   </ItemGroup>
 
 </Project>
