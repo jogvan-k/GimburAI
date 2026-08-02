@@ -77,6 +77,116 @@ public class SimulationExportTests
     }
 
     [Test]
+    public void CombinedExport_UsesSharedWinnerAndBothStateArrays()
+    {
+        var game = new GameResult
+        {
+            Seed = 42,
+            Map = "mini",
+            Players = 2,
+            Winner = 2,
+            Turns = 3,
+            SearchTimeMs = 8,
+            MaxSimulations = 1,
+            MaxRolloutDepth = 1,
+            ActionRolloutLimit = 1,
+            BoardSerialized = "board",
+            States =
+            [
+                new StateRecord
+                {
+                    PlayerTurn = 1,
+                    TurnNumber = 0,
+                    Stage = "a",
+                    SerializedState = "state",
+                    Wins = [0.0, 1.0],
+                },
+            ],
+        };
+        var combined = new CombinedGameResult
+        {
+            Game = game,
+            PlacementStates =
+            [
+                new PlacementStateRecord
+                {
+                    PlayerTurn = 1,
+                    Stage = "a",
+                    SerializedState = "placement",
+                    Actions = [],
+                },
+            ],
+            PlacementSearchTimeMs = 16,
+            MainGameSearchTimeMs = 8,
+        };
+
+        var json = JsonSerializer.Serialize(
+            SimulationRunner.BuildCombinedGameJsonObject(
+                combined, ImmutableArray<SymmetryPermutation>.Empty),
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(root.GetProperty("winner").GetInt32(), Is.EqualTo(2));
+            Assert.That(root.GetProperty("states").GetArrayLength(), Is.EqualTo(1));
+            Assert.That(root.GetProperty("placementStates").GetArrayLength(), Is.EqualTo(1));
+            Assert.That(root.GetProperty("constraints").GetProperty("placementSearchTimeMs").GetInt32(), Is.EqualTo(16));
+            Assert.That(root.GetProperty("constraints").GetProperty("mainGameSearchTimeMs").GetInt32(), Is.EqualTo(8));
+        });
+    }
+
+    [Test]
+    public void CombinedExport_RoutesPlacementAndMainGamePriorsSeparately()
+    {
+        Assert.Multiple(() =>
+        {
+            Assert.That(SimulationRouting.PriorModeFor(
+                ExportType.PlacementAndState, placementPhase: true), Is.EqualTo(PriorMode.Placement));
+            Assert.That(SimulationRouting.PriorModeFor(
+                ExportType.PlacementAndState, placementPhase: false), Is.EqualTo(PriorMode.State));
+            Assert.That(SimulationRouting.PriorModeFor(
+                ExportType.GameState, placementPhase: true), Is.EqualTo(PriorMode.State));
+        });
+    }
+
+    [Test]
+    public void ActionWinData_UsesParentEdgeStatistics()
+    {
+        var state = new CatanState(GameConfig.Mini, 2, new Random(42));
+        var root = new Kjarni.MCTS.Types.MCTSState((Kjarni.ICoreState)state);
+        root.ActionStats[0].CompletedVisits = 4;
+        root.ActionStats[0].ValueSums[0] = 3;
+        root.ActionStats[0].ValueSums[1] = 1;
+
+        var (wins, rate, rollouts) = SimulationRunner.GetActionWinData(root, 0, 0);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(rollouts, Is.EqualTo(4));
+            Assert.That(rate, Is.EqualTo(0.75));
+            Assert.That(wins, Is.EqualTo(new[] { 3.0, 1.0 }));
+        });
+    }
+
+    [Test]
+    public void ActionWinData_UnvisitedEdgeHasNoTrainingTarget()
+    {
+        var state = new CatanState(GameConfig.Mini, 2, new Random(42));
+        var root = new Kjarni.MCTS.Types.MCTSState((Kjarni.ICoreState)state);
+
+        var (wins, rate, rollouts) = SimulationRunner.GetActionWinData(root, 0, 0);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(rollouts, Is.Zero);
+            Assert.That(rate, Is.Zero);
+            Assert.That(wins, Is.Empty);
+        });
+    }
+
+    [Test]
     public void EvaluationDiagnostics_AggregatesLogInfoAndSerializes()
     {
         var diagnostics = new EvaluationDiagnostics();

@@ -191,6 +191,10 @@ dotnet run --project src/Gimbur.Cli -- <command> [options]
 
 Run MCTS self-play games with optional JSONL training data export.
 
+Use `--export-type PlacementAndState` to export placement policy roots and full-game state
+roots from the same game. Combined runs default to 16000 ms placement search and 8000 ms
+main-game search; override them with `--placement-search-time` and `--main-game-search-time`.
+
 ```bash
 # Run 100 games on the mini map, export training data
 dotnet run --project src/Gimbur.Cli -- simulate \

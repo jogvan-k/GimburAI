@@ -141,7 +141,11 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
         for (var i = 0; i < actions.Length; i++)
         {
             var catanAction = UnwrapCoreAction(actions[i]);
-            var (_, winRate, rollouts) = GetChildWinData(mctsRoot.Actions[i], playerIndex);
+            var stats = mctsRoot.ActionStats[i];
+            var rollouts = stats.CompletedVisits;
+            var winRate = rollouts > 0 && playerIndex < stats.ValueSums.Length
+                ? stats.ValueSums[playerIndex] / rollouts
+                : 0.0;
             allActions.Add(new ActionInfo
             {
                 TypeTag = catanAction.TypeTag,
@@ -218,71 +222,6 @@ static string ActionName(byte tag) => tag switch
     12 => "ChooseRobberVictim",
     _ => $"Unknown({tag})",
 };
-
-/// <summary>
-/// Extracts win data from an MCTS child action node.
-/// Handles deterministic, stochastic, and terminal actions.
-/// </summary>
-static (double[] Wins, double WinRate, int Rollouts) GetChildWinData(
-    Kjarni.MCTS.Types.Action childAction, int playerIndex)
-{
-    if (childAction.IsTerminal)
-    {
-        var outcome = ((Kjarni.MCTS.Types.Action.Terminal)childAction).Item;
-        var wins = (double[])outcome.Clone();
-        var wr = playerIndex < wins.Length ? wins[playerIndex] : 0.0;
-        return (wins, wr, 0);
-    }
-
-    if (childAction.IsDeterministicAction)
-    {
-        var child = ((Kjarni.MCTS.Types.Action.DeterministicAction)childAction).Item;
-        var wins = child.WinCounts is { Length: > 0 }
-            ? (double[])child.WinCounts.Clone()
-            : Array.Empty<double>();
-        var wr = child.Rollouts > 0 && playerIndex < wins.Length
-            ? wins[playerIndex] / child.Rollouts
-            : 0.0;
-        return (wins, wr, child.Rollouts);
-    }
-
-    if (childAction.IsStochasticAction)
-    {
-        var outcomes = ((Kjarni.MCTS.Types.Action.StochasticAction)childAction).Item;
-        var totalRollouts = 0;
-        var playerCount = 0;
-        foreach (var o in outcomes)
-        {
-            totalRollouts += o.State.Rollouts;
-            if (playerCount == 0 && o.State.WinCounts is { Length: > 0 })
-                playerCount = o.State.WinCounts.Length;
-        }
-
-        if (totalRollouts == 0 || playerCount == 0)
-            return (Array.Empty<double>(), 0.0, 0);
-
-        var aggregated = new double[playerCount];
-        var totalWeight = 0;
-        foreach (var o in outcomes)
-        {
-            if (o.State.Rollouts == 0) continue;
-            totalWeight += o.ProbabilityWeight;
-            for (var i = 0; i < Math.Min(playerCount, o.State.WinCounts.Length); i++)
-                aggregated[i] += (double)o.ProbabilityWeight * o.State.WinCounts[i] / o.State.Rollouts;
-        }
-
-        if (totalWeight > 0)
-        {
-            for (var i = 0; i < aggregated.Length; i++)
-                aggregated[i] /= totalWeight;
-        }
-
-        var rate = playerIndex < aggregated.Length ? aggregated[playerIndex] : 0.0;
-        return (aggregated, rate, totalRollouts);
-    }
-
-    return (Array.Empty<double>(), 0.0, 0);
-}
 
 // --- Request/Response types ---
 

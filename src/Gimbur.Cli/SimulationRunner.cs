@@ -46,6 +46,17 @@ internal enum ExportType
     /// Implies placement-only mode.
     /// </summary>
     InitialPlacement,
+    /// <summary>Export placement policy roots and full-game states from one game.</summary>
+    PlacementAndState,
+}
+
+internal static class SimulationRouting
+{
+    public static PriorMode PriorModeFor(ExportType exportType, bool placementPhase) =>
+        exportType == ExportType.InitialPlacement
+        || exportType == ExportType.PlacementAndState && placementPhase
+            ? PriorMode.Placement
+            : PriorMode.State;
 }
 
 /// <summary>
@@ -66,6 +77,8 @@ internal record SimulationOptions
     /// MCTS search time limit in milliseconds. Defaults to 1000ms.
     /// </summary>
     public int SearchTimeMs { get; init; } = 1000;
+    public int PlacementSearchTimeMs { get; init; } = 16000;
+    public int MainGameSearchTimeMs { get; init; } = 8000;
 
     /// <summary>
     /// Maximum number of MCTS simulations per decision. Defaults to int.MaxValue (time-limited).
@@ -458,6 +471,14 @@ internal record PlacementGameResult
     public EvaluationDiagnostics EvaluationDiagnostics { get; init; } = new();
 }
 
+internal record CombinedGameResult
+{
+    public required GameResult Game { get; init; }
+    public required List<PlacementStateRecord> PlacementStates { get; init; }
+    public required int PlacementSearchTimeMs { get; init; }
+    public required int MainGameSearchTimeMs { get; init; }
+}
+
 /// <summary>
 /// Aggregate container for all game results plus timing metadata.
 /// </summary>
@@ -540,7 +561,9 @@ internal class SimulationRunner
 
         var gameResults = new ConcurrentBag<(int GameNumber, GameResult Result, TimeSpan Elapsed)>();
         var placementResults = new ConcurrentBag<(int GameNumber, PlacementGameResult Result, TimeSpan Elapsed)>();
+        var combinedResults = new ConcurrentBag<(int GameNumber, CombinedGameResult Result, TimeSpan Elapsed)>();
         var isPlacementExport = _options.ExportType == ExportType.InitialPlacement;
+        var isCombinedExport = _options.ExportType == ExportType.PlacementAndState;
 
         // Prepare export: for JSONL, open a StreamWriter; for JSON, ensure the directory exists.
         var exportFormat = _options.ExportPath is not null ? _options.ExportFormat : ExportFormat.None;
@@ -580,11 +603,10 @@ internal class SimulationRunner
 
         // Create shared PriorClient when prior evaluation is enabled.
         PriorClient? priorClient = null;
+        PriorClient? placementPriorClient = null;
         if (_options.Prior)
         {
-            var priorMode = _options.ExportType == ExportType.InitialPlacement
-                ? PriorMode.Placement
-                : PriorMode.State;
+            var priorMode = SimulationRouting.PriorModeFor(_options.ExportType, placementPhase: true);
             PlacementActionSerializer? priorActionSerializer = null;
             if (priorMode == PriorMode.Placement)
             {
@@ -592,6 +614,11 @@ internal class SimulationRunner
                 priorActionSerializer = PlacementActionSerializer.ForTopology(priorConfig.Map.Topology);
             }
             priorClient = new PriorClient(_options.NnUrl, priorMode, priorActionSerializer);
+            if (isCombinedExport)
+            {
+                placementPriorClient = priorClient;
+                priorClient = new PriorClient(_options.NnUrl, PriorMode.State);
+            }
         }
 
         try
@@ -665,7 +692,12 @@ internal class SimulationRunner
                     }
                     else
                     {
-                    var result = RunSingleGame(config, playerCount, rng, gameSeed, attemptNumber, priorClient);
+                    var combined = isCombinedExport
+                        ? RunSingleCombinedGame(config, playerCount, rng, gameSeed, attemptNumber,
+                            placementPriorClient, priorClient)
+                        : null;
+                    var result = combined?.Game
+                        ?? RunSingleGame(config, playerCount, rng, gameSeed, attemptNumber, priorClient);
                     gameStopwatch.Stop();
                         lock (exportLock)
                         {
@@ -685,8 +717,16 @@ internal class SimulationRunner
                             {
                                 accepted++;
                                 consecutiveDiscards = 0;
-                                gameResults.Add((accepted, result, gameStopwatch.Elapsed));
-                                WriteAcceptedGame(result, symmetryPerms, exportFormat, exportWriter, exportDir, jsonOptions);
+                                if (combined is not null)
+                                {
+                                    combinedResults.Add((accepted, combined, gameStopwatch.Elapsed));
+                                    WriteAcceptedCombined(combined, symmetryPerms, exportFormat, exportWriter, exportDir, jsonOptions);
+                                }
+                                else
+                                {
+                                    gameResults.Add((accepted, result, gameStopwatch.Elapsed));
+                                    WriteAcceptedGame(result, symmetryPerms, exportFormat, exportWriter, exportDir, jsonOptions);
+                                }
                             }
                             stopReason = SimulationErrorPolicy.GetGenerationStopReason(
                                 attempted, discarded, consecutiveDiscards, _options);
@@ -710,6 +750,8 @@ internal class SimulationRunner
         {
             exportWriter?.Dispose();
             priorClient?.Dispose();
+            if (!ReferenceEquals(placementPriorClient, priorClient))
+                placementPriorClient?.Dispose();
         }
 
         totalStopwatch.Stop();
@@ -743,7 +785,9 @@ internal class SimulationRunner
         }
         else
         {
-            var allGames = gameResults
+            var allGames = (isCombinedExport
+                    ? combinedResults.Select(g => (g.GameNumber, Result: g.Result.Game, g.Elapsed))
+                    : gameResults)
                 .OrderBy(g => g.GameNumber)
                 .Select(g => g.Result)
                 .ToList();
@@ -791,6 +835,24 @@ internal class SimulationRunner
         StreamWriter? writer, string? exportDir, JsonSerializerOptions options)
     {
         var obj = BuildPlacementGameJsonObject(result, symmetryPerms);
+        if (format == ExportFormat.Jsonl && writer is not null)
+        {
+            writer.WriteLine(JsonSerializer.Serialize(obj, options));
+            writer.Flush();
+        }
+        else if (format == ExportFormat.Json && exportDir is not null)
+        {
+            var pretty = new JsonSerializerOptions(options) { WriteIndented = true };
+            File.WriteAllText(Path.Combine(exportDir, $"{Guid.NewGuid()}.json"),
+                JsonSerializer.Serialize(obj, pretty), new UTF8Encoding(false));
+        }
+    }
+
+    private static void WriteAcceptedCombined(
+        CombinedGameResult result, ImmutableArray<SymmetryPermutation> symmetryPerms, ExportFormat format,
+        StreamWriter? writer, string? exportDir, JsonSerializerOptions options)
+    {
+        var obj = BuildCombinedGameJsonObject(result, symmetryPerms);
         if (format == ExportFormat.Jsonl && writer is not null)
         {
             writer.WriteLine(JsonSerializer.Serialize(obj, options));
@@ -860,86 +922,16 @@ internal class SimulationRunner
         return null;
     }
 
-    /// <summary>
-    /// Extracts win counts and win rate for a given player from a child action
-    /// in the MCTS tree. For deterministic actions, reads the child state directly.
-    /// For stochastic actions, computes probability-weighted averages across outcomes.
-    /// For terminal actions, returns the resolved outcome directly.
-    /// Returns empty data for unexplored actions.
-    /// </summary>
-    private static (double[] Wins, double WinRate, int Rollouts) GetChildWinData(
-        Kjarni.MCTS.Types.Action childAction, int playerIndex)
+    internal static (double[] Wins, double WinRate, int Rollouts) GetActionWinData(
+        Kjarni.MCTS.Types.MCTSState parent, int actionIndex, int playerIndex)
     {
-        if (childAction.IsTerminal)
-        {
-            var outcome = ((Kjarni.MCTS.Types.Action.Terminal)childAction).Item;
-            var wins = (double[])outcome.Clone();
-            var wr = playerIndex < wins.Length ? wins[playerIndex] : 0.0;
-            // Rollouts = 0 signals that this is a resolved outcome, not a rollout estimate.
-            return (wins, wr, 0);
-        }
+        var stats = parent.ActionStats[actionIndex];
+        if (stats.CompletedVisits <= 0)
+            return (Array.Empty<double>(), 0.0, 0);
 
-        if (childAction.IsDeterministicAction)
-        {
-            var child = ((Kjarni.MCTS.Types.Action.DeterministicAction)childAction).Item;
-            var wins = child.WinCounts is { Length: > 0 }
-                ? (double[])child.WinCounts.Clone()
-                : Array.Empty<double>();
-            var wr = child.Rollouts > 0 && playerIndex < wins.Length
-                ? wins[playerIndex] / child.Rollouts
-                : 0.0;
-            return (wins, wr, child.Rollouts);
-        }
-
-        if (childAction.IsStochasticAction)
-        {
-            var outcomes = ((Kjarni.MCTS.Types.Action.StochasticAction)childAction).Item;
-            var totalRollouts = 0;
-            var playerCount = 0;
-            foreach (var o in outcomes)
-            {
-                totalRollouts += o.State.Rollouts;
-                if (playerCount == 0 && o.State.WinCounts is { Length: > 0 })
-                    playerCount = o.State.WinCounts.Length;
-            }
-
-            if (totalRollouts == 0 || playerCount == 0)
-                return (Array.Empty<double>(), 0.0, 0);
-
-            // Probability-weighted average of win counts across outcomes.
-            var aggregated = new double[playerCount];
-            var totalWeight = 0;
-            foreach (var o in outcomes)
-            {
-                if (o.State.Rollouts == 0) continue;
-                totalWeight += o.ProbabilityWeight;
-                for (var i = 0; i < Math.Min(playerCount, o.State.WinCounts.Length); i++)
-                    aggregated[i] += (double)o.ProbabilityWeight * o.State.WinCounts[i] / o.State.Rollouts;
-            }
-
-            if (totalWeight > 0)
-            {
-                for (var i = 0; i < aggregated.Length; i++)
-                    aggregated[i] /= totalWeight;
-            }
-
-            var rate = playerIndex < aggregated.Length ? aggregated[playerIndex] : 0.0;
-            return (aggregated, rate, totalRollouts);
-        }
-
-        if (childAction.IsHorizonAction)
-        {
-            var child = ((Kjarni.MCTS.Types.Action.HorizonAction)childAction).Item;
-            var wins = child.WinCounts is { Length: > 0 }
-                ? (double[])child.WinCounts.Clone()
-                : Array.Empty<double>();
-            var wr = child.Rollouts > 0 && playerIndex < wins.Length
-                ? wins[playerIndex] / child.Rollouts
-                : 0.0;
-            return (wins, wr, child.Rollouts);
-        }
-
-        return (Array.Empty<double>(), 0.0, 0);
+        var wins = (double[])stats.ValueSums.Clone();
+        var rate = playerIndex < wins.Length ? wins[playerIndex] / stats.CompletedVisits : 0.0;
+        return (wins, rate, stats.CompletedVisits);
     }
 
     private static double[]? ComputePlacementValueTarget(IReadOnlyList<PlacementActionRecord> actions)
@@ -962,6 +954,76 @@ internal class SimulationRunner
         for (var player = 0; player < target.Length; player++)
             target[player] /= totalRollouts;
         return target;
+    }
+
+    private static PlacementStateRecord CreatePlacementStateRecord(
+        CatanState state,
+        CoreAction[] actions,
+        Kjarni.MCTS.Types.MCTSState mctsRoot,
+        Kjarni.MCTS.Types.LogInfo logInfo,
+        PlacementActionSerializer actionSerializer)
+    {
+        var playerIndex = (int)state.PlayerTurn;
+        var compositeActions = new List<PlacementActionRecord>();
+        var densePriors = mctsRoot.DensePriors;
+        for (var settlementIndex = 0; settlementIndex < actions.Length; settlementIndex++)
+        {
+            if (UnwrapCoreAction(actions[settlementIndex]) is not PlaceSettlementAction settlement)
+                continue;
+            Kjarni.MCTS.Types.MCTSState? settlementNode = null;
+            var treeAction = mctsRoot.Actions[settlementIndex];
+            if (treeAction.IsDeterministicAction)
+                settlementNode = ((Kjarni.MCTS.Types.Action.DeterministicAction)treeAction).Item;
+            else if (treeAction.IsHorizonAction)
+                settlementNode = ((Kjarni.MCTS.Types.Action.HorizonAction)treeAction).Item;
+
+            var roadState = (CatanState)settlement.DoCoreAction();
+            var roadActions = roadState.Actions();
+            for (var roadIndex = 0; roadIndex < roadActions.Length; roadIndex++)
+            {
+                if (UnwrapCoreAction(roadActions[roadIndex]) is not PlaceRoadAction road)
+                    continue;
+                var (wins, winRate, rollouts) = settlementNode is not null
+                    && roadIndex < settlementNode.Actions.Length
+                    ? GetActionWinData(settlementNode, roadIndex, playerIndex)
+                    : (Array.Empty<double>(), 0.0, 0);
+                var denseIndex = actionSerializer.IndexOf(settlement.VertexIndex, road.EdgeIndex);
+                compositeActions.Add(new PlacementActionRecord
+                {
+                    Action = actionSerializer.Serialize(settlement.VertexIndex, road.EdgeIndex),
+                    Vertex = settlement.VertexIndex,
+                    Edge = road.EdgeIndex,
+                    Wins = wins,
+                    Rollouts = rollouts,
+                    WinRate = winRate,
+                    ModelPrior = densePriors is { } policy && denseIndex < policy.Value.Length
+                        ? policy.Value[denseIndex]
+                        : null,
+                });
+            }
+        }
+
+        return new PlacementStateRecord
+        {
+            PlayerTurn = state.CurrentPlayer,
+            Stage = StateToken.EncodeTurnStage(state.Stage).ToString(),
+            SerializedState = state.SerializePlacementPhase(),
+            Simulations = logInfo.simulations,
+            ElapsedMs = (int)logInfo.elapsedTime.TotalMilliseconds,
+            PriorNodesRequested = logInfo.priorNodesRequested,
+            PriorActionsApplied = logInfo.priorActionsApplied,
+            PriorActionsRequested = logInfo.priorActionsRequested,
+            PriorInferencesRequested = logInfo.priorInferencesRequested,
+            PriorResponsesOrphaned = logInfo.priorResponsesOrphaned,
+            PriorActionsPerDepth = logInfo.priorActionsPerDepth is { Count: > 0 }
+                ? new Dictionary<int, int>(logInfo.priorActionsPerDepth) : null,
+            PriorInferencesPerDepth = logInfo.priorInferencesPerDepth is { Count: > 0 }
+                ? new Dictionary<int, int>(logInfo.priorInferencesPerDepth) : null,
+            PriorNodesSkipped = logInfo.priorNodesSkipped,
+            Actions = compositeActions,
+            ModelValue = mctsRoot.ValueEstimates is { } values ? (double[])values.Value.Clone() : null,
+            ValueTarget = ComputePlacementValueTarget(compositeActions),
+        };
     }
 
     private static StateRecord CreateStateRecord(
@@ -1011,29 +1073,65 @@ internal class SimulationRunner
         int gameSeed,
         int gameNumber,
         PriorClient? priorClient)
+        => RunGame(config, playerCount, rng, gameSeed, gameNumber, priorClient, null, null);
+
+    private CombinedGameResult RunSingleCombinedGame(
+        GameConfig config,
+        int playerCount,
+        Random rng,
+        int gameSeed,
+        int gameNumber,
+        PriorClient? placementPriorClient,
+        PriorClient? statePriorClient)
+    {
+        var placementStates = new List<PlacementStateRecord>();
+        var game = RunGame(config, playerCount, rng, gameSeed, gameNumber, statePriorClient,
+            placementPriorClient, placementStates);
+        return new CombinedGameResult
+        {
+            Game = game,
+            PlacementStates = placementStates,
+            PlacementSearchTimeMs = _options.PlacementSearchTimeMs,
+            MainGameSearchTimeMs = _options.MainGameSearchTimeMs,
+        };
+    }
+
+    private GameResult RunGame(
+        GameConfig config,
+        int playerCount,
+        Random rng,
+        int gameSeed,
+        int gameNumber,
+        PriorClient? statePriorClient,
+        PriorClient? placementPriorClient,
+        List<PlacementStateRecord>? placementStates)
     {
         var state = new CatanState(config, playerCount, rng);
-        var leafBoundary = _options.PlacementOnly
+        var combined = placementStates is not null;
+        var leafBoundary = _options.PlacementOnly || combined
             ? Microsoft.FSharp.Core.FSharpOption<Microsoft.FSharp.Core.FSharpFunc<Kjarni.ICoreState, bool>>.Some(
                 Microsoft.FSharp.Core.FuncConvert.FromFunc<Kjarni.ICoreState, bool>(IsPlacementLeafBoundary))
             : null;
 
-        var mctsConfig = new Kjarni.MCTSConfig(
-            searchTime.NewMilliSeconds(_options.SearchTimeMs),
+        Kjarni.MCTSConfig CreateMctsConfig(bool placement) => new(
+            searchTime.NewMilliSeconds(combined
+                ? placement ? _options.PlacementSearchTimeMs : _options.MainGameSearchTimeMs
+                : _options.SearchTimeMs),
             _options.MaxSimulations,
             _options.MaxRolloutDepth,
             System.Math.Sqrt(2.0),
             _options.ActionRolloutLimit,
-            priorClient,
+            placement ? placementPriorClient : statePriorClient,
             _options.Prior && _options.ExportType != ExportType.InitialPlacement
                 ? CatanStateLeafEvaluatorPool.Get(_options.NnUrl)
                 : null,
-            leafBoundary,
+            placement ? leafBoundary : null,
             _options.MaxPriorDepth,
             _options.MaxPendingEvaluations,
             _options.LeafEvaluationTimeoutMs,
             _options.DrainTimeoutMs);
-        var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(mctsConfig);
+        var placementPhase = combined && state.TurnNumber == 0;
+        var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(CreateMctsConfig(placementPhase));
         var states = new List<StateRecord>();
         var evaluationDiagnostics = new EvaluationDiagnostics();
 
@@ -1048,9 +1146,19 @@ internal class SimulationRunner
 
         // Persistent MCTS root for tree reuse across actions.
         Kjarni.MCTS.Types.MCTSState? mctsRoot = null;
+        var placementActionSerializer = combined
+            ? PlacementActionSerializer.ForTopology(config.Map.Topology)
+            : null;
 
         while (state.WinnerPlayer == 0)
         {
+            var isPlacementPhase = combined && state.TurnNumber == 0;
+            if (placementPhase != isPlacementPhase)
+            {
+                placementPhase = isPlacementPhase;
+                mctsRoot = null;
+                mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(CreateMctsConfig(placementPhase));
+            }
             var actions = state.Actions();
             if (actions.Length == 0) break;
 
@@ -1063,7 +1171,14 @@ internal class SimulationRunner
                 evaluationDiagnostics.Add(logInfo);
                 states.Add(CreateStateRecord(state, serialized, mctsRoot, logInfo));
 
-                if (mctsRoot.Actions[0].IsHorizonAction)
+                if (isPlacementPhase
+                    && state.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement)
+                {
+                    placementStates!.Add(CreatePlacementStateRecord(
+                        state, actions, mctsRoot, logInfo, placementActionSerializer!));
+                }
+
+                if (mctsRoot.Actions[0].IsHorizonAction && !combined)
                     break;
 
                 state = (CatanState)UnwrapCoreAction(actions[0]).DoCoreAction();
@@ -1095,12 +1210,19 @@ internal class SimulationRunner
 
                 states.Add(CreateStateRecord(state, serialized, mctsRoot, logInfo));
 
+                if (isPlacementPhase
+                    && state.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement)
+                {
+                    placementStates!.Add(CreatePlacementStateRecord(
+                        state, actions, mctsRoot, logInfo, placementActionSerializer!));
+                }
+
                 // Apply the best action from MCTS and advance the tree.
                 if (!bestPath.IsEmpty && bestPath.Head < actions.Length)
                 {
                     // When the best action is a HorizonAction, the search has reached
                     // the expansion boundary — stop the game loop.
-                    if (mctsRoot.Actions[bestPath.Head].IsHorizonAction)
+                    if (mctsRoot.Actions[bestPath.Head].IsHorizonAction && !combined)
                         break;
 
                     state = (CatanState)UnwrapCoreAction(actions[bestPath.Head]).DoCoreAction();
@@ -1153,7 +1275,7 @@ internal class SimulationRunner
             Players = playerCount,
             Winner = state.WinnerPlayer,
             Turns = state.TurnNumber,
-            SearchTimeMs = _options.SearchTimeMs,
+            SearchTimeMs = combined ? _options.MainGameSearchTimeMs : _options.SearchTimeMs,
             MaxSimulations = _options.MaxSimulations,
             MaxRolloutDepth = _options.MaxRolloutDepth,
             ActionRolloutLimit = _options.ActionRolloutLimit,
@@ -1405,7 +1527,7 @@ internal class SimulationRunner
 
                         var (wins, winRate, rollouts) = childMctsState is not null
                             && ri < childMctsState.Actions.Length
-                            ? GetChildWinData(childMctsState.Actions[ri], playerIndex)
+                            ? GetActionWinData(childMctsState, ri, playerIndex)
                             : (Array.Empty<double>(), 0.0, 0);
                         var denseIndex = actionSerializer.IndexOf(vertex, edge);
                         double? modelPrior = densePriors is { } modelPolicy
@@ -1870,6 +1992,90 @@ internal class SimulationRunner
             priorInferencesPerDepth = game.PriorInferencesPerDepth != null
                 ? game.PriorInferencesPerDepth.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
                 : null,
+            evaluationDiagnostics = game.EvaluationDiagnostics,
+        };
+    }
+
+    internal static object BuildCombinedGameJsonObject(
+        CombinedGameResult combined,
+        ImmutableArray<SymmetryPermutation> symmetryPerms)
+    {
+        var game = combined.Game;
+        var topology = game.Map.ToLowerInvariant() switch
+        {
+            "mini" or "m" => BoardTopology.Mini,
+            "small" or "sm" => BoardTopology.Small,
+            _ => BoardTopology.Standard,
+        };
+        var actionSerializer = PlacementActionSerializer.ForTopology(topology);
+        var boardPermutations = symmetryPerms.Length > 0
+            ? symmetryPerms.Select(p => BoardSymmetry.PermuteBoard(game.BoardSerialized, p)).ToArray()
+            : Array.Empty<string>();
+
+        return new
+        {
+            version = 1,
+            game.Seed,
+            game.Map,
+            game.Players,
+            game.Winner,
+            game.Turns,
+            exportType = "placementAndState",
+            constraints = new
+            {
+                placementSearchTimeMs = combined.PlacementSearchTimeMs,
+                mainGameSearchTimeMs = combined.MainGameSearchTimeMs,
+                game.MaxSimulations,
+                game.MaxRolloutDepth,
+                game.ActionRolloutLimit,
+            },
+            board = new { serialized = game.BoardSerialized, permutations = boardPermutations },
+            placementStates = combined.PlacementStates.Select(s => new
+            {
+                s.PlayerTurn,
+                s.Stage,
+                s.SerializedState,
+                s.Simulations,
+                s.ElapsedMs,
+                s.PriorNodesRequested,
+                s.PriorActionsApplied,
+                s.PriorActionsRequested,
+                s.PriorInferencesRequested,
+                s.PriorNodesSkipped,
+                s.ModelValue,
+                s.ValueTarget,
+                actions = s.Actions.Select(a => new
+                {
+                    a.Action,
+                    a.Wins,
+                    a.Rollouts,
+                    a.WinRate,
+                    a.ModelPrior,
+                    permutations = symmetryPerms.Select(p =>
+                        actionSerializer.Serialize(p.Vertices[a.Vertex], p.Edges[a.Edge])).ToArray(),
+                }).ToArray(),
+                permutations = symmetryPerms.Select(p =>
+                    BoardSymmetry.PermutePlacementState(s.SerializedState, p)).ToArray(),
+            }).ToArray(),
+            states = game.States.Select(s => new
+            {
+                s.PlayerTurn,
+                s.TurnNumber,
+                s.Stage,
+                s.SerializedState,
+                s.Simulations,
+                s.ElapsedMs,
+                s.WinRate,
+                s.Wins,
+                s.ReachedTerminal,
+                s.PriorNodesRequested,
+                s.PriorActionsApplied,
+                s.PriorActionsRequested,
+                s.PriorInferencesRequested,
+                s.PriorNodesSkipped,
+                permutations = symmetryPerms.Select(p =>
+                    BoardSymmetry.PermuteState(s.SerializedState, p)).ToArray(),
+            }).ToArray(),
             evaluationDiagnostics = game.EvaluationDiagnostics,
         };
     }

@@ -395,7 +395,7 @@ def _process_placement_game(
     mcts_value_weight: float = 0.5,
 ) -> None:
     """Expand one placement game into state-level value/policy samples."""
-    for state_entry in game["states"]:
+    for state_entry in game.get("placementStates", game.get("states", [])):
         state_serialized: str = state_entry["serializedState"]
         state_permutations: list[str] = state_entry["permutations"]
 

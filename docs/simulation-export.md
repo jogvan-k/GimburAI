@@ -8,10 +8,18 @@ This document defines the JSON output schemas for the `gimbur simulate --export`
 |----------|--------|---------|-------------|
 | `--export` | `<path>` | *(none)* | File path for JSONL or directory path for JSON export. Required for any export. |
 | `--export-format` | `jsonl`, `json` | `jsonl` | `jsonl`: all games in one file, one JSON object per line. `json`: one file per game in the directory. |
-| `--export-type` | `GameState`, `InitialPlacement` | `GameState` | Controls the output schema. See below. |
+| `--export-type` | `GameState`, `InitialPlacement`, `PlacementAndState` | `GameState` | Controls the output schema. See below. |
 | `--no-symmetries` | *(flag)* | *(off)* | Disable board symmetry permutations in exported data. |
 
 When `--export-type InitialPlacement` is specified, `--placement-only` is automatically enabled.
+
+`PlacementAndState` runs placement and normal play once and exports one object with shared
+`winner`, `board`, and metadata. Its `placementStates` array uses the InitialPlacement state
+schema, while `states` uses the GameState schema and includes placement, the exact
+`turnNumber: 1`/`stage: "r"` boundary, and normal play. Placement search uses
+`placementSearchTimeMs` (default `16000`); normal play uses `mainGameSearchTimeMs` (default
+`8000`). The placement tree has the exact PreRoll leaf boundary and is discarded before the
+main-game search starts.
 
 ## Evaluation Diagnostics And Discards
 

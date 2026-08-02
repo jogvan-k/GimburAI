@@ -43,6 +43,8 @@ class SimulateConfig:
     games: int = 1000
     players: int = 2
     search_time_ms: int = 500
+    placement_search_time_ms: int = 16000
+    main_game_search_time_ms: int = 8000
     max_simulations: int = 200
     max_rollout_depth: int = 500
     action_rollout_limit: int | None = None
@@ -158,8 +160,10 @@ class PipelineConfig:
     map_config: str = "mini"
     game_config: str = "mini_2p"
     model_config: str = "small"
+    state_model_config: str | None = None  # defaults to model_config
     placement_model_config: str | None = None  # defaults to model_config
     model_type: str = "state"  # "state", "placement", or "combined"
+    training_mode: str = "single"  # "single" or "placement-and-state"
 
     # Reproducibility.
     seed: int | None = None
@@ -183,6 +187,8 @@ class PipelineConfig:
     simulate: SimulateConfig = field(default_factory=SimulateConfig)
     placement_simulate: SimulateConfig | None = None  # overrides simulate for placement phase
     train: TrainConfig = field(default_factory=TrainConfig)
+    placement_train: TrainConfig | None = None
+    state_train: TrainConfig | None = None
     serve: ServeConfig = field(default_factory=ServeConfig)
     gimbur_server: GimburServerConfig = field(default_factory=GimburServerConfig)
     benchmarks: list[BenchmarkConfig] = field(
@@ -231,8 +237,10 @@ def _load_config(path: Path) -> PipelineConfig:
         "map_config",
         "game_config",
         "model_config",
+        "state_model_config",
         "placement_model_config",
         "model_type",
+        "training_mode",
         "seed",
         "data_dir",
         "model_dir",
@@ -253,6 +261,10 @@ def _load_config(path: Path) -> PipelineConfig:
         cfg.placement_simulate = _load_section(SimulateConfig, raw["placementSimulate"])
     if "train" in raw:
         cfg.train = _load_section(TrainConfig, raw["train"])
+    if "placementTrain" in raw:
+        cfg.placement_train = _load_section(TrainConfig, raw["placementTrain"])
+    if "stateTrain" in raw:
+        cfg.state_train = _load_section(TrainConfig, raw["stateTrain"])
     if "serve" in raw:
         cfg.serve = _load_section(ServeConfig, raw["serve"])
     if "gimburServer" in raw:
@@ -422,6 +434,13 @@ def _benchmark_complete(cfg: PipelineConfig, gen: int, phase: str | None = None)
 
 def _generation_complete(cfg: PipelineConfig, gen: int) -> bool:
     """True if simulate, train, and benchmark are all done for a generation."""
+    if cfg.training_mode == "placement-and-state":
+        return (
+            _simulation_complete(cfg, gen)
+            and _training_complete(cfg, gen, "placement")
+            and _training_complete(cfg, gen, "state")
+            and _benchmark_complete(cfg, gen)
+        )
     if cfg.model_type == "combined":
         return (
             _simulation_complete(cfg, gen, "placement")
@@ -887,6 +906,8 @@ def _step_simulate(
         "export": str(out_dir),
         "exportFormat": "json",
         "searchTimeMs": sim.search_time_ms,
+        "placementSearchTimeMs": sim.placement_search_time_ms,
+        "mainGameSearchTimeMs": sim.main_game_search_time_ms,
         "maxSimulations": sim.max_simulations,
         "maxRolloutDepth": sim.max_rollout_depth,
     }
@@ -921,6 +942,8 @@ def _step_simulate(
     effective_type = model_type or cfg.model_type
     if effective_type == "placement":
         sim_config["exportType"] = "InitialPlacement"
+    if cfg.training_mode == "placement-and-state":
+        sim_config["exportType"] = "PlacementAndState"
 
     config_path = _write_config(cfg, f"simulate_gen{gen}", sim_config)
 
@@ -1067,19 +1090,29 @@ def _step_train(
         print(f"  Train: Model already exists at {out_path}, skipping.")
         return
 
-    replay_start = max(0, gen - max(1, cfg.train.replay_generations) + 1)
+    tr = (
+        cfg.placement_train or cfg.train
+        if model_type == "placement"
+        else cfg.state_train or cfg.train
+        if model_type == "state"
+        else cfg.train
+    )
+    replay_start = max(0, gen - max(1, tr.replay_generations) + 1)
     data_paths = [
-        _data_path(cfg, replay_gen, model_type) for replay_gen in range(replay_start, gen + 1)
+        _data_path(
+            cfg,
+            replay_gen,
+            None if cfg.training_mode == "placement-and-state" else model_type,
+        )
+        for replay_gen in range(replay_start, gen + 1)
     ]
     out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    tr = cfg.train
 
     effective_type = model_type or cfg.model_type
     effective_model_config = (
         cfg.placement_model_config or cfg.model_config
         if effective_type == "placement"
-        else cfg.model_config
+        else cfg.state_model_config or cfg.model_config
     )
     if effective_type == "state" and cfg.model_type != "combined" and tr.output_mode != "value":
         raise ValueError(
@@ -1642,6 +1675,7 @@ def _run_combined_generation(
             _save_summary(cfg, all_results)
             _save_progress_chart(cfg, all_results)
 
+
     # ---------------------------------------------------------------
     # Step 4: Simulate value states
     # ---------------------------------------------------------------
@@ -1723,6 +1757,76 @@ def _run_combined_generation(
             all_results.setdefault(gen, {}).update(gen_results)
             _save_summary(cfg, all_results)
             _save_progress_chart(cfg, all_results)
+
+
+def _run_placement_and_state_generation(
+    cfg: PipelineConfig,
+    gen: int,
+    project_root: Path,
+    server: _ServerProcess,
+    nn_url: str,
+    all_results: dict[int, dict[str, Any]],
+    gimbur_server: _GimburServerProcess | None = None,
+) -> None:
+    """Simulate one shared game corpus, then train both generation checkpoints."""
+    simulation_done = _simulation_complete(cfg, gen)
+    simulation_url: str | None = None
+    if gen > 0 and not simulation_done:
+        placement_model = _model_path(cfg, gen - 1, "placement")
+        state_model = _model_path(cfg, gen - 1, "state")
+        missing = [path for path in (placement_model, state_model) if not path.exists()]
+        if missing:
+            raise FileNotFoundError(
+                "Previous placement-and-state generation is incomplete: "
+                + ", ".join(str(path) for path in missing)
+            )
+        server.start(
+            serve_cfg=cfg.serve,
+            game_config=cfg.game_config,
+            python_module=cfg.python_module,
+            placement_model_path=placement_model,
+            placement_model_config=cfg.placement_model_config or cfg.model_config,
+            state_model_path=state_model,
+            state_model_config=cfg.state_model_config or cfg.model_config,
+            pipeline_cfg=cfg,
+            cwd=project_root,
+        )
+        simulation_url = nn_url
+
+    _step_simulate(cfg, gen, project_root, simulation_url)
+    if gen > 0 and not simulation_done:
+        server.stop()
+
+    _step_train(cfg, gen, project_root, model_type="placement")
+    _step_train(cfg, gen, project_root, model_type="state")
+
+    benchmark_done = _benchmark_complete(cfg, gen)
+    if not benchmark_done:
+        server.start(
+            serve_cfg=cfg.serve,
+            game_config=cfg.game_config,
+            python_module=cfg.python_module,
+            placement_model_path=_model_path(cfg, gen, "placement"),
+            placement_model_config=cfg.placement_model_config or cfg.model_config,
+            state_model_path=_model_path(cfg, gen, "state"),
+            state_model_config=cfg.state_model_config or cfg.model_config,
+            pipeline_cfg=cfg,
+            cwd=project_root,
+        )
+    results = _step_benchmark(
+        cfg,
+        gen,
+        project_root,
+        nn_url,
+        gimbur_server=gimbur_server,
+        all_results=all_results,
+    )
+    if not benchmark_done:
+        server.stop()
+    if results:
+        all_results.setdefault(gen, {}).update(results)
+        _save_summary(cfg, all_results)
+        _save_progress_chart(cfg, all_results)
 
 
 # ---------------------------------------------------------------------------
@@ -1860,6 +1964,7 @@ def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> Non
             all_results[entry["generation"]] = entry.get("benchmarks", {})
 
     is_combined = cfg.model_type == "combined"
+    is_placement_and_state = cfg.training_mode == "placement-and-state"
 
     try:
         # Run baseline benchmarks (cached; only first run executes them).
@@ -1889,7 +1994,12 @@ def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> Non
             print(f"  GENERATION {gen}")
             print(f"{'#' * 60}\n")
 
-            if is_combined:
+            if is_placement_and_state:
+                _run_placement_and_state_generation(
+                    cfg, gen, project_root, server, nn_url, all_results,
+                    gimbur_server=gimbur_server,
+                )
+            elif is_combined:
                 _run_combined_generation(
                     cfg, gen, project_root, server, nn_url, all_results, gimbur_server=gimbur_server
                 )

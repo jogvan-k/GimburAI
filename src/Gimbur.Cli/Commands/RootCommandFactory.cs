@@ -124,7 +124,7 @@ internal static class RootCommandFactory
 
         var exportTypeOption = new Option<ExportType>("--export-type")
         {
-            Description = "Export schema: GameState (default) or InitialPlacement (placement-only actions)",
+            Description = "Export schema: GameState, InitialPlacement, or PlacementAndState",
             DefaultValueFactory = _ => ExportType.GameState,
         };
 
@@ -132,6 +132,16 @@ internal static class RootCommandFactory
         {
             Description = "MCTS search time limit in milliseconds per decision",
             DefaultValueFactory = _ => 1000
+        };
+        var placementSearchTimeOption = new Option<int>("--placement-search-time")
+        {
+            Description = "Combined export placement MCTS budget in milliseconds",
+            DefaultValueFactory = _ => 16000,
+        };
+        var mainGameSearchTimeOption = new Option<int>("--main-game-search-time")
+        {
+            Description = "Combined export main-game MCTS budget in milliseconds",
+            DefaultValueFactory = _ => 8000,
         };
 
         var maxSimulationsOption = new Option<int>("--max-simulations")
@@ -234,6 +244,8 @@ internal static class RootCommandFactory
           exportFormatOption,
           exportTypeOption,
           searchTimeOption,
+          placementSearchTimeOption,
+          mainGameSearchTimeOption,
           maxSimulationsOption,
           maxRolloutDepthOption,
           actionRolloutLimitOption,
@@ -266,6 +278,8 @@ internal static class RootCommandFactory
             ExportFormat exportFormat = parseResult.GetValue(exportFormatOption);
             ExportType exportType = parseResult.GetValue(exportTypeOption);
             int searchTimeMs = parseResult.GetValue(searchTimeOption);
+            int placementSearchTimeMs = parseResult.GetValue(placementSearchTimeOption);
+            int mainGameSearchTimeMs = parseResult.GetValue(mainGameSearchTimeOption);
             int maxSimulations = parseResult.GetValue(maxSimulationsOption);
             int maxRolloutDepth = parseResult.GetValue(maxRolloutDepthOption);
             int actionRolloutLimit = parseResult.GetValue(actionRolloutLimitOption);
@@ -322,6 +336,10 @@ internal static class RootCommandFactory
                 }
                 if (!WasProvided(parseResult, "--search-time"))
                     searchTimeMs = ConfigLoader.GetInt(cfg, "searchTimeMs") ?? searchTimeMs;
+                if (!WasProvided(parseResult, "--placement-search-time"))
+                    placementSearchTimeMs = ConfigLoader.GetInt(cfg, "placementSearchTimeMs") ?? placementSearchTimeMs;
+                if (!WasProvided(parseResult, "--main-game-search-time"))
+                    mainGameSearchTimeMs = ConfigLoader.GetInt(cfg, "mainGameSearchTimeMs") ?? mainGameSearchTimeMs;
                 if (!WasProvided(parseResult, "--max-simulations"))
                     maxSimulations = ConfigLoader.GetInt(cfg, "maxSimulations") ?? maxSimulations;
                 if (!WasProvided(parseResult, "--max-rollout-depth"))
@@ -385,6 +403,8 @@ internal static class RootCommandFactory
                 ExportType = exportType,
                 Verbosity = verbosity ?? "normal",
                 SearchTimeMs = searchTimeMs,
+                PlacementSearchTimeMs = placementSearchTimeMs,
+                MainGameSearchTimeMs = mainGameSearchTimeMs,
                 MaxSimulations = maxSimulations,
                 MaxRolloutDepth = maxRolloutDepth,
                 ActionRolloutLimit = actionRolloutLimit,

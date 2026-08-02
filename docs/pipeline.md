@@ -51,6 +51,8 @@ maps them to Python `snake_case` internally.
 | `modelConfig`   | string   | `"small"`          | Neural network architecture preset. |
 | `placementModelConfig` | string/null | `null` | Optional placement architecture preset; defaults to `modelConfig`. |
 | `modelType`     | string   | `"state"`          | Pipeline mode: `state`, `placement`, or `combined`. |
+| `trainingMode`  | string   | `"single"`         | Set to `"placement-and-state"` for one shared simulation corpus and two models. |
+| `stateModelConfig` | string/null | `null` | State architecture preset; defaults to `modelConfig`. |
 | `seed`          | int/null | `null`             | Base seed for reproducibility. Each gen offsets it. |
 | `dataDir`       | string   | `"pipeline/data"`  | Root directory for per-generation game data. |
 | `modelDir`      | string   | `"pipeline/models"`| Directory for model checkpoints. |
@@ -66,6 +68,8 @@ maps them to Python `snake_case` internally.
 | `games`              | int    | `1000`    | Target number of self-play games per generation. |
 | `players`            | int    | `2`       | Number of players per game. |
 | `searchTimeMs`       | int    | `500`     | MCTS time budget per move (ms). |
+| `placementSearchTimeMs` | int | `16000` | Placement budget in `placement-and-state` mode. |
+| `mainGameSearchTimeMs` | int | `8000` | Normal-play budget in `placement-and-state` mode. |
 | `maxSimulations`     | int    | `200`     | MCTS simulation cap per move. |
 | `maxRolloutDepth`    | int    | `500`     | Max depth for random rollouts. |
 | `actionRolloutLimit` | int    | *(none)*  | Cap per-action rollouts (omit to disable). |
@@ -163,6 +167,26 @@ after training.
 | `ai`    | string[] | `["nn", "greedy"]`  | AI player types for the matchup. |
 
 ### Example Config
+
+```json
+{
+  "trainingMode": "placement-and-state",
+  "placementModelConfig": "small",
+  "stateModelConfig": "small",
+  "simulate": {
+    "games": 1000,
+    "placementSearchTimeMs": 16000,
+    "mainGameSearchTimeMs": 8000
+  },
+  "placementTrain": { "outputMode": "combined", "batchSize": 64 },
+  "stateTrain": { "outputMode": "value", "batchSize": 64 }
+}
+```
+
+This mode writes one `data/genN/` directory. Generation N simulation serves both frozen
+generation N-1 checkpoints; generation 0 uses rollout fallback. Training reads the same
+files twice and writes `models/placement/genN.pt` and `models/state/genN.pt`. Resume treats
+simulation and each checkpoint as separate DAG completion markers.
 
 See [`pipeline.example.json`](../pipeline.example.json) in the project
 root for a fully commented example.

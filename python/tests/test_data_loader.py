@@ -616,3 +616,16 @@ class TestPlacementDataset:
         assert tokens.shape == (2, MINI_2P.placement_token_size)
         assert values.shape == (2, MINI_2P.player_count)
         assert policies.shape == masks.shape == (2, MINI_2P.action_vocab_size)
+
+
+def test_combined_game_feeds_placement_and_state_datasets() -> None:
+    combined = _simple_game()
+    combined["placementStates"] = _placement_game()["states"]
+
+    state_dataset = SimulationDataset([combined], MINI_2P)
+    from gimbur_nn.data_loader import PlacementDataset
+
+    placement_dataset = PlacementDataset([combined], MINI_2P, target="combined")
+
+    assert len(state_dataset) == 2
+    assert len(placement_dataset) == 2

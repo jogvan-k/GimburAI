@@ -8,6 +8,7 @@ from gimbur_nn.pipeline import (
     TrainConfig,
     _count_json_files,
     _discard_stop_reason,
+    _generation_complete,
     _load_section,
     _step_simulate,
     _step_train,
@@ -54,6 +55,16 @@ def test_simulate_config_loads_parallelism() -> None:
     assert config.drain_timeout_ms == 750
     assert config.max_errors_per_game == 3
     assert config.max_discard_rate == 0.1
+
+
+def test_simulate_config_has_combined_budgets() -> None:
+    config = _load_section(
+        SimulateConfig,
+        {"placementSearchTimeMs": 16000, "mainGameSearchTimeMs": 8000},
+    )
+
+    assert config.placement_search_time_ms == 16000
+    assert config.main_game_search_time_ms == 8000
 
 
 def test_accepted_count_excludes_discarded_files(tmp_path) -> None:
@@ -120,3 +131,60 @@ def test_step_train_passes_value_blending_and_state_sampling(tmp_path, monkeypat
     assert config["mctsValueWeight"] == 0.75
     assert config["earlyGameTurnLimit"] == 8
     assert config["maxLateGameStatesPerGame"] == 12
+
+
+def test_placement_and_state_generates_shared_sim_and_separate_train_configs(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = PipelineConfig(
+        training_mode="placement-and-state",
+        data_dir=str(tmp_path / "data"),
+        model_dir=str(tmp_path / "models"),
+        placement_model_config="placement-small",
+        state_model_config="state-small",
+        simulate=SimulateConfig(games=1),
+        placement_train=TrainConfig(batch_size=11),
+        state_train=TrainConfig(batch_size=22),
+    )
+    monkeypatch.setattr(
+        "gimbur_nn.pipeline.subprocess.run",
+        lambda *args, **kwargs: type("R", (), {"returncode": 0})(),
+    )
+    monkeypatch.setattr("gimbur_nn.pipeline._run", lambda *args, **kwargs: None)
+
+    _step_simulate(cfg, 0, tmp_path, None)
+    _step_train(cfg, 0, tmp_path, model_type="placement")
+    _step_train(cfg, 0, tmp_path, model_type="state")
+
+    sim = json.loads((tmp_path / "models/.configs/simulate_gen0.json").read_text())
+    placement = json.loads((tmp_path / "models/.configs/train_gen0_placement.json").read_text())
+    state = json.loads((tmp_path / "models/.configs/train_gen0_state.json").read_text())
+    assert sim["exportType"] == "PlacementAndState"
+    assert sim["placementSearchTimeMs"] == 16000
+    assert sim["mainGameSearchTimeMs"] == 8000
+    assert placement["data"] == state["data"] == [str(tmp_path / "data/gen0")]
+    assert placement["modelConfig"] == "placement-small"
+    assert state["modelConfig"] == "state-small"
+    assert placement["batchSize"] == 11
+    assert state["batchSize"] == 22
+
+
+def test_placement_and_state_resume_requires_shared_data_and_both_models(tmp_path) -> None:
+    cfg = PipelineConfig(
+        training_mode="placement-and-state",
+        data_dir=str(tmp_path / "data"),
+        model_dir=str(tmp_path / "models"),
+        results_dir=str(tmp_path / "results"),
+        simulate=SimulateConfig(games=1),
+        benchmarks=[],
+    )
+    data = tmp_path / "data/gen0"
+    data.mkdir(parents=True)
+    (data / "game.json").write_text("{}")
+    (tmp_path / "models/placement").mkdir(parents=True)
+    (tmp_path / "models/state").mkdir(parents=True)
+    (tmp_path / "models/placement/gen0.pt").write_text("")
+
+    assert not _generation_complete(cfg, 0)
+    (tmp_path / "models/state/gen0.pt").write_text("")
+    assert _generation_complete(cfg, 0)
