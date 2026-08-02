@@ -10,7 +10,7 @@ public class SimulationExportTests
     private static SimulationOptions Options => new() { NumberOfGames = 1 };
 
     [Test]
-    public void GameStateExport_IncludesTurnNumberAndStage()
+    public void GameStateExport_IncludesTurnStageAndScores()
     {
         var game = new GameResult
         {
@@ -32,6 +32,7 @@ public class SimulationExportTests
                     TurnNumber = 1,
                     Stage = "r",
                     SerializedState = "state",
+                    Scores = [2.0, 3.0],
                     Wins = [1.0, 0.0],
                 },
             ],
@@ -47,6 +48,9 @@ public class SimulationExportTests
         {
             Assert.That(state.GetProperty("turnNumber").GetInt32(), Is.EqualTo(1));
             Assert.That(state.GetProperty("stage").GetString(), Is.EqualTo("r"));
+            Assert.That(
+                state.GetProperty("scores").EnumerateArray().Select(value => value.GetDouble()),
+                Is.EqualTo(new[] { 2.0, 3.0 }));
         });
     }
 
@@ -99,6 +103,7 @@ public class SimulationExportTests
                     TurnNumber = 0,
                     Stage = "a",
                     SerializedState = "state",
+                    Scores = [1.0, 1.0],
                     Wins = [0.0, 1.0],
                 },
             ],
@@ -131,6 +136,7 @@ public class SimulationExportTests
         {
             Assert.That(root.GetProperty("winner").GetInt32(), Is.EqualTo(2));
             Assert.That(root.GetProperty("states").GetArrayLength(), Is.EqualTo(1));
+            Assert.That(root.GetProperty("states")[0].GetProperty("scores").GetArrayLength(), Is.EqualTo(2));
             Assert.That(root.GetProperty("placementStates").GetArrayLength(), Is.EqualTo(1));
             Assert.That(root.GetProperty("constraints").GetProperty("placementSearchTimeMs").GetInt32(), Is.EqualTo(16));
             Assert.That(root.GetProperty("constraints").GetProperty("mainGameSearchTimeMs").GetInt32(), Is.EqualTo(8));

@@ -114,9 +114,9 @@ _CONFIG_KEYS: dict[str, str] = {
     "advantage": "advantage",
     "valueLossWeight": "value_loss_weight",
     "policyLossWeight": "policy_loss_weight",
-    "mctsValueWeight": "mcts_value_weight",
-    "earlyGameTurnLimit": "early_game_turn_limit",
-    "maxLateGameStatesPerGame": "max_late_game_states_per_game",
+    "mctsValueWeightStart": "mcts_value_weight_start",
+    "mctsValueWeightEnd": "mcts_value_weight_end",
+    "maxStatesPerVictoryPoint": "max_states_per_victory_point",
 }
 
 # Attributes whose CLI type is Path.
@@ -183,14 +183,14 @@ def _build_dataset(
             game_cfg,
             target=effective_target,
             advantage=args.advantage,
-            mcts_value_weight=args.mcts_value_weight,
+            mcts_value_weight_start=args.mcts_value_weight_start,
         )
     return dataset_class(
         games,
         game_cfg,
-        mcts_value_weight=args.mcts_value_weight,
-        early_game_turn_limit=args.early_game_turn_limit,
-        max_late_game_states_per_game=args.max_late_game_states_per_game,
+        mcts_value_weight_start=args.mcts_value_weight_start,
+        mcts_value_weight_end=args.mcts_value_weight_end,
+        max_states_per_victory_point=args.max_states_per_victory_point,
     )
 
 
@@ -252,9 +252,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--value-loss-weight", type=float, default=1.0)
     parser.add_argument("--policy-loss-weight", type=float, default=1.0)
-    parser.add_argument("--mcts-value-weight", type=float, default=0.5)
-    parser.add_argument("--early-game-turn-limit", type=int, default=10)
-    parser.add_argument("--max-late-game-states-per-game", type=int, default=20)
+    parser.add_argument("--mcts-value-weight-start", type=float, default=0.9)
+    parser.add_argument("--mcts-value-weight-end", type=float, default=0.1)
+    parser.add_argument("--max-states-per-victory-point", type=int, default=20)
     parser.add_argument(
         "--advantage",
         action="store_true",
@@ -342,9 +342,9 @@ _ARG_DEFAULTS: dict[str, object] = {
     "advantage": False,
     "value_loss_weight": 1.0,
     "policy_loss_weight": 1.0,
-    "mcts_value_weight": 0.5,
-    "early_game_turn_limit": 10,
-    "max_late_game_states_per_game": 20,
+    "mcts_value_weight_start": 0.9,
+    "mcts_value_weight_end": 0.1,
+    "max_states_per_victory_point": 20,
 }
 
 

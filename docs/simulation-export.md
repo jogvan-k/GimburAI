@@ -102,6 +102,7 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
   "elapsedMs": 1000,
   "winRate": 0.64,
   "wins": [3200.0, 1800.0],
+  "scores": [2.0, 3.0],
   "reachedTerminal": false,
   "priorsRequested": 0,
   "priorsApplied": 0,
@@ -123,6 +124,7 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
 | `elapsedMs` | int | Wall-clock time spent on MCTS search (milliseconds). |
 | `winRate` | float | Acting player's win rate at the MCTS root (wins / rollouts). |
 | `wins` | float[] | Raw MCTS win counts at the root, 0-indexed (index 0 = player 1). |
+| `scores` | float[] | Authoritative victory-point scores from `CatanState.Scores()`, indexed by player. |
 | `reachedTerminal` | bool | Whether MCTS fully resolved the tree (all root actions are Terminal). |
 | `priorsRequested` | int | Number of NN prior requests sent during this search. |
 | `priorsApplied` | int | Number of NN prior responses applied to tree nodes. |
@@ -130,9 +132,12 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
 | `permutations` | string[] | `serializedState` under each non-trivial symmetry permutation. Same order as `board.permutations`. |
 
 State-value training blends each root's normalized per-player MCTS wins with the
-one-hot final game winner. The blend weight is configurable as `mctsValueWeight`.
+one-hot final game winner. The MCTS weight decreases linearly from
+`mctsValueWeightStart` to `mctsValueWeightEnd` using `turnNumber / game.turns`.
 If one target is unavailable, the other is used alone; if both are unavailable,
 the state is skipped.
+Full-state sampling groups roots by `max(floor(scores))` and deterministically retains
+at most `maxStatesPerVictoryPoint` per group, plus the exact post-placement and final roots.
 Candidate result states are not exported or trained unless they naturally become a
 later searched root.
 

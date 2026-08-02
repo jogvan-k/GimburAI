@@ -229,6 +229,7 @@ internal record StateRecord
     public required int TurnNumber { get; init; }
     public required string Stage { get; init; }
     public required string SerializedState { get; init; }
+    public required double[] Scores { get; init; }
     public int Simulations { get; init; }
     public int ElapsedMs { get; init; }
     public double WinRate { get; init; }
@@ -1046,6 +1047,7 @@ internal class SimulationRunner
             TurnNumber = state.TurnNumber,
             Stage = StateToken.EncodeTurnStage(state.Stage).ToString(),
             SerializedState = serialized,
+            Scores = state.Scores(),
             Simulations = logInfo.simulations,
             ElapsedMs = (int)logInfo.elapsedTime.TotalMilliseconds,
             WinRate = winRate,
@@ -1892,6 +1894,7 @@ internal class SimulationRunner
                 s.TurnNumber,
                 s.Stage,
                 s.SerializedState,
+                s.Scores,
                 s.Simulations,
                 s.ElapsedMs,
                 s.WinRate,
@@ -2063,6 +2066,7 @@ internal class SimulationRunner
                 s.TurnNumber,
                 s.Stage,
                 s.SerializedState,
+                s.Scores,
                 s.Simulations,
                 s.ElapsedMs,
                 s.WinRate,

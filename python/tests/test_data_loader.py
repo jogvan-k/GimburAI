@@ -11,6 +11,7 @@ import torch
 from gimbur_nn.data_loader import (
     SimulationDataset,
     _normalize_wins,
+    _scheduled_mcts_value_weight,
     _select_state_entries,
     _value_target,
     expand_games,
@@ -65,6 +66,7 @@ def _make_state(
     player_turn: int = 1,
     turn_number: int = 1,
     stage: str = "r",
+    scores: list[float] | None = None,
 ) -> dict:
     """Create a minimal state entry within a game."""
     return {
@@ -76,6 +78,7 @@ def _make_state(
         "elapsedMs": 50,
         "winRate": 0.5,
         "wins": wins if wins is not None else best_action_wins,
+        "scores": scores if scores is not None else [2.0, 2.0],
         "permutations": state_perms,
     }
 
@@ -145,37 +148,58 @@ class TestValueTarget:
         assert _value_target([], 0, 2, 0.5) is None
 
 
-class TestControlledStateSampling:
+class TestScheduledMctsValueWeight:
+    def test_exact_endpoints_and_midpoint(self) -> None:
+        assert _scheduled_mcts_value_weight(0, 10, 0.9, 0.1) == pytest.approx(0.9)
+        assert _scheduled_mcts_value_weight(5, 10, 0.9, 0.1) == pytest.approx(0.5)
+        assert _scheduled_mcts_value_weight(10, 10, 0.9, 0.1) == pytest.approx(0.1)
+
+    def test_unfinished_or_invalid_total_turns_clamps_progress(self) -> None:
+        assert _scheduled_mcts_value_weight(5, 0, 0.9, 0.1) == pytest.approx(0.1)
+        assert _scheduled_mcts_value_weight(15, 10, 0.9, 0.1) == pytest.approx(0.1)
+
+
+class TestVictoryPointStateSampling:
     @staticmethod
     def _game(seed: int = 42) -> dict:
         states = [
-            {"id": "placement", "turnNumber": 0, "stage": "a"},
-            {"id": "post-placement", "turnNumber": 1, "stage": "r"},
-            {"id": "later-pre-roll", "turnNumber": 1, "stage": "r"},
-            {"id": "early", "turnNumber": 2, "stage": "b"},
+            {"id": "placement", "turnNumber": 0, "stage": "a", "scores": [1, 1]},
+            {"id": "post-placement", "turnNumber": 1, "stage": "r", "scores": [2, 2]},
+            {"id": "same-vp-a", "turnNumber": 2, "stage": "b", "scores": [2, 2]},
+            {"id": "same-vp-b", "turnNumber": 3, "stage": "r", "scores": [2, 2]},
             *[
-                {"id": f"late-{turn}", "turnNumber": turn, "stage": "r"}
-                for turn in range(11, 21)
+                {"id": f"vp3-{turn}", "turnNumber": turn, "stage": "r", "scores": [3, 2]}
+                for turn in range(4, 10)
             ],
+            {"id": "final", "turnNumber": 10, "stage": "b", "scores": [3, 4]},
         ]
         return {"seed": seed, "states": states}
 
-    def test_includes_all_early_and_exact_post_placement(self) -> None:
-        selected = _select_state_entries(
-            self._game(), early_game_turn_limit=0, max_late_game_states_per_game=0
-        )
-
-        assert [state["id"] for state in selected] == ["placement", "post-placement"]
-
-    def test_late_sampling_is_bounded_and_deterministic_by_game_seed(self) -> None:
+    def test_groups_by_rotation_invariant_vp_and_caps_deterministically(self) -> None:
         game = self._game()
-        first = _select_state_entries(game, 2, 3)
-        second = _select_state_entries(game, 2, 3)
-        other_seed = _select_state_entries(self._game(seed=43), 2, 3)
+        first = _select_state_entries(game, 2)
+        second = _select_state_entries(game, 2)
+        other_seed = _select_state_entries(self._game(seed=43), 2)
 
         assert first == second
-        assert len(first) == 7
         assert first != other_seed
+        assert sum(max(state["scores"]) == 2 for state in first) == 2
+        assert sum(max(state["scores"]) == 3 for state in first) == 2
+
+    def test_always_retains_exact_post_placement_and_final_state(self) -> None:
+        selected = _select_state_entries(self._game(), 0)
+
+        assert [state["id"] for state in selected] == ["post-placement", "final"]
+
+    def test_player_rotation_does_not_change_stratum(self) -> None:
+        game = self._game()
+        rotated = self._game()
+        for state in rotated["states"]:
+            state["scores"].reverse()
+
+        assert [state["id"] for state in _select_state_entries(game, 2)] == [
+            state["id"] for state in _select_state_entries(rotated, 2)
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -366,8 +390,8 @@ class TestLoadSamples:
         samples = load_samples(tmp_path / "test.jsonl", MINI_2P)
 
         # samples[0] is player 1 (no rotation), samples[1] is player 2.
-        torch.testing.assert_close(samples[0][1], torch.tensor([0.95, 0.05]))
-        torch.testing.assert_close(samples[1][1], torch.tensor([0.05, 0.95]))
+        torch.testing.assert_close(samples[0][1], torch.tensor([0.918, 0.082]))
+        torch.testing.assert_close(samples[1][1], torch.tensor([0.082, 0.918]))
 
     def test_player_rotation_applied(self, tmp_path: Path) -> None:
         """Token IDs should differ between player 1 and player 2 views."""
@@ -439,8 +463,8 @@ class TestExpandGames:
 
         samples = expand_games([game], MINI_2P)
 
-        torch.testing.assert_close(samples[0][1], torch.tensor([0.95, 0.05]))
-        torch.testing.assert_close(samples[1][1], torch.tensor([0.05, 0.95]))
+        torch.testing.assert_close(samples[0][1], torch.tensor([0.918, 0.082]))
+        torch.testing.assert_close(samples[1][1], torch.tensor([0.082, 0.918]))
 
     def test_geometric_symmetry_keeps_player_target(self) -> None:
         game = _simple_game([70.0, 30.0])
@@ -543,11 +567,18 @@ def _placement_game(*, rollouts: tuple[int, int] = (30, 70)) -> dict:
                     },
                 ],
             }
-        ]
+        ],
     }
 
 
 class TestExpandPlacementGames:
+    def test_placement_value_uses_start_weight(self) -> None:
+        from gimbur_nn.data_loader import expand_placement_games
+
+        samples = expand_placement_games([_placement_game()], MINI_2P, mcts_value_weight_start=1.0)
+
+        torch.testing.assert_close(samples[0][1], torch.tensor([0.41, 0.59]))
+
     def test_emits_one_sample_per_state_permutation(self) -> None:
         from gimbur_nn.data_loader import expand_placement_games
 
@@ -555,7 +586,7 @@ class TestExpandPlacementGames:
 
         assert len(samples) == 2
         assert samples[0][0].shape == (MINI_2P.placement_token_size,)
-        torch.testing.assert_close(samples[0][1], torch.tensor([0.705, 0.295]))
+        torch.testing.assert_close(samples[0][1], torch.tensor([0.469, 0.531]))
         torch.testing.assert_close(samples[0][1], samples[1][1])
 
     def test_combined_targets_are_dense_and_symmetry_mapped(self) -> None:

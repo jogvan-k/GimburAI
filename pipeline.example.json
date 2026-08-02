@@ -58,13 +58,13 @@
     // [B,N] per-player value and dense policy [B,A] logits.
     "outputMode": "combined",
     "target": "combined",
-    // Blend normalized MCTS wins with the final game's one-hot winner.
-    // Invalid/missing evidence falls back to the other target; 0.5 is equal weight.
-    "mctsValueWeight": 0.5,
-    // Full-state pipelines keep all states through this turn, then sample a
-    // deterministic per-game late-state cap. Placement datasets are not sampled.
-    "earlyGameTurnLimit": 10,
-    "maxLateGameStatesPerGame": 20,
+    // Linearly reduce normalized-MCTS evidence from start to end by
+    // turnNumber / game.turns. Placement states use the start weight.
+    "mctsValueWeightStart": 0.9,
+    "mctsValueWeightEnd": 0.1,
+    // Full-state pipelines deterministically cap each max-VP progress stratum.
+    // Placement datasets are not sampled.
+    "maxStatesPerVictoryPoint": 20,
     "valueLossWeight": 1.0,
     "policyLossWeight": 1.0,
     // Enable per-epoch checkpointing for training recovery.

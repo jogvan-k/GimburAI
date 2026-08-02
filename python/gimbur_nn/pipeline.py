@@ -86,9 +86,9 @@ class TrainConfig:
     advantage: bool = False
     value_loss_weight: float = 1.0
     policy_loss_weight: float = 1.0
-    mcts_value_weight: float = 0.5
-    early_game_turn_limit: int = 10
-    max_late_game_states_per_game: int = 20
+    mcts_value_weight_start: float = 0.9
+    mcts_value_weight_end: float = 0.1
+    max_states_per_victory_point: int = 20
 
 
 @dataclass
@@ -1143,9 +1143,9 @@ def _step_train(
         "advantage": advantage,
         "valueLossWeight": tr.value_loss_weight,
         "policyLossWeight": tr.policy_loss_weight,
-        "mctsValueWeight": tr.mcts_value_weight,
-        "earlyGameTurnLimit": tr.early_game_turn_limit,
-        "maxLateGameStatesPerGame": tr.max_late_game_states_per_game,
+        "mctsValueWeightStart": tr.mcts_value_weight_start,
+        "mctsValueWeightEnd": tr.mcts_value_weight_end,
+        "maxStatesPerVictoryPoint": tr.max_states_per_victory_point,
     }
 
     # Enable per-epoch checkpointing if configured.
