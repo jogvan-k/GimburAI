@@ -165,6 +165,7 @@ after training.
 | `name`  | string   | `"nn-vs-greedy"`    | Name used for the result file. |
 | `games` | int      | `10000`             | Number of benchmark games. At 10,000, the worst-case 95% Wald margin is 0.98 percentage points. |
 | `ai`    | string[] | `["nn", "greedy"]`  | AI player types for the matchup. |
+| `parallelism` | int/null | `null` | Override concurrent benchmark games; NN/server benchmarks otherwise use up to 4. |
 
 For placement-and-state pipelines, the focused benchmark AIs are:
 

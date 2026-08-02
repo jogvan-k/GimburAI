@@ -95,6 +95,7 @@ internal record BenchmarkOptions
     /// Defaults to unlimited.
     /// </summary>
     public int? ServerMaxPriorDepth { get; init; }
+    public int Parallelism { get; init; }
 }
 
 /// <summary>
@@ -508,9 +509,11 @@ internal class BenchmarkRunner
 
         // When NN is in use, limit parallelism to avoid overwhelming the
         // inference server with concurrent requests.
-        var maxParallelism = (UsesNn(_options.Players) || UsesServer(_options.Players))
-            ? Math.Min(4, Environment.ProcessorCount)
-            : Environment.ProcessorCount;
+        var maxParallelism = _options.Parallelism > 0
+            ? Math.Min(_options.Parallelism, Environment.ProcessorCount)
+            : (UsesNn(_options.Players) || UsesServer(_options.Players))
+                ? Math.Min(4, Environment.ProcessorCount)
+                : Environment.ProcessorCount;
 
         if (!_quiet)
         {

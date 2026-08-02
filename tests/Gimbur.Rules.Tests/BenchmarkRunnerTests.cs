@@ -56,6 +56,19 @@ internal sealed class BenchmarkRunnerTests
         Assert.That(BenchmarkConfidence.RequiredGamesForWorstCase95Margin(0.0098), Is.EqualTo(10_000));
     }
 
+    [Test]
+    public void BenchmarkOptionsAcceptExplicitParallelism()
+    {
+        var options = new BenchmarkOptions
+        {
+            NumberOfGames = 10,
+            Players = [AiKind.Random, AiKind.Greedy],
+            Parallelism = 8,
+        };
+
+        Assert.That(options.Parallelism, Is.EqualTo(8));
+    }
+
     private static CatanAction Unwrap(CoreAction action) => action.IsDeterministic
         ? (CatanDeterministicAction)((CoreAction.Deterministic)action).Item
         : (CatanStochasticAction)((CoreAction.Stochastic)action).Item;

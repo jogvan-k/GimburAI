@@ -92,7 +92,6 @@ internal static class RootCommandFactory
             Description = "Number of games to simulate",
             DefaultValueFactory = _ => 1
         };
-
         var noOfPlayersOption = new Option<int>("--players", "-p")
         {
             Description = "Player count for the simulation",
@@ -461,6 +460,11 @@ internal static class RootCommandFactory
             Description = "Number of games to run",
             DefaultValueFactory = _ => (uint)10_000,
         };
+        var benchmarkParallelismOption = new Option<int>("--parallelism")
+        {
+            Description = "Maximum benchmark games run concurrently",
+            DefaultValueFactory = _ => 0,
+        };
 
         var playersOption = new Option<string[]>("--ai")
         {
@@ -519,6 +523,7 @@ internal static class RootCommandFactory
         var command = new Command("benchmark", "Run AI-vs-AI games and compute win rates.")
         {
             noOfGamesOption,
+            benchmarkParallelismOption,
             playersOption,
             outputOption,
             searchTimeOption,
@@ -539,6 +544,7 @@ internal static class RootCommandFactory
                 cfg = ConfigLoader.Load(configFile);
 
             uint noOfGames = parseResult.GetValue(noOfGamesOption);
+            int parallelism = parseResult.GetValue(benchmarkParallelismOption);
             int seed = parseResult.GetValue(globals.Seed) ?? new Random().Next();
             string? mapConfig = parseResult.GetValue(globals.MapConfiguration);
             string? verbosity = ParseVerbosity(parseResult, globals);
@@ -557,6 +563,8 @@ internal static class RootCommandFactory
             {
                 if (!WasProvided(parseResult, "--games", "-g"))
                     noOfGames = ConfigLoader.GetUInt(cfg, "games") ?? noOfGames;
+                if (!WasProvided(parseResult, "--parallelism"))
+                    parallelism = ConfigLoader.GetInt(cfg, "parallelism") ?? parallelism;
                 if (!WasProvided(parseResult, "--seed"))
                     seed = ConfigLoader.GetInt(cfg, "seed") ?? seed;
                 if (!WasProvided(parseResult, "--map-config"))
@@ -624,6 +632,7 @@ internal static class RootCommandFactory
                 ServerUrl = serverUrl,
                 ServerPriorMode = serverPriorMode,
                 ServerMaxPriorDepth = serverMaxPriorDepth,
+                Parallelism = parallelism,
             };
 
             var runner = new BenchmarkRunner(options);

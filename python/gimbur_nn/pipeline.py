@@ -131,6 +131,7 @@ class BenchmarkConfig:
     search_time_ms: int | None = None
     server_prior_mode: str | None = None
     server_max_prior_depth: int | None = None
+    parallelism: int | None = None
 
 
 @dataclass
@@ -1239,6 +1240,8 @@ def _step_benchmark(
                 bench_config["serverPriorMode"] = bench.server_prior_mode
             if bench.server_max_prior_depth is not None:
                 bench_config["serverMaxPriorDepth"] = bench.server_max_prior_depth
+            if bench.parallelism is not None:
+                bench_config["parallelism"] = bench.parallelism
 
             config_path = _write_config(cfg, f"benchmark_gen{gen}_{bench.name}", bench_config)
 

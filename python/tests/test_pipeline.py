@@ -224,6 +224,12 @@ def test_summary_preserves_confidence_metadata(tmp_path) -> None:
     assert benchmark["worstCaseConfidence95Margin"]["nn-placement-state"] == 0.0098
 
 
+def test_benchmark_config_loads_parallelism() -> None:
+    config = _load_section(BenchmarkConfig, {"parallelism": 12})
+
+    assert config.parallelism == 12
+
+
 def test_progress_chart_accepts_confidence_error_bars(tmp_path) -> None:
     pytest.importorskip("matplotlib")
     cfg = PipelineConfig(
