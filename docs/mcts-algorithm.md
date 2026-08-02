@@ -66,12 +66,13 @@ type IStochasticCoreAction =
 
 Each node in the search tree wraps an `ICoreState` and tracks visit statistics:
 
-| Field      | Type                 | Description                              |
-|------------|----------------------|------------------------------------------|
-| State      | ICoreState           | The underlying game state                |
-| Actions    | Action[]             | Per-action status (see below)            |
-| Rollouts   | int (mutable)        | Total visit count                        |
-| WinCounts  | float[] (mutable)    | Per-player cumulative wins               |
+| Field       | Type                 | Description                              |
+|-------------|----------------------|------------------------------------------|
+| State       | ICoreState           | The underlying game state                |
+| Actions     | Action[]             | Per-action tree status (see below)       |
+| ActionStats | ActionStats[]        | Per-action edge visits and value sums    |
+| Rollouts    | int (mutable)        | Total node visit count                   |
+| WinCounts   | float[] (mutable)    | Per-player cumulative node values        |
 
 `Actions` is initialized by wrapping each `CoreAction` in `Unexplored`. As the
 tree grows, entries are replaced:
@@ -95,6 +96,13 @@ A `StochasticOutcome` pairs a probability weight with its own `MCTSState`:
 type StochasticOutcome = { ProbabilityWeight: int; State: MCTSState }
 ```
 
+Each action index also has mutable edge statistics independent of its child
+nodes: `CompletedVisits`, `PendingVisits`, and per-player `ValueSums`. This
+separation is required because one stochastic action visit can evaluate or
+traverse several outcome nodes. `PendingVisits` is currently zero in synchronous
+rollout search, but is included in PUCT so asynchronous evaluation can reserve
+an edge without changing the selection formula later.
+
 ## Phase 1 — Selection
 
 Selection walks from the root toward the frontier. At each node it picks the
@@ -102,19 +110,19 @@ action with the highest evaluation score (PUCT-based) and follows it.
 
 ```
 select(root):
-    visitedStates = [root]
+    path = { States = [root]; Edges = [] }
     current = root
     loop:
         if current has no actions → return Exhausted
         pick action with highest actionEvaluator score
         match action:
-            Unexplored → return Candidate(visitedStates, actionIndex)
-            DeterministicAction(child) → push child, continue
+            Unexplored → return Candidate(path, actionIndex)
+            DeterministicAction(child) → push child and selected edge, continue
             StochasticAction(outcomes) → sample an outcome by weight:
                 if outcome unvisited → return StochasticCandidate(...)
                 else push outcome state, continue
             HorizonAction(child) → return Horizon(visitedStates, child)
-            Terminal(outcome) → return Exhausted(visitedStates, outcome)
+            Terminal(outcome) → push selected edge, return Exhausted(path, outcome)
 ```
 
 The result is one of four cases:
@@ -133,23 +141,17 @@ The result is one of four cases:
 ```
 actionEvaluator(state, action, index):
     P = state.Priors[index] if priors exist, else 1 / len(actions)
+    edge = state.ActionStats[index]
     match action:
-        Unexplored →
-            C_puct * P * sqrt(N_parent) / 1
-        DeterministicAction(child) | HorizonAction(child) →
-            winRate(child, actingPlayer) + C_puct * P * sqrt(N_parent) / (1 + child.Rollouts)
-        StochasticAction(outcomes) →
-            if totalRollouts = 0 →
-                C_puct * P * sqrt(N_parent) / 1
-            else
-                sampledWinRate(outcomes, actingPlayer)
-                + C_puct * P * sqrt(N_parent) / (1 + totalRollouts)
+        Unexplored | DeterministicAction | HorizonAction | StochasticAction →
+            edge.ValueSums[actingPlayer] / edge.CompletedVisits (or 0 if unvisited)
+            + C_puct * P * sqrt(N_parent)
+              / (1 + edge.CompletedVisits + edge.PendingVisits)
         Terminal(outcome) → outcome[actingPlayer]
 ```
 
-`HorizonAction` is evaluated identically to `DeterministicAction` — the wrapped
-`MCTSState` accumulates rollout statistics that drive the win rate and
-exploration balance.
+All non-terminal action kinds use their own edge Q and visit count. Child node
+rollouts do not define the parent action's statistics.
 
 This is a variant of the PUCT (Predictor + UCB applied to Trees) formula. When
 no neural network priors are available, `P` defaults to a uniform distribution
@@ -172,8 +174,10 @@ When selection returns a `Candidate`, the unexplored action is expanded:
   otherwise use `DeterministicAction(newNode)`.
 - **Stochastic**: call `action.Outcomes()` to get all weighted outcomes, wrap
   each in a `MCTSState` and a `StochasticOutcome`, and replace `Unexplored` with
-  `StochasticAction(outcomes)`. One outcome is sampled by weight and returned
-  as the node to simulate from.
+  `StochasticAction(outcomes)`. On this first expansion, run one existing random
+  rollout from every outcome and probability-weight the per-player results.
+  Commit that expectation as exactly one visit to the stochastic action edge
+  and its ancestor nodes. Each outcome node receives its own rollout result.
 
 When selection returns a `StochasticCandidate`, the stochastic action is already
 expanded — the unvisited outcome state is used directly for simulation.
@@ -234,15 +238,19 @@ or negative, a draw (all zeros) is returned.
 
 ## Phase 5 — Backpropagation
 
-The outcome vector is added to every node along the selection path (the
-`visitedStates` list plus the expanded/simulated node):
+The outcome vector is added to every node and selected action edge along the
+selection path:
 
 ```
-backPropagate(visitedStates, outcome):
-    for state in visitedStates:
+backPropagate(path, outcome):
+    for state in path.States:
         state.Rollouts += 1
         for each player j:
             state.WinCounts[j] += outcome[j]
+    for edge in path.Edges:
+        edge.CompletedVisits += 1
+        for each player j:
+            edge.ValueSums[j] += outcome[j]
 ```
 
 This is a simple additive update — every node on the path gets the full outcome.
@@ -372,10 +380,8 @@ action at each node using pure exploitation (no exploration term):
 ```
 extractionEvaluator(player, action):
     Terminal(outcome)           → outcome[player]
-    DeterministicAction(child)  → winRate(child, player)
-    HorizonAction(child)       → winRate(child, player)
-    StochasticAction(outcomes)  → sampledWinRate(outcomes, player)
-    Unexplored                  → 0.0
+    any other action            → edge.ValueSums[player] / edge.CompletedVisits
+                                  (or 0 if unvisited)
 ```
 
 Extraction continues through deterministic actions and stops when it encounters
@@ -473,18 +479,12 @@ into it normally.
 
 ### Evaluation of stochastic actions
 
-When `actionEvaluator` compares a `StochasticAction` against other actions at
-the same node, it computes a **weighted win rate** across all visited outcomes:
-
-```
-sampledWinRate(outcomes, player):
-    visited = outcomes where rollouts > 0
-    sum(weight * winRate(outcome, player) for outcome in visited) / sum(weights of visited)
-```
-
-The exploration bonus uses the total rollout count across all outcomes as the
-"child visit count" in the PUCT formula. If no outcome has been visited yet, the
-action is treated as unexplored.
+`actionEvaluator` uses the stochastic action edge's accumulated Q and visit
+count, exactly like a deterministic edge. Initial expansion computes one exact
+expectation over one rollout from every outcome. Later visits sample one outcome
+by weight and backpropagate that sample once; they do not multiply it by the
+outcome probability again. This avoids both counting all initial outcomes as
+separate action visits and double probability weighting sampled revisits.
 
 ### Rollout through stochastic actions
 

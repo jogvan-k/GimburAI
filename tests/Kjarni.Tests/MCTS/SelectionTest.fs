@@ -35,10 +35,11 @@ type selectTests() =
         let result = select (sqrt 2.) root
 
         match result with
-        | Candidate (ancestors, i) ->
+        | Candidate (path, i) ->
             // select starts with [root] so the visited states list contains just the root
-            ancestors |> should haveLength 1
-            ancestors.[0] |> should equal root
+            path.States |> should haveLength 1
+            path.States.[0] |> should equal root
+            path.Edges |> should be Empty
             i |> should equal 0
         | _ -> Assert.Fail()
 
@@ -52,6 +53,8 @@ type selectTests() =
         expandedState.WinCounts <- [| 0.; 1. |]
         root.Rollouts <- 1
         root.WinCounts <- [| 0.; 1. |]
+        root.ActionStats.[0].CompletedVisits <- 1
+        root.ActionStats.[0].ValueSums.[1] <- 1.
 
         let result = select (sqrt 2.) root
 

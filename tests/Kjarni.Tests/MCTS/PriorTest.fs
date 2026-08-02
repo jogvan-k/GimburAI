@@ -254,6 +254,9 @@ type PUCTActionEvaluatorTests() =
             [| DeterministicAction child1State
                Unexplored(Deterministic(action(termNode p1 0, termNode p2 2))) |]
         root.Priors <- Some [| 0.7; 0.3 |]
+        root.ActionStats.[0].CompletedVisits <- 10
+        root.ActionStats.[0].ValueSums.[0] <- 6.
+        root.ActionStats.[0].ValueSums.[1] <- 4.
 
         let score0 = actionEvaluator (sqrt 2.) root 0 root.Actions.[0]
         // Q = 0.6, C * P * sqrt(N_parent) / (1 + N_action) = sqrt(2) * 0.7 * sqrt(20) / 11

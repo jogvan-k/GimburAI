@@ -11,6 +11,7 @@ type MCTSState(state: ICoreState) =
     let mutable _rollouts = 0
     let mutable _winCounts = Array.zeroCreate<float> state.NumberOfPlayers
     let mutable _actions = state.Actions() |> Array.map Unexplored
+    let mutable _actionStats = _actions |> Array.map (fun _ -> ActionStats(state.NumberOfPlayers))
     let mutable _priors: float[] option = None
     let mutable _densePriors: float[] option = None
     let mutable _valueEstimates: float[] option = None
@@ -25,7 +26,10 @@ type MCTSState(state: ICoreState) =
     member _.State = state
     member _.Actions
       with get () = _actions
-      and set value = _actions <- value
+      and set value =
+          _actions <- value
+          _actionStats <- value |> Array.map (fun _ -> ActionStats(state.NumberOfPlayers))
+    member _.ActionStats = _actionStats
     /// Optional NN prior policy over actions. When Some, actionEvaluator uses
     /// P(action_i) = Priors[i] in the PUCT formula. When None, uniform prior.
     member _.Priors
@@ -42,6 +46,19 @@ type MCTSState(state: ICoreState) =
       with get () = _valueEstimates
       and set value = _valueEstimates <- value
 
+and ActionStats(numberOfPlayers: int) =
+    let mutable _completedVisits = 0
+    let mutable _pendingVisits = 0
+    let _valueSums = Array.zeroCreate<float> numberOfPlayers
+
+    member _.CompletedVisits
+      with get () = _completedVisits
+      and set value = _completedVisits <- value
+    member _.PendingVisits
+      with get () = _pendingVisits
+      and set value = _pendingVisits <- value
+    member _.ValueSums = _valueSums
+
 and Action =
     | Unexplored of CoreAction
     | DeterministicAction of MCTSState
@@ -51,11 +68,17 @@ and Action =
 
 and StochasticOutcome = { ProbabilityWeight: int; State: MCTSState }
 
+type SelectedAction = { Parent: MCTSState; ActionIndex: int }
+
+type SelectionPath =
+    { States: MCTSState list
+      Edges: SelectedAction list }
+
 type SelectionResult =
-    | Candidate of (MCTSState list * int)
-    | StochasticCandidate of (MCTSState list * int * int)
-    | Exhausted of (MCTSState list * float array)
-    | Horizon of (MCTSState list * MCTSState)
+    | Candidate of (SelectionPath * int)
+    | StochasticCandidate of (SelectionPath * int)
+    | Exhausted of (SelectionPath * float array)
+    | Horizon of (SelectionPath * MCTSState)
 
 type LogInfo =
     struct

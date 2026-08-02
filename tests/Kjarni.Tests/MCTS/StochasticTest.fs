@@ -60,6 +60,23 @@ type single_det_state(playerTurn, hash, target: ICoreState) =
     override _.GetHashCode() = hash
     override _.Equals other = hash = other.GetHashCode()
 
+type counting_det_action(target: ICoreState, calls: int ref) =
+    interface IDeterministicCoreAction with
+        member _.State() =
+            calls.Value <- calls.Value + 1
+            target
+
+type counting_rollout_state(playerTurn, hash, target: ICoreState, calls: int ref) =
+    interface ICoreState with
+        member _.PlayerTurn = playerTurn
+        member _.NumberOfPlayers = 2
+        member _.TurnNumber = 0
+        member _.Actions() = [| Deterministic(counting_det_action(target, calls)) |]
+        member _.Scores() = Array.zeroCreate<float> 2
+
+    override _.GetHashCode() = hash
+    override _.Equals other = hash = other.GetHashCode()
+
 // ────────────────────────────────────────────────────────────────
 // rollStochasticAction
 // ────────────────────────────────────────────────────────────────
@@ -167,8 +184,8 @@ type StochasticselectTests() =
         // The only action is Unexplored (Stochastic _), so select should
         // return Candidate for expansion.
         match select (sqrt 2.) root with
-        | Candidate (ancestors, idx) ->
-            ancestors |> should haveLength 1
+        | Candidate (path, idx) ->
+            path.States |> should haveLength 1
             idx |> should equal 0
         | r -> Assert.Fail $"Expected Candidate, got %A{r}"
 
@@ -188,9 +205,10 @@ type StochasticselectTests() =
 
         // Outcomes have 0 rollouts, so select should return StochasticCandidate
         match result with
-        | StochasticCandidate (ancestors, actionIdx, outcomeIdx) ->
-            ancestors |> should haveLength 1
-            actionIdx |> should equal 0
+        | StochasticCandidate (path, outcomeIdx) ->
+            path.States |> should haveLength 2
+            path.Edges |> should haveLength 1
+            path.Edges.[0].ActionIndex |> should equal 0
             outcomeIdx |> should be (greaterThanOrEqualTo 0)
             outcomeIdx |> should be (lessThan 2)
         | r -> Assert.Fail $"Expected StochasticCandidate, got %A{r}"
@@ -331,6 +349,9 @@ type StochasticActionEvaluatorTests() =
 
         // Set up root with a single stochastic action for correct uniform prior
         root.Actions <- [| StochasticAction outcomes |]
+        root.ActionStats.[0].CompletedVisits <- 10
+        root.ActionStats.[0].ValueSums.[0] <- 5.
+        root.ActionStats.[0].ValueSums.[1] <- 5.
 
         let score = actionEvaluator (sqrt 2.) root 0 (StochasticAction outcomes)
         // sampledWinRate = (1*1.0 + 1*0.0) / 2 = 0.5
@@ -340,6 +361,19 @@ type StochasticActionEvaluatorTests() =
         //     = 0.5 + 4.47 / 11 ≈ 0.5 + 0.406 ≈ 0.906
         score |> should be (greaterThan 0.85)
         score |> should be (lessThan 0.97)
+
+    [<Test>]
+    member _.UsesEdgeValuesAndCompletedPlusPendingVisits() =
+        let root = dummyRoot ()
+        let outcomes = [| makeOutcome 1 100 100. 0. |]
+        root.Actions <- [| StochasticAction outcomes |]
+        root.ActionStats.[0].CompletedVisits <- 4
+        root.ActionStats.[0].PendingVisits <- 3
+        root.ActionStats.[0].ValueSums.[0] <- 1.
+
+        let score = actionEvaluator 2. root 0 root.Actions.[0]
+
+        score |> should (equalWithin 0.001) (0.25 + 2. * sqrt 10. / 8.)
 
 // ────────────────────────────────────────────────────────────────
 // backPropagate through stochastic outcome states
@@ -507,6 +541,35 @@ type StochasticSimulateTests() =
 
 [<TestFixture>]
 type StochasticSearchIntegrationTests() =
+
+    [<Test>]
+    member _.InitialExpansionEvaluatesAllOutcomesAsOneWeightedActionVisit() =
+        let callsA = ref 0
+        let callsB = ref 0
+        let outcomeA = counting_rollout_state(p1, 10, terminalNode p1 20, callsA)
+        let outcomeB = counting_rollout_state(p2, 11, terminalNode p2 21, callsB)
+        let root =
+            mixed_state(
+                p1,
+                0,
+                [],
+                [ (1, outcomeA :> ICoreState); (3, outcomeB :> ICoreState) ])
+        let mctsRoot = MCTSState(root :> ICoreState)
+        let mcts = MonteCarloTreeSearch({ MCTSConfig.Default with MaxSimulations = 1 })
+
+        mcts.RunSimulation(mctsRoot) |> ignore
+
+        mctsRoot.Rollouts |> should equal 1
+        mctsRoot.ActionStats.[0].CompletedVisits |> should equal 1
+        mctsRoot.ActionStats.[0].PendingVisits |> should equal 0
+        mctsRoot.ActionStats.[0].ValueSums.[0] |> should (equalWithin 0.001) 0.25
+        mctsRoot.ActionStats.[0].ValueSums.[1] |> should (equalWithin 0.001) 0.75
+        callsA.Value |> should equal 1
+        callsB.Value |> should equal 1
+        match mctsRoot.Actions.[0] with
+        | StochasticAction outcomes ->
+            outcomes |> Array.iter (fun outcome -> outcome.State.Rollouts |> should equal 1)
+        | action -> Assert.Fail $"Expected resolved stochastic action, got %A{action}"
 
     [<Test>]
     member _.SearchWithStochasticAction_Completes() =

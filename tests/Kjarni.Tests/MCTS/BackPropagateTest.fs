@@ -60,3 +60,17 @@ type BackPropagateTest() =
 
         winRate root Player.Player1 |> should equal 1.
         winRate child Player.Player1 |> should equal 1.
+
+    [<Test>]
+    member _.PropagatesToSelectedActionEdges() =
+        let rootNode = node_builder(p1, 0, 0, 0, node_builder(p2, 1, 0, 1)).build ()
+        let root = MCTSState rootNode
+        let child = expand None (root, 0)
+        let path =
+            { States = [ child; root ]
+              Edges = [ { Parent = root; ActionIndex = 0 } ] }
+
+        backPropagatePath path [| 0.25; 0.75 |]
+
+        root.ActionStats.[0].CompletedVisits |> should equal 1
+        root.ActionStats.[0].ValueSums |> should equal [| 0.25; 0.75 |]

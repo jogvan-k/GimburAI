@@ -136,7 +136,13 @@ type horizonTests() =
         child.Rollouts <- 10
         child.WinCounts <- [| 6.; 4. |]
 
-        let result = extractionEvaluator (Player.Player1, HorizonAction child)
+        let root = MCTSState(node_builder(p1, 0, 0, 399, node_builder(p1, 0, 0, 400)).build())
+        root.Actions.[0] <- HorizonAction child
+        root.ActionStats.[0].CompletedVisits <- 10
+        root.ActionStats.[0].ValueSums.[0] <- 6.
+        root.ActionStats.[0].ValueSums.[1] <- 4.
+
+        let result = extractionEvaluator root 0
 
         result |> should equal 0.6
 
@@ -146,7 +152,12 @@ type horizonTests() =
         let child = MCTSState(childNode)
         child.Rollouts <- 42
 
-        let result = actionRollouts (HorizonAction child)
+        let root = MCTSState(node_builder(p1, 0, 0, 499, node_builder(p1, 0, 0, 500)).build())
+        root.Actions.[0] <- HorizonAction child
+        root.ActionStats.[0].CompletedVisits <- 40
+        root.ActionStats.[0].PendingVisits <- 2
+
+        let result = actionRollouts root 0
 
         result |> should equal 42
 

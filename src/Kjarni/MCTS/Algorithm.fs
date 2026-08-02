@@ -23,6 +23,10 @@ let explorationRate (explorationConstant: float) (parentVisitCount: int) (action
 let winRate (state: MCTSState) (player: Player) =
     state.WinCounts[int player] / float state.Rollouts
 
+let edgeQ (stats: ActionStats) (player: Player) =
+    if stats.CompletedVisits = 0 then 0.
+    else stats.ValueSums.[int player] / float stats.CompletedVisits
+
 let sampledWinRate outcomes player =
     let sampledOutcomes = outcomes |> Array.filter (fun o -> o.State.Rollouts > 0)
     let denominator = Array.sumBy (fun o -> float o.ProbabilityWeight) sampledOutcomes
@@ -34,26 +38,20 @@ let sampledWinRate outcomes player =
 
 let actionEvaluator (explorationConstant: float) (state: MCTSState) (actionIndex: int) (l: Action) =
     let actingPlayer = state.State.PlayerTurn
+    let stats = state.ActionStats.[actionIndex]
     let prior =
         match state.Priors with
         | Some p -> p.[actionIndex]
         | None -> 1. / float state.Actions.Length
 
     match l with
-    | Unexplored _ ->
-        explorationRate explorationConstant state.Rollouts 0 prior
-    | DeterministicAction resState | HorizonAction resState ->
-        let winRate = winRate resState actingPlayer
-        let explorationRate = explorationRate explorationConstant state.Rollouts resState.Rollouts prior
-        winRate + explorationRate
-    | StochasticAction outcomes ->
-        let totalRollouts = Array.sumBy (fun i -> i.State.Rollouts) outcomes
-        if totalRollouts = 0 then
-            explorationRate explorationConstant state.Rollouts 0 prior
-        else
-            let winRate = sampledWinRate outcomes actingPlayer
-            let explorationRate = explorationRate explorationConstant state.Rollouts totalRollouts prior
-            winRate + explorationRate
+    | Unexplored _ | DeterministicAction _ | HorizonAction _ | StochasticAction _ ->
+        edgeQ stats actingPlayer
+        + explorationRate
+            explorationConstant
+            state.Rollouts
+            (stats.CompletedVisits + stats.PendingVisits)
+            prior
     | Terminal win -> win.[int actingPlayer]
 
 let rollStochasticAction(probWeights: int array) =
@@ -67,28 +65,36 @@ let rollStochasticAction(probWeights: int array) =
     i
 
 
-let rec recSelect (explorationConstant: float) (s: MCTSState, visitedStates: MCTSState list) =
+let rec recSelect (explorationConstant: float) (s: MCTSState, path: SelectionPath) =
     if Array.isEmpty s.Actions then
-        Exhausted(visitedStates, oneHotOutcome(s.State.PlayerTurn, s.State.NumberOfPlayers))
+        Exhausted(path, oneHotOutcome(s.State.PlayerTurn, s.State.NumberOfPlayers))
     else
         let selectedAction =
             s.Actions
               |> Array.indexed
               |> Array.maxBy (fun (i, a) -> actionEvaluator explorationConstant s i a)
         match snd selectedAction with
-        | Unexplored _ -> Candidate(visitedStates, fst selectedAction)
-        | DeterministicAction ds -> recSelect explorationConstant (ds,  ds :: visitedStates)
+        | Unexplored _ -> Candidate(path, fst selectedAction)
+        | DeterministicAction ds ->
+            let edge = { Parent = s; ActionIndex = fst selectedAction }
+            recSelect explorationConstant (ds, { States = ds :: path.States; Edges = edge :: path.Edges })
         | StochasticAction so ->
             let i = rollStochasticAction (Array.map (fun o -> o.ProbabilityWeight) so)
             let state = so.[i].State
+            let edge = { Parent = s; ActionIndex = fst selectedAction }
+            let nextPath = { States = state :: path.States; Edges = edge :: path.Edges }
             if state.Rollouts = 0 // Unexplored outcome, return state
-            then StochasticCandidate(visitedStates, fst selectedAction, i)
-            else recSelect explorationConstant (state, state :: visitedStates)
-        | Terminal outcome -> Exhausted(visitedStates, outcome)
-        | HorizonAction hs -> Horizon(visitedStates, hs)
+            then StochasticCandidate(nextPath, i)
+            else recSelect explorationConstant (state, nextPath)
+        | Terminal outcome ->
+            let edge = { Parent = s; ActionIndex = fst selectedAction }
+            Exhausted({ path with Edges = edge :: path.Edges }, outcome)
+        | HorizonAction hs ->
+            let edge = { Parent = s; ActionIndex = fst selectedAction }
+            Horizon({ path with Edges = edge :: path.Edges }, hs)
 
 let select (explorationConstant: float) (root: MCTSState) =
-    recSelect explorationConstant (root, [root])
+    recSelect explorationConstant (root, { States = [root]; Edges = [] })
 
 let expand (leafBoundary: (ICoreState -> bool) option) (s: MCTSState, i) =
       match s.Actions.[i] with
@@ -172,13 +178,32 @@ let backPropagate (visitedStates: MCTSState list) (outcome: float array) =
         for j in 0 .. state.WinCounts.Length - 1 do
             state.WinCounts.[j] <- state.WinCounts.[j] + outcome.[j]
 
-let extractionEvaluator (p: Player, l: Action) =
-    match l with
-    | Terminal outcome -> outcome.[int p]
-    | DeterministicAction da -> winRate da p
-    | StochasticAction outcomes -> sampledWinRate outcomes p
-    | HorizonAction ha -> winRate ha p
-    | Unexplored _ -> 0.
+let backPropagatePath (path: SelectionPath) (outcome: float array) =
+    backPropagate path.States outcome
+    for edge in path.Edges do
+        let stats = edge.Parent.ActionStats.[edge.ActionIndex]
+        stats.CompletedVisits <- stats.CompletedVisits + 1
+        for j in 0 .. stats.ValueSums.Length - 1 do
+            stats.ValueSums.[j] <- stats.ValueSums.[j] + outcome.[j]
+
+let weightedOutcome (weightedOutcomes: (int * float array) array) =
+    let totalWeight = weightedOutcomes |> Array.sumBy (fst >> float)
+    let result = Array.zeroCreate<float> (snd weightedOutcomes.[0]).Length
+    for weight, outcome in weightedOutcomes do
+        for j in 0 .. result.Length - 1 do
+            result.[j] <- result.[j] + float weight * outcome.[j] / totalWeight
+    result
+
+let evaluateStochasticOutcomes (evaluate: MCTSState -> float array) (outcomes: StochasticOutcome array) =
+    outcomes
+    |> Array.map (fun stochasticOutcome ->
+        stochasticOutcome.ProbabilityWeight, evaluate stochasticOutcome.State)
+    |> weightedOutcome
+
+let extractionEvaluator (state: MCTSState) actionIndex =
+    match state.Actions.[actionIndex] with
+    | Terminal outcome -> outcome.[int state.State.PlayerTurn]
+    | _ -> edgeQ state.ActionStats.[actionIndex] state.State.PlayerTurn
 
 let extractBestPath (root: MCTSState) =
     let mutable path = List.empty
@@ -192,7 +217,7 @@ let extractBestPath (root: MCTSState) =
             let bestAction =
                 currentState.Actions
                 |> Array.indexed
-                |> Array.maxBy (fun l -> extractionEvaluator (currentState.State.PlayerTurn, snd l))
+                |> Array.maxBy (fun (i, _) -> extractionEvaluator currentState i)
 
             path <- fst bestAction :: path
 
@@ -202,17 +227,13 @@ let extractBestPath (root: MCTSState) =
 
     path |> List.rev
 
-let actionRollouts (a: Action) =
-    match a with
-    | Unexplored _ -> 0
-    | DeterministicAction s -> s.Rollouts
-    | HorizonAction s -> s.Rollouts
-    | StochasticAction outcomes -> Array.sumBy (fun o -> o.State.Rollouts) outcomes
-    | Terminal _ -> 0
+let actionRollouts (state: MCTSState) actionIndex =
+    let stats = state.ActionStats.[actionIndex]
+    stats.CompletedVisits + stats.PendingVisits
 
 let maxActionRollouts (root: MCTSState) =
-    if Array.isEmpty root.Actions then 0
-    else root.Actions |> Array.map actionRollouts |> Array.max
+    if Array.isEmpty root.ActionStats then 0
+    else root.Actions |> Array.mapi (fun i _ -> actionRollouts root i) |> Array.max
 
 /// Returns true when every action in the state is Terminal.
 let allActionsTerminal (s: MCTSState) =
@@ -600,69 +621,83 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
           && maxActionRollouts root < actionRolloutLimit
           && not (isResolved root) do
         match select explorationConstant root with
-        | Exhausted (stateHistory, outcome) ->
-            resubmitPriors stateHistory
-            backPropagate stateHistory outcome
-            propagateTerminals stateHistory
+        | Exhausted (path, outcome) ->
+            resubmitPriors path.States
+            backPropagatePath path outcome
+            propagateTerminals path.States
             collectPriors ()
-        | Candidate (stateHistory, i) ->
-            resubmitPriors stateHistory
-            let mostRecentState = stateHistory.[0]
-            let depth = stateHistory.Length
+        | Candidate (path, i) ->
+            resubmitPriors path.States
+            let mostRecentState = path.States.[0]
+            let depth = path.States.Length
 
             let expandedState = expand leafBoundary (mostRecentState, i)
-            let visitedStates = expandedState :: stateHistory
+            let selectedEdge = { Parent = mostRecentState; ActionIndex = i }
+            let expandedPath =
+                { States = expandedState :: path.States
+                  Edges = selectedEdge :: path.Edges }
 
             match mostRecentState.Actions.[i] with
             | HorizonAction _ ->
                 let outcome = simulate maxRolloutDepth expandedState
-                backPropagate visitedStates outcome
+                backPropagatePath expandedPath outcome
                 priorStats.horizonSkips <- priorStats.horizonSkips + 1
                 collectPriors ()
+            | StochasticAction stochasticOutcomes ->
+                for stochasticOutcome in stochasticOutcomes do
+                    requestPrior stochasticOutcome.State depth
+
+                let evaluateOutcome (outcomeState: MCTSState) =
+                    let outcome =
+                        if Array.isEmpty outcomeState.Actions then
+                            oneHotOutcome (outcomeState.State.PlayerTurn, outcomeState.State.NumberOfPlayers)
+                        else
+                            simulate maxRolloutDepth outcomeState
+                    backPropagate [ outcomeState ] outcome
+                    outcome
+
+                let outcome = evaluateStochasticOutcomes evaluateOutcome stochasticOutcomes
+                backPropagatePath
+                    { States = path.States
+                      Edges = selectedEdge :: path.Edges }
+                    outcome
+
+                for stochasticOutcome in stochasticOutcomes do
+                    propagateTerminals (stochasticOutcome.State :: path.States)
+                collectPriors ()
             // Check if the expanded state is a terminal game state (no actions).
-            // For deterministic actions, replace the parent's action with Terminal
-            // immediately. For stochastic actions (which expand all outcomes at
-            // once), let propagateTerminals handle resolution after all outcomes
-            // are visited.
             | _ when Array.isEmpty expandedState.Actions ->
                 let outcome = oneHotOutcome (expandedState.State.PlayerTurn, expandedState.State.NumberOfPlayers)
-                backPropagate visitedStates outcome
+                backPropagatePath expandedPath outcome
                 match mostRecentState.Actions.[i] with
                 | DeterministicAction _ ->
                     mostRecentState.Actions.[i] <- Terminal outcome
                 | _ -> ()
-                propagateTerminals visitedStates
+                propagateTerminals expandedPath.States
                 collectPriors ()
             | _ ->
                 // Phase 3 — Prior request: enqueue async NN evaluation for the
                 // expanded node's actions.
                 requestPrior expandedState depth
                 let outcome = simulate maxRolloutDepth expandedState
-                backPropagate visitedStates outcome
-                propagateTerminals visitedStates
+                backPropagatePath expandedPath outcome
+                propagateTerminals expandedPath.States
                 collectPriors ()
-        | StochasticCandidate (stateHistory, ia, is) ->
-            resubmitPriors stateHistory
-            match stateHistory.[0].Actions.[ia] with
-            | StochasticAction stochasticOutcomes ->
-                let expandedState = stochasticOutcomes.[is].State
-                let visitedStates = expandedState :: stateHistory
-
+        | StochasticCandidate (path, _) ->
+            resubmitPriors path.States
+            let expandedState = path.States.[0]
+            let outcome =
                 if Array.isEmpty expandedState.Actions then
-                    let outcome = oneHotOutcome (expandedState.State.PlayerTurn, expandedState.State.NumberOfPlayers)
-                    backPropagate visitedStates outcome
-                    propagateTerminals visitedStates
-                    collectPriors ()
+                    oneHotOutcome (expandedState.State.PlayerTurn, expandedState.State.NumberOfPlayers)
                 else
-                    let outcome = simulate maxRolloutDepth expandedState
-                    backPropagate visitedStates outcome
-                    propagateTerminals visitedStates
-                    collectPriors ()
-            | _ -> failwith "unreachable"
-        | Horizon (stateHistory, horizonState) ->
-            resubmitPriors stateHistory
+                    simulate maxRolloutDepth expandedState
+            backPropagatePath path outcome
+            propagateTerminals path.States
+            collectPriors ()
+        | Horizon (path, horizonState) ->
+            resubmitPriors path.States
             let outcome = simulate maxRolloutDepth horizonState
-            backPropagate (horizonState :: stateHistory) outcome
+            backPropagatePath { path with States = horizonState :: path.States } outcome
             priorStats.horizonSkips <- priorStats.horizonSkips + 1
             collectPriors ()
 
