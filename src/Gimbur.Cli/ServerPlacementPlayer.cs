@@ -20,6 +20,7 @@ internal sealed class ServerPlacementPlayer : IBenchmarkPlayer, IPriorStatsProvi
 
     public int TotalNnRequests => _placement.TotalNnRequests;
     public int TotalNnStatesEvaluated => _placement.TotalNnStatesEvaluated;
+    public int TotalPriorNodesRequested => _placement.TotalPriorNodesRequested;
     public int TotalPriorActionsApplied => _placement.TotalPriorActionsApplied;
     public int TotalPriorActionsRequested => _placement.TotalPriorActionsRequested;
     public int TotalPriorInferencesRequested => _placement.TotalPriorInferencesRequested;

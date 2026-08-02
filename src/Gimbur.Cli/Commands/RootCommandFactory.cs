@@ -459,13 +459,13 @@ internal static class RootCommandFactory
         var noOfGamesOption = new Option<uint>("--games", "-g")
         {
             Description = "Number of games to run",
-            DefaultValueFactory = _ => (uint)100,
+            DefaultValueFactory = _ => (uint)10_000,
         };
 
         var playersOption = new Option<string[]>("--ai")
         {
             Description = "AI for each player seat (e.g. --ai random greedy mcts nn). " +
-                          "Available: random, greedy, mcts, nn, nn-placement, nn-placement-random, nn-state, nn-state-random, server-mcts, server-mcts-nn, nn-mcts-placement, nn-mcts-placement-random, mcts-placement, mcts-placement-random",
+                          "Available: random, greedy, mcts, nn, nn-placement, nn-placement-random, nn-state, nn-state-random, nn-placement-state, server-mcts, server-mcts-nn, nn-mcts-placement, nn-mcts-placement-random, nn-mcts-placement-state, mcts-placement, mcts-placement-random",
             AllowMultipleArgumentsPerToken = true,
         };
         playersOption.DefaultValueFactory = _ => new[] { "random", "greedy" };
@@ -597,7 +597,7 @@ internal static class RootCommandFactory
                 if (!TryParseAiKind(aiNames[i], out var kind))
                 {
                     Console.Error.WriteLine(
-                        $"Unknown AI '{aiNames[i]}'. Available: {string.Join(", ", Enum.GetNames<AiKind>().Select(n => n.ToLowerInvariant()))}");
+                        $"Unknown AI '{aiNames[i]}'. Available: {string.Join(", ", Enum.GetValues<AiKind>().Select(AiKindNames.Format))}");
                     return;
                 }
                 aiKinds[i] = kind;
@@ -633,7 +633,7 @@ internal static class RootCommandFactory
         return command;
     }
 
-    private static bool TryParseAiKind(string name, out AiKind kind)
+    internal static bool TryParseAiKind(string name, out AiKind kind)
     {
         return Enum.TryParse(name.Replace("-", ""), ignoreCase: true, out kind);
     }

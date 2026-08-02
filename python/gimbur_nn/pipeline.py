@@ -125,7 +125,7 @@ class BenchmarkConfig:
     """
 
     name: str = "nn-vs-greedy"
-    games: int = 100
+    games: int = 10000
     ai: list[str] = field(default_factory=lambda: ["nn", "greedy"])
     phase: str = "both"  # "placement", "combined", or "both"
     search_time_ms: int | None = None
@@ -193,8 +193,8 @@ class PipelineConfig:
     gimbur_server: GimburServerConfig = field(default_factory=GimburServerConfig)
     benchmarks: list[BenchmarkConfig] = field(
         default_factory=lambda: [
-            BenchmarkConfig(name="nn-vs-greedy", games=100, ai=["nn", "greedy"]),
-            BenchmarkConfig(name="nn-vs-random", games=100, ai=["nn", "random"]),
+            BenchmarkConfig(name="nn-vs-greedy", games=10000, ai=["nn", "greedy"]),
+            BenchmarkConfig(name="nn-vs-random", games=10000, ai=["nn", "random"]),
         ]
     )
     baselines: list[BaselineBenchmarkConfig] = field(default_factory=list)
@@ -841,6 +841,7 @@ _SERVER_AI_KINDS = frozenset(
         "server-mcts-nn",
         "nn-mcts-placement",
         "nn-mcts-placement-random",
+        "nn-mcts-placement-state",
         "mcts-placement",
         "mcts-placement-random",
     }
@@ -1424,6 +1425,15 @@ def _normalize_win_rates(data: dict[str, Any]) -> dict[str, float]:
     return dict(raw)
 
 
+def _normalize_confidence(data: dict[str, Any], field: str) -> dict[str, float]:
+    """Extract per-AI confidence margins from raw or normalized results."""
+    raw = data.get("winRates", {})
+    if isinstance(raw, list):
+        return {wr["ai"]: wr[field] for wr in raw if field in wr}
+    confidence = data.get(field, {})
+    return dict(confidence) if isinstance(confidence, dict) else {}
+
+
 def _save_summary(cfg: PipelineConfig, all_results: dict[int, dict[str, Any]]) -> None:
     """Save a summary JSON tracking results across all generations."""
     summary_path = Path(cfg.results_dir) / "summary.json"
@@ -1435,6 +1445,10 @@ def _save_summary(cfg: PipelineConfig, all_results: dict[int, dict[str, Any]]) -
         for name, data in results.items():
             entry["benchmarks"][name] = {
                 "winRates": _normalize_win_rates(data),
+                "confidence95Margin": _normalize_confidence(data, "confidence95Margin"),
+                "worstCaseConfidence95Margin": _normalize_confidence(
+                    data, "worstCaseConfidence95Margin"
+                ),
                 "draws": data.get("draws", 0),
                 "totalGames": data.get("totalGames", 0),
             }
@@ -1474,25 +1488,31 @@ def _save_progress_chart(cfg: PipelineConfig, all_results: dict[int, dict[str, A
     if not all_results:
         return False
 
-    # Build a lookup from benchmark name -> subject AI name (C# lowercase).
+    # Build a lookup from benchmark name -> subject AI name.
     bench_subjects: dict[str, str] = {}
     for bench in cfg.benchmarks:
-        subject = bench.ai[0].replace("-", "").lower()
+        subject = bench.ai[0].lower()
         bench_subjects[bench.name] = subject
 
-    # Collect series: bench_name -> [(gen, win_rate), ...]
-    series: dict[str, list[tuple[int, float]]] = {}
+    # Collect series: bench_name -> [(gen, win_rate, confidence margin), ...]
+    series: dict[str, list[tuple[int, float, float | None]]] = {}
     for gen in sorted(all_results):
         for bench_name, data in all_results[gen].items():
             rates = _normalize_win_rates(data)
+            margins = _normalize_confidence(data, "confidence95Margin")
             subject = bench_subjects.get(bench_name)
             if subject is None:
                 # Benchmark not in current config (leftover from earlier run);
                 # fall back to first key in rates dict.
                 subject = next(iter(rates), None)
             rate = rates.get(subject)
+            if rate is None and subject is not None:
+                # Read benchmark files produced before canonical hyphenated names.
+                legacy_subject = subject.replace("-", "")
+                rate = rates.get(legacy_subject)
+                subject = legacy_subject
             if rate is not None:
-                series.setdefault(bench_name, []).append((gen, rate))
+                series.setdefault(bench_name, []).append((gen, rate, margins.get(subject)))
 
     if not series:
         return False
@@ -1500,9 +1520,19 @@ def _save_progress_chart(cfg: PipelineConfig, all_results: dict[int, dict[str, A
     fig, ax = plt.subplots(figsize=(8, 5))
 
     for bench_name, points in sorted(series.items()):
-        gens = [g for g, _ in points]
-        rates = [r * 100 for _, r in points]
-        ax.plot(gens, rates, marker="o", markersize=4, linewidth=1.5, label=bench_name)
+        gens = [g for g, _, _ in points]
+        rates = [r * 100 for _, r, _ in points]
+        margins = [m * 100 if m is not None else 0 for _, _, m in points]
+        ax.errorbar(
+            gens,
+            rates,
+            yerr=margins,
+            marker="o",
+            markersize=4,
+            linewidth=1.5,
+            capsize=2,
+            label=bench_name,
+        )
 
     # Equal-play horizontal lines, one per distinct player count across
     # the configured benchmarks (typically just one).
@@ -1527,8 +1557,10 @@ def _save_progress_chart(cfg: PipelineConfig, all_results: dict[int, dict[str, A
         except (json.JSONDecodeError, OSError):
             continue
         rates = _normalize_win_rates(data)
-        subject = bench.ai[0].replace("-", "").lower() if bench.ai else None
+        subject = bench.ai[0].lower() if bench.ai else None
         rate = rates.get(subject) if subject else None
+        if rate is None and subject:
+            rate = rates.get(subject.replace("-", ""))
         if rate is None:
             continue
         ax.axhline(

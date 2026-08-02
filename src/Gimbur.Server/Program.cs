@@ -182,6 +182,8 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
             PriorActionsApplied = logInfo.priorActionsApplied,
             PriorActionsRequested = logInfo.priorActionsRequested,
             PriorInferencesRequested = logInfo.priorInferencesRequested,
+            LeafEvaluationBatches = logInfo.leafEvaluationBatches,
+            LeafEvaluationStates = logInfo.leafEvaluationStates,
             AllActions = allActions,
         });
     }
@@ -280,6 +282,8 @@ record ChooseActionResponse
     public int PriorActionsApplied { get; init; }
     public int PriorActionsRequested { get; init; }
     public int PriorInferencesRequested { get; init; }
+    public int LeafEvaluationBatches { get; init; }
+    public int LeafEvaluationStates { get; init; }
     public required List<ActionInfo> AllActions { get; init; }
 }
 

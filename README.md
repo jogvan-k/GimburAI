@@ -238,11 +238,15 @@ dotnet run --project src/Gimbur.Cli -- benchmark \
 # NN-backed player vs MCTS (requires running inference server)
 dotnet run --project src/Gimbur.Cli -- benchmark \
     --ai nn mcts --nn-url http://localhost:8000
+
+# Placement policy during setup, state evaluation afterward, versus greedy
+dotnet run --project src/Gimbur.Cli -- benchmark \
+    --games 10000 --ai nn-placement-state greedy --map-config mini
 ```
 
 | Option | Short | Default | Description |
 |--------|-------|---------|-------------|
-| `--games <n>` | `-g` | `100` | Number of games to run |
+| `--games <n>` | `-g` | `10000` | Number of games to run |
 | `--ai <types...>` | | `random greedy` | AI for each player seat |
 | `--output <file>` | `-o` | none | Path to write JSON results file |
 | `--search-time <ms>` | | `1000` | MCTS search time limit in ms |
@@ -250,7 +254,14 @@ dotnet run --project src/Gimbur.Cli -- benchmark \
 | `--max-rollout-depth <n>` | | `500` | Max rollout depth |
 | `--nn-url <url>` | | `http://localhost:8000` | Base URL of the NN inference server |
 
-Available AI types: `random`, `greedy`, `mcts`, `nn`. The `nn` type queries the Python inference server's `/state/predict-player` endpoint.
+Focused model AI types are `nn-placement` (placement model, then greedy), `nn-state`
+(greedy placement, then state model), and `nn-placement-state` (placement model, then
+state model without MCTS). `nn-mcts-placement-state` uses placement-policy MCTS during
+setup and state-prior MCTS with asynchronous state leaf evaluation afterward; it also
+requires `Gimbur.Server`. The same `--nn-url` serves both model endpoints.
+
+Use 10,000 games for reported comparisons. Its worst-case 95% Wald margin is 0.0098
+(0.98 percentage points); result JSON includes observed and worst-case confidence margins.
 
 ## Python CLI (gimbur-nn)
 

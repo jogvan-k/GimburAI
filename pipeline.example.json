@@ -3,9 +3,9 @@
   "mapConfig": "mini",
   "gameConfig": "mini_2p",
   "modelConfig": "small",
-  // Model type: "state", "placement", or "combined" (placement then state).
-  // Placement uses the state-only placement_state_v3 architecture.
-  "modelType": "placement",
+  // Train placement and state models from one shared simulation corpus.
+  "trainingMode": "placement-and-state",
+  "modelType": "state",
 
   // Omit "seed" for non-reproducible runs, or set for reproducibility.
   // Each generation offsets the seed: seed + gen for simulate, seed + gen*1000 for benchmark.
@@ -86,14 +86,25 @@
   // Benchmark configurations. Each entry runs independently after training.
   "benchmarks": [
     {
-      "name": "nn-vs-greedy",
-      "games": 100,
-      "ai": ["nn", "greedy"]
+      "name": "nn-placement-vs-greedy",
+      "games": 10000,
+      "ai": ["nn-placement", "greedy"]
     },
     {
-      "name": "nn-vs-random",
-      "games": 100,
-      "ai": ["nn", "random"]
+      "name": "nn-state-vs-greedy",
+      "games": 10000,
+      "ai": ["nn-state", "greedy"]
+    },
+    {
+      "name": "nn-placement-state-vs-greedy",
+      "games": 10000,
+      "ai": ["nn-placement-state", "greedy"]
+    },
+    {
+      "name": "nn-mcts-placement-state-vs-greedy",
+      "games": 10000,
+      "ai": ["nn-mcts-placement-state", "greedy"],
+      "searchTimeMs": 1000
     }
   ]
 }

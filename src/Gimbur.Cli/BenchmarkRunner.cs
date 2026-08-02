@@ -26,12 +26,14 @@ internal enum AiKind
     NnPlacementRandom,
     NnState,
     NnStateRandom,
+    NnPlacementState,
     ServerMcts,
     ServerMctsNn,
     NnMctsPlacement,
     NnMctsPlacementRandom,
     MctsPlacement,
     MctsPlacementRandom,
+    NnMctsPlacementState,
 }
 
 /// <summary>
@@ -125,9 +127,72 @@ internal interface INnStatsProvider
 
 internal interface IPriorStatsProvider : INnStatsProvider
 {
+    int TotalPriorNodesRequested { get; }
     int TotalPriorActionsApplied { get; }
     int TotalPriorActionsRequested { get; }
     int TotalPriorInferencesRequested { get; }
+}
+
+internal static class BenchmarkConfidence
+{
+    private const double Confidence95Z = 1.96;
+
+    public static double Wald95Margin(double rate, int games) =>
+        games > 0 ? Confidence95Z * Math.Sqrt(rate * (1.0 - rate) / games) : 0.0;
+
+    public static double WorstCaseWald95Margin(int games) => Wald95Margin(0.5, games);
+
+    public static int RequiredGamesForWorstCase95Margin(double margin) =>
+        margin is > 0 and < 1
+            ? (int)Math.Ceiling(Confidence95Z * Confidence95Z * 0.25 / (margin * margin))
+            : throw new ArgumentOutOfRangeException(nameof(margin));
+}
+
+/// <summary>Routes setup and main-game actions to separate strategies.</summary>
+internal sealed class PhaseSwitchingPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDisposable
+{
+    private readonly IBenchmarkPlayer _placement;
+    private readonly IBenchmarkPlayer _mainGame;
+
+    public PhaseSwitchingPlayer(IBenchmarkPlayer placement, IBenchmarkPlayer mainGame)
+    {
+        _placement = placement;
+        _mainGame = mainGame;
+    }
+
+    public int TotalNnRequests => NnStats(_placement).Requests + NnStats(_mainGame).Requests;
+    public int TotalNnStatesEvaluated => NnStats(_placement).States + NnStats(_mainGame).States;
+    public int TotalPriorNodesRequested =>
+        PriorStats(_placement).Nodes + PriorStats(_mainGame).Nodes;
+    public int TotalPriorActionsApplied => PriorStats(_placement).Applied + PriorStats(_mainGame).Applied;
+    public int TotalPriorActionsRequested => PriorStats(_placement).Requested + PriorStats(_mainGame).Requested;
+    public int TotalPriorInferencesRequested =>
+        PriorStats(_placement).Inferences + PriorStats(_mainGame).Inferences;
+
+    public CatanState? Act(CatanState state, Random rng) => IsPlacement(state.Stage)
+        ? _placement.Act(state, rng)
+        : _mainGame.Act(state, rng);
+
+    internal static bool IsPlacement(TurnStage stage) => stage is
+        TurnStage.PlaceFirstSettlement or TurnStage.PlaceFirstRoad or
+        TurnStage.PlaceSecondSettlement or TurnStage.PlaceSecondRoad;
+
+    public void Dispose()
+    {
+        if (_placement is IDisposable placementDisposable) placementDisposable.Dispose();
+        if (_mainGame is IDisposable mainGameDisposable) mainGameDisposable.Dispose();
+    }
+
+    private static (int Requests, int States) NnStats(IBenchmarkPlayer player) =>
+        player is INnStatsProvider stats
+            ? (stats.TotalNnRequests, stats.TotalNnStatesEvaluated)
+            : (0, 0);
+
+    private static (int Nodes, int Applied, int Requested, int Inferences) PriorStats(
+        IBenchmarkPlayer player) => player is IPriorStatsProvider stats
+            ? (stats.TotalPriorNodesRequested, stats.TotalPriorActionsApplied,
+                stats.TotalPriorActionsRequested, stats.TotalPriorInferencesRequested)
+            : (0, 0, 0, 0);
 }
 
 /// <summary>
@@ -331,6 +396,9 @@ internal record BenchmarkGameResult
     public required int Turns { get; init; }
     public required TimeSpan Elapsed { get; init; }
 
+    public int NnRequests { get; init; }
+    public int NnStatesEvaluated { get; init; }
+
     /// <summary>
     /// Total nodes for which a prior was requested across all MCTS decisions in this game.
     /// Zero when no MCTS player uses priors.
@@ -491,7 +559,7 @@ internal class BenchmarkRunner
             try
             {
                 var gameStopwatch = Stopwatch.StartNew();
-                var (winnerSeat, turns, priorNodesRequested, priorActionsApplied, priorActionsRequested, priorInferencesRequested, priorActionsPerDepth, priorInferencesPerDepth) = RunSingleGame(config, rng, seatAssignment);
+                var (winnerSeat, turns, nnRequests, nnStatesEvaluated, priorNodesRequested, priorActionsApplied, priorActionsRequested, priorInferencesRequested, priorActionsPerDepth, priorInferencesPerDepth) = RunSingleGame(config, rng, seatAssignment);
                 gameStopwatch.Stop();
 
                 AiKind? winnerAi = winnerSeat > 0 ? seatAssignment[winnerSeat - 1] : null;
@@ -505,6 +573,8 @@ internal class BenchmarkRunner
                     WinnerSeat = winnerSeat,
                     Turns = turns,
                     Elapsed = gameStopwatch.Elapsed,
+                    NnRequests = nnRequests,
+                    NnStatesEvaluated = nnStatesEvaluated,
                     PriorNodesRequested = priorNodesRequested,
                     PriorActionsApplied = priorActionsApplied,
                     PriorActionsRequested = priorActionsRequested,
@@ -583,6 +653,11 @@ internal class BenchmarkRunner
     /// </summary>
     private IBenchmarkPlayer CreatePlayer(AiKind kind, GameConfig config)
     {
+        ServerPlayer CreateServerNnPlayer(string priorMode) => new(
+            _options.ServerUrl, "mcts-nn-ai", _options.MapConfig ?? "standard",
+            _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth,
+            _options.NnUrl, priorMode, _options.ServerMaxPriorDepth);
+
         return kind switch
         {
             AiKind.Random => new RandomPlayer(),
@@ -607,6 +682,10 @@ internal class BenchmarkRunner
                 _nnClient!, PlacementActionSerializer.ForTopology(config.Map.Topology), new RandomPlayer()),
             AiKind.NnState => new NnStatePlayer(_nnClient!),
             AiKind.NnStateRandom => new NnStatePlayer(_nnClient!, new RandomPlayer()),
+            AiKind.NnPlacementState => new PhaseSwitchingPlayer(
+                new NnPlacementPlayer(
+                    _nnClient!, PlacementActionSerializer.ForTopology(config.Map.Topology)),
+                new NnStatePlayer(_nnClient!)),
             AiKind.ServerMcts => new ServerPlayer(
                 _options.ServerUrl, "mcts-ai", _options.MapConfig ?? "standard",
                 _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth),
@@ -636,6 +715,9 @@ internal class BenchmarkRunner
                     _options.ServerUrl, "mcts-ai", _options.MapConfig ?? "standard",
                     _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth),
                 new RandomPlayer()),
+            AiKind.NnMctsPlacementState => new PhaseSwitchingPlayer(
+                CreateServerNnPlayer("placement"),
+                CreateServerNnPlayer("state")),
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, $"Unknown AI kind: {kind}"),
         };
     }
@@ -648,13 +730,17 @@ internal class BenchmarkRunner
     /// </summary>
     private static bool UsesServer(AiKind[] players) =>
         players.Any(ai => ai is AiKind.ServerMcts or AiKind.ServerMctsNn
-                              or AiKind.NnMctsPlacement or AiKind.NnMctsPlacementRandom
-                              or AiKind.MctsPlacement or AiKind.MctsPlacementRandom);
+                               or AiKind.NnMctsPlacement or AiKind.NnMctsPlacementRandom
+                               or AiKind.MctsPlacement or AiKind.MctsPlacementRandom
+                               or AiKind.NnMctsPlacementState);
 
     private static bool UsesNn(AiKind[] players) =>
-        players.Any(ai => ai is AiKind.Nn or AiKind.NnPlacement or AiKind.NnPlacementRandom or AiKind.NnState or AiKind.NnStateRandom or AiKind.ServerMctsNn or AiKind.NnMctsPlacement or AiKind.NnMctsPlacementRandom);
+        players.Any(ai => ai is AiKind.Nn or AiKind.NnPlacement or AiKind.NnPlacementRandom
+            or AiKind.NnState or AiKind.NnStateRandom or AiKind.NnPlacementState
+            or AiKind.ServerMctsNn or AiKind.NnMctsPlacement or AiKind.NnMctsPlacementRandom
+            or AiKind.NnMctsPlacementState);
 
-    private (int WinnerSeat, int Turns, int PriorNodesRequested, int PriorActionsApplied, int PriorActionsRequested, int PriorInferencesRequested, Dictionary<int, int>? PriorActionsPerDepth, Dictionary<int, int>? PriorInferencesPerDepth) RunSingleGame(GameConfig config, Random rng, AiKind[] seatAssignment)
+    private (int WinnerSeat, int Turns, int NnRequests, int NnStatesEvaluated, int PriorNodesRequested, int PriorActionsApplied, int PriorActionsRequested, int PriorInferencesRequested, Dictionary<int, int>? PriorActionsPerDepth, Dictionary<int, int>? PriorInferencesPerDepth) RunSingleGame(GameConfig config, Random rng, AiKind[] seatAssignment)
     {
         var playerCount = seatAssignment.Length;
         var state = new CatanState(config, playerCount, rng);
@@ -688,6 +774,8 @@ internal class BenchmarkRunner
         }
 
         // Aggregate NN stats from all players that use neural network inference.
+        var nnRequests = 0;
+        var nnStatesEvaluated = 0;
         var priorNodesRequested = 0;
         var priorActionsApplied = 0;
         var priorActionsRequested = 0;
@@ -696,6 +784,12 @@ internal class BenchmarkRunner
         Dictionary<int, int>? priorInferencesPerDepth = null;
         foreach (var player in players)
         {
+            if (player is INnStatsProvider nnStats)
+            {
+                nnRequests += nnStats.TotalNnRequests;
+                nnStatesEvaluated += nnStats.TotalNnStatesEvaluated;
+            }
+
             if (player is MctsPlayer mctsPlayer)
             {
                 priorNodesRequested += mctsPlayer.TotalPriorNodesRequested;
@@ -723,21 +817,22 @@ internal class BenchmarkRunner
             }
             else if (player is IPriorStatsProvider priorStats)
             {
-                priorNodesRequested += priorStats.TotalNnRequests;
+                priorNodesRequested += priorStats.TotalPriorNodesRequested;
                 priorActionsApplied += priorStats.TotalPriorActionsApplied;
                 priorActionsRequested += priorStats.TotalPriorActionsRequested;
                 priorInferencesRequested += priorStats.TotalPriorInferencesRequested;
             }
-            else if (player is INnStatsProvider nnStats)
-            {
-                // Non-MCTS NN players: states-evaluated counts as inferences.
-                priorNodesRequested += nnStats.TotalNnRequests;
-                priorActionsRequested += nnStats.TotalNnStatesEvaluated;
-                priorInferencesRequested += nnStats.TotalNnStatesEvaluated;
-            }
         }
 
-        return (state.WinnerPlayer, state.TurnNumber, priorNodesRequested, priorActionsApplied, priorActionsRequested, priorInferencesRequested, priorActionsPerDepth, priorInferencesPerDepth);
+
+        foreach (var player in players)
+        {
+            if (player is IDisposable disposable) disposable.Dispose();
+        }
+
+        return (state.WinnerPlayer, state.TurnNumber, nnRequests, nnStatesEvaluated,
+            priorNodesRequested, priorActionsApplied, priorActionsRequested,
+            priorInferencesRequested, priorActionsPerDepth, priorInferencesPerDepth);
     }
 
     private GameConfig ResolveGameConfig()
@@ -802,6 +897,15 @@ internal class BenchmarkRunner
 
         // Prior stats (only shown when priors were used).
         var totalPriorNodesRequested = stats.Games.Sum(g => g.PriorNodesRequested);
+        var totalNnRequests = stats.Games.Sum(g => g.NnRequests);
+        if (totalNnRequests > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine("NN stats:");
+            Console.WriteLine($"  Requests: {totalNnRequests}");
+            Console.WriteLine($"  States evaluated: {stats.Games.Sum(g => g.NnStatesEvaluated)}");
+        }
+
         if (totalPriorNodesRequested > 0)
         {
             var totalPriorActionsApplied = stats.Games.Sum(g => g.PriorActionsApplied);
@@ -868,19 +972,22 @@ internal class BenchmarkRunner
 
         var output = new
         {
-            aiKinds = stats.PlayerAis.Distinct().Select(ai => ai.ToString().ToLowerInvariant()).ToArray(),
+            aiKinds = stats.PlayerAis.Distinct().Select(AiKindNames.Format).ToArray(),
             totalGames = stats.TotalGames,
             totalElapsedSeconds = Math.Round(stats.TotalElapsed.TotalSeconds, 2),
             winRates = stats.PlayerAis.Distinct().Select(ai =>
             {
                 var wins = stats.Games.Count(g => g.WinnerAi == ai);
+                var rate = stats.TotalGames > 0 ? (double)wins / stats.TotalGames : 0.0;
                 return new
                 {
-                    ai = ai.ToString().ToLowerInvariant(),
+                    ai = AiKindNames.Format(ai),
                     wins,
-                    rate = stats.TotalGames > 0
-                        ? Math.Round((double)wins / stats.TotalGames, 4)
-                        : 0.0,
+                    rate = Math.Round(rate, 4),
+                    confidence95Margin = Math.Round(
+                        BenchmarkConfidence.Wald95Margin(rate, stats.TotalGames), 6),
+                    worstCaseConfidence95Margin = Math.Round(
+                        BenchmarkConfidence.WorstCaseWald95Margin(stats.TotalGames), 6),
                 };
             }).ToArray(),
             draws = stats.Games.Count(g => g.WinnerAi is null),
@@ -888,11 +995,13 @@ internal class BenchmarkRunner
             {
                 game = g.GameNumber,
                 seed = g.Seed,
-                seatAssignment = g.SeatAssignment.Select(ai => ai.ToString().ToLowerInvariant()).ToArray(),
-                winnerAi = g.WinnerAi?.ToString().ToLowerInvariant(),
+                seatAssignment = g.SeatAssignment.Select(AiKindNames.Format).ToArray(),
+                winnerAi = g.WinnerAi is { } winner ? AiKindNames.Format(winner) : null,
                 winnerSeat = g.WinnerSeat,
                 turns = g.Turns,
                 elapsedSeconds = Math.Round(g.Elapsed.TotalSeconds, 3),
+                nnRequests = g.NnRequests,
+                nnStatesEvaluated = g.NnStatesEvaluated,
                 priorNodesRequested = g.PriorNodesRequested,
                 priorActionsApplied = g.PriorActionsApplied,
                 priorActionsRequested = g.PriorActionsRequested,

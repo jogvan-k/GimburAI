@@ -26,9 +26,10 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDis
 
     public int TotalNnRequests { get; private set; }
     public int TotalNnStatesEvaluated { get; private set; }
+    public int TotalPriorNodesRequested { get; private set; }
     public int TotalPriorActionsApplied { get; private set; }
     public int TotalPriorActionsRequested { get; private set; }
-    public int TotalPriorInferencesRequested => TotalNnStatesEvaluated;
+    public int TotalPriorInferencesRequested { get; private set; }
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -115,10 +116,12 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDis
         if (result is null)
             throw new InvalidOperationException("Server returned null response");
 
-        TotalNnRequests += result.PriorNodesRequested;
-        TotalNnStatesEvaluated += result.PriorInferencesRequested;
+        TotalNnRequests += result.PriorNodesRequested + result.LeafEvaluationBatches;
+        TotalNnStatesEvaluated += result.PriorInferencesRequested + result.LeafEvaluationStates;
+        TotalPriorNodesRequested += result.PriorNodesRequested;
         TotalPriorActionsApplied += result.PriorActionsApplied;
         TotalPriorActionsRequested += result.PriorActionsRequested;
+        TotalPriorInferencesRequested += result.PriorInferencesRequested;
 
         // Find the matching action by (typeTag, arg1, arg2).
         for (var i = 0; i < actions.Length; i++)
@@ -189,5 +192,7 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDis
         public int PriorActionsApplied { get; init; }
         public int PriorActionsRequested { get; init; }
         public int PriorInferencesRequested { get; init; }
+        public int LeafEvaluationBatches { get; init; }
+        public int LeafEvaluationStates { get; init; }
     }
 }

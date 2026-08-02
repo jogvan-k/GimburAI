@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from gimbur_nn.pipeline import (
+    BenchmarkConfig,
     PipelineConfig,
     SimulateConfig,
     TrainConfig,
@@ -10,6 +13,8 @@ from gimbur_nn.pipeline import (
     _discard_stop_reason,
     _generation_complete,
     _load_section,
+    _save_progress_chart,
+    _save_summary,
     _step_simulate,
     _step_train,
 )
@@ -188,3 +193,51 @@ def test_placement_and_state_resume_requires_shared_data_and_both_models(tmp_pat
     assert not _generation_complete(cfg, 0)
     (tmp_path / "models/state/gen0.pt").write_text("")
     assert _generation_complete(cfg, 0)
+
+
+def test_summary_preserves_confidence_metadata(tmp_path) -> None:
+    cfg = PipelineConfig(results_dir=str(tmp_path))
+    results = {
+        0: {
+            "hybrid": {
+                "totalGames": 10000,
+                "draws": 0,
+                "winRates": [
+                    {
+                        "ai": "nn-placement-state",
+                        "wins": 5100,
+                        "rate": 0.51,
+                        "confidence95Margin": 0.009796,
+                        "worstCaseConfidence95Margin": 0.0098,
+                    }
+                ],
+            }
+        }
+    }
+
+    _save_summary(cfg, results)
+
+    benchmark = json.loads((tmp_path / "summary.json").read_text())[0]["benchmarks"]["hybrid"]
+    assert benchmark["confidence95Margin"]["nn-placement-state"] == 0.009796
+    assert benchmark["worstCaseConfidence95Margin"]["nn-placement-state"] == 0.0098
+
+
+def test_progress_chart_accepts_confidence_error_bars(tmp_path) -> None:
+    pytest.importorskip("matplotlib")
+    cfg = PipelineConfig(
+        results_dir=str(tmp_path),
+        benchmarks=[
+            BenchmarkConfig(name="hybrid", ai=["nn-placement-state", "greedy"])
+        ],
+    )
+    results = {
+        0: {
+            "hybrid": {
+                "winRates": {"nn-placement-state": 0.51, "greedy": 0.49},
+                "confidence95Margin": {"nn-placement-state": 0.0098},
+            }
+        }
+    }
+
+    assert _save_progress_chart(cfg, results)
+    assert (tmp_path / "progress.png").is_file()

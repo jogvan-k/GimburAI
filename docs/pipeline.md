@@ -163,8 +163,21 @@ after training.
 | Key     | Type     | Default             | Description |
 |---------|----------|---------------------|-------------|
 | `name`  | string   | `"nn-vs-greedy"`    | Name used for the result file. |
-| `games` | int      | `100`               | Number of benchmark games. |
+| `games` | int      | `10000`             | Number of benchmark games. At 10,000, the worst-case 95% Wald margin is 0.98 percentage points. |
 | `ai`    | string[] | `["nn", "greedy"]`  | AI player types for the matchup. |
+
+For placement-and-state pipelines, the focused benchmark AIs are:
+
+- `nn-placement`: placement model during setup, greedy afterward.
+- `nn-state`: greedy setup, state-model one-step evaluation afterward.
+- `nn-placement-state`: placement model during setup and state-model evaluation afterward, without MCTS.
+- `nn-mcts-placement-state`: placement-prior MCTS during setup and state-prior MCTS with asynchronous state leaf evaluation afterward.
+
+Each should be compared with `greedy`, which also supplies the fallback behavior for
+the single-model variants. The pipeline's dual-model inference server loads both models,
+and one NN URL routes calls to `/placement/predict` and `/state/predict`. Benchmark JSON,
+`summary.json`, and progress-chart error bars preserve `confidence95Margin` at the
+observed rate and `worstCaseConfidence95Margin`.
 
 ### Example Config
 
@@ -179,7 +192,13 @@ after training.
     "mainGameSearchTimeMs": 8000
   },
   "placementTrain": { "outputMode": "combined", "batchSize": 64 },
-  "stateTrain": { "outputMode": "value", "batchSize": 64 }
+  "stateTrain": { "outputMode": "value", "batchSize": 64 },
+  "benchmarks": [
+    { "name": "placement", "games": 10000, "ai": ["nn-placement", "greedy"] },
+    { "name": "state", "games": 10000, "ai": ["nn-state", "greedy"] },
+    { "name": "hybrid", "games": 10000, "ai": ["nn-placement-state", "greedy"] },
+    { "name": "mcts-hybrid", "games": 10000, "ai": ["nn-mcts-placement-state", "greedy"] }
+  ]
 }
 ```
 
