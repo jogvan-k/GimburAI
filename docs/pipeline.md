@@ -72,6 +72,7 @@ maps them to Python `snake_case` internally.
 | `symmetries`         | bool   | `true`    | Export rotational symmetries of each game state. |
 | `verbosity`          | string | `"quiet"` | CLI verbosity level. |
 | `oversample`         | float  | `1.0`     | Request `oversample * remaining` games and stop early. `1.1` = 10% extra. |
+| `parallelism`        | int    | *(auto)*  | Maximum concurrent games. Defaults to 4 with NN priors, otherwise all logical processors. |
 
 ### `train` Section
 
@@ -96,6 +97,8 @@ Placement checkpoints use `checkpoint_version: 2` and `architecture: "placement_
 The model emits raw logits. Combined training constructs a legal mask from every exported legal composite action and applies it to policy loss. Policy targets must come from standard shared-root MCTS visit shares; `simulationsPerAction` rollout counts are independent evaluation budgets and are unsuitable. Serving softmaxes the full vocabulary, while C# remains authoritative for legality and masks and normalizes policy probabilities before MCTS use.
 
 Old action-conditioned placement checkpoints do not match this architecture and cannot be resumed or served; retrain them as version 2 checkpoints.
+
+`summary.json` and `progress.png` are refreshed after every individual benchmark result, so partial generation progress is visible while later benchmarks are still running.
 
 ### `serve` Section
 

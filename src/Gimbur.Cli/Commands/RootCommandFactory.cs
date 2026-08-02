@@ -205,6 +205,12 @@ internal static class RootCommandFactory
             DefaultValueFactory = _ => 0,
         };
 
+        var parallelismOption = new Option<int>("--parallelism")
+        {
+            Description = "Maximum games simulated concurrently (default: 4 with NN priors, otherwise all processors)",
+            DefaultValueFactory = _ => 0,
+        };
+
         var command = new Command("simulate", "Run Settlers of Catan AI self-play simulations.")
         {
           noOfGamesOption,
@@ -222,6 +228,7 @@ internal static class RootCommandFactory
           placementOnlyOption,
           maxPriorDepthOption,
           simulationsPerActionOption,
+          parallelismOption,
         };
 
         command.SetAction(parseResult =>
@@ -253,6 +260,7 @@ internal static class RootCommandFactory
             bool placementOnly = parseResult.GetValue(placementOnlyOption);
             int maxPriorDepth = parseResult.GetValue(maxPriorDepthOption);
             int simulationsPerAction = parseResult.GetValue(simulationsPerActionOption);
+            int parallelism = parseResult.GetValue(parallelismOption);
 
             // ── Apply config file defaults for simulate ──────────────
             if (cfg.ValueKind == JsonValueKind.Object)
@@ -309,6 +317,8 @@ internal static class RootCommandFactory
                     maxPriorDepth = ConfigLoader.GetInt(cfg, "maxPriorDepth") ?? maxPriorDepth;
                 if (!WasProvided(parseResult, "--simulations-per-action"))
                     simulationsPerAction = ConfigLoader.GetInt(cfg, "simulationsPerAction") ?? simulationsPerAction;
+                if (!WasProvided(parseResult, "--parallelism"))
+                    parallelism = ConfigLoader.GetInt(cfg, "parallelism") ?? parallelism;
                 if (!WasProvided(parseResult, "--verbosity", "-v") && !WasProvided(parseResult, "-q") && !WasProvided(parseResult, "--verbose"))
                     verbosity = ConfigLoader.GetString(cfg, "verbosity") ?? verbosity;
             }
@@ -341,6 +351,7 @@ internal static class RootCommandFactory
                 PlacementOnly = placementOnly,
                 MaxPriorDepth = maxPriorDepth,
                 SimulationsPerAction = simulationsPerAction,
+                Parallelism = parallelism,
             };
 
             var runner = new SimulationRunner(options);

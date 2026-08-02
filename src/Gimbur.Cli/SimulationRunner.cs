@@ -437,7 +437,12 @@ internal class SimulationRunner
                 Console.WriteLine("  Mode: placement-only (expansion guard active)");
             if (_options.ExportType == ExportType.InitialPlacement)
                 Console.WriteLine("  Export type: InitialPlacement");
-            Console.WriteLine($"  Parallelism: {(_options.Prior ? Math.Min(4, Environment.ProcessorCount) : Environment.ProcessorCount)} cores");
+            var parallelism = _options.Parallelism > 0
+                ? Math.Min(_options.Parallelism, Environment.ProcessorCount)
+                : _options.Prior
+                    ? Math.Min(4, Environment.ProcessorCount)
+                    : Environment.ProcessorCount;
+            Console.WriteLine($"  Parallelism: {parallelism} cores");
             if (_options.ExportPath is not null && _options.ExportFormat != ExportFormat.None)
             {
                 Console.WriteLine($"  Export: {_options.ExportPath.FullName} ({_options.ExportFormat.ToString().ToLowerInvariant()})");

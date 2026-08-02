@@ -1001,7 +1001,10 @@ def _step_train(
         return
 
     replay_start = max(0, gen - max(1, cfg.train.replay_generations) + 1)
-    data_paths = [_data_path(cfg, replay_gen, model_type) for replay_gen in range(replay_start, gen + 1)]
+    data_paths = [
+        _data_path(cfg, replay_gen, model_type)
+        for replay_gen in range(replay_start, gen + 1)
+    ]
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     tr = cfg.train
@@ -1077,6 +1080,7 @@ def _step_benchmark(
     nn_url: str,
     phase: str | None = None,
     gimbur_server: _GimburServerProcess | None = None,
+    all_results: dict[int, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Run benchmarks for a generation. Returns aggregated results.
 
@@ -1108,6 +1112,10 @@ def _step_benchmark(
             if out_path.is_file():
                 print(f"  Benchmark '{bench.name}': results already exist, skipping.")
                 gen_results[bench.name] = json.loads(out_path.read_text())
+                if all_results is not None:
+                    all_results.setdefault(gen, {})[bench.name] = gen_results[bench.name]
+                    _save_summary(cfg, all_results)
+                    _save_progress_chart(cfg, all_results)
                 continue
 
             # Build config JSON for benchmark.
@@ -1154,6 +1162,10 @@ def _step_benchmark(
             if out_path.exists():
                 results = json.loads(out_path.read_text())
                 gen_results[bench.name] = results
+                if all_results is not None:
+                    all_results.setdefault(gen, {})[bench.name] = results
+                    _save_summary(cfg, all_results)
+                    _save_progress_chart(cfg, all_results)
 
     finally:
         # Always stop the Gimbur.Server if we started it, even on error.
@@ -1545,7 +1557,13 @@ def _run_combined_generation(
             )
 
         gen_results = _step_benchmark(
-            cfg, gen, project_root, nn_url, phase="placement", gimbur_server=gimbur_server
+            cfg,
+            gen,
+            project_root,
+            nn_url,
+            phase="placement",
+            gimbur_server=gimbur_server,
+            all_results=all_results,
         )
 
         if not bench_done:
@@ -1621,7 +1639,13 @@ def _run_combined_generation(
             )
 
         gen_results = _step_benchmark(
-            cfg, gen, project_root, nn_url, phase="combined", gimbur_server=gimbur_server
+            cfg,
+            gen,
+            project_root,
+            nn_url,
+            phase="combined",
+            gimbur_server=gimbur_server,
+            all_results=all_results,
         )
 
         if not bench_done:
@@ -1728,7 +1752,14 @@ def _run_single_generation(
                 cwd=project_root,
             )
 
-    gen_results = _step_benchmark(cfg, gen, project_root, nn_url, gimbur_server=gimbur_server)
+    gen_results = _step_benchmark(
+        cfg,
+        gen,
+        project_root,
+        nn_url,
+        gimbur_server=gimbur_server,
+        all_results=all_results,
+    )
 
     if not bench_already_done:
         server.stop()
