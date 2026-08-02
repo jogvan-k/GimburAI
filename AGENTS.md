@@ -52,7 +52,7 @@
   - `transformer_model.py` — transformer-based models. Value heads emit per-player `[B,N]` logits. `GimburPlacementTransformer` implements state-only `placement_state_v3` with optional dense policy `[B,A]` logits (`A` = 60/82/144 by map).
   - `pipeline.py` — training/evaluation pipeline utilities.
   - `train.py` — training loop; reads JSONL data exported by `gimbur simulate --export`.
-  - `serve.py` — HTTP inference server. `/placement/predict` accepts `states` and returns `value_probabilities` plus optional full-vocabulary `policy_probabilities`. Placement prior requests contain `id`, `state`, and `priority`; collect responses contain dense `priors` and `value_estimate`.
+  - `serve.py` — HTTP inference server. `/placement/predict` accepts `states` and returns `player_win_probabilities` plus optional full-vocabulary `policy_probabilities`. Placement prior requests contain `id`, `state`, and `priority`; collect responses contain dense `priors` and per-player values. `/state/leaf-*` batches asynchronous MCTS leaf evaluations.
 - Placement models emit raw logits. Combined training masks policy loss using legal actions exported by C#; serving softmaxes the full vocabulary, and C# is authoritative for legality and masks/normalizes before MCTS use.
 - Placement MCTS converts dense composite policy into settlement marginals (sum over legal roads) and conditional road priors. Shared-root visits are policy targets; `simulations-per-action` rollout counts are not.
 - State/placement checkpoints require `checkpoint_version: 3` with `state_player_value_v1` or `placement_state_v3`; older bucket-value checkpoints are incompatible.
