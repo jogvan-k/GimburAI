@@ -1,4 +1,5 @@
 using Gimbur.Rules;
+using Gimbur.Cli;
 using Kjarni;
 
 namespace Gimbur.Rules.Tests;
@@ -68,6 +69,29 @@ public class CatanStateTests
         Assert.That(state.Board.SettlementCount(2), Is.EqualTo(1));
         Assert.That(state.Board.RoadCount(1), Is.EqualTo(1));
         Assert.That(state.Board.RoadCount(2), Is.EqualTo(1));
+    }
+
+    [Test]
+    public void FinalPlacementRoad_ResultMatchesPlacementLeafBoundary()
+    {
+        var state = new Gimbur.CatanState(GameConfig.Mini, 2, new Random(55));
+
+        while (!(state.Stage == TurnStage.PlaceFirstRoad && state.CurrentPlayer == 2))
+        {
+            state = (Gimbur.CatanState)GetCatanActions(state).First().DoCoreAction();
+        }
+
+        Assert.That(SimulationRunner.IsPlacementLeafBoundary(state), Is.False);
+
+        var result = (Gimbur.CatanState)GetCatanActions(state).First().DoCoreAction();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.TurnNumber, Is.EqualTo(1));
+            Assert.That(result.Stage, Is.EqualTo(TurnStage.PreRoll));
+            Assert.That(SimulationRunner.IsPlacementLeafBoundary(result), Is.True);
+            Assert.That(GetCatanActions(result).Single(), Is.TypeOf<Gimbur.RollDiceAction>());
+        });
     }
 
     [Test]

@@ -72,7 +72,7 @@ type TryResolveStateTests() =
         let child = node_builder(p1, 0, 0, 1).build ()
         let root = MCTSState(node_builder(p1, 0, 0, 0, node_builder(p1, 0, 0, 1)).build ())
         // Expand the action so it's DeterministicAction, not Terminal
-        let _ = expand (root, 0)
+        let _ = expand None (root, 0)
 
         tryResolveState root |> should equal None
 
@@ -266,7 +266,7 @@ type PropagateTerminalsTests() =
         let childState = terminal_game_state(p2, 1)
         let rootState = det_state(p1, 0, childState :> ICoreState)
         let root = MCTSState(rootState :> ICoreState)
-        let child = expand (root, 0)
+        let child = expand None (root, 0)
 
         // Manually set child's actions to all Terminal
         child.Actions <- [|
@@ -289,7 +289,7 @@ type PropagateTerminalsTests() =
         let childNode = node_builder(p2, 0, 0, 1, node_builder(p1, 0, 0, 2)).build ()
         let rootState = det_state(p1, 0, childNode :> ICoreState)
         let root = MCTSState(rootState :> ICoreState)
-        let child = expand (root, 0)
+        let child = expand None (root, 0)
 
         // child has unexplored actions — not resolvable
         propagateTerminals [ child; root ]
@@ -307,8 +307,8 @@ type PropagateTerminalsTests() =
         let rootState = det_state(p1, 0, childState :> ICoreState)
 
         let root = MCTSState(rootState :> ICoreState)
-        let child = expand (root, 0)
-        let grandchildMcts = expand (child, 0)
+        let child = expand None (root, 0)
+        let grandchildMcts = expand None (child, 0)
 
         // grandchild has no actions → terminal game state
         // Replace child's action with Terminal for the grandchild (simulating what
@@ -338,7 +338,7 @@ type PropagateTerminalsTests() =
                 .build ()
         let rootState = det_state(p1, 0, childNode :> ICoreState)
         let root = MCTSState(rootState :> ICoreState)
-        let child = expand (root, 0)
+        let child = expand None (root, 0)
 
         // child has 2 actions. Set the first one to Terminal, leave the second Unexplored.
         child.Actions.[0] <- Terminal [| 0.5; 0.5 |]

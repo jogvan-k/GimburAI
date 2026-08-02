@@ -22,8 +22,7 @@ while budget remains AND NOT all root actions are Terminal:
 ```
 
 Steps 2 and 3 are skipped when selection returns `Exhausted` (terminal path) or
-`Horizon` (expansion guard boundary — see
-[Expansion Guard](#expansion-guard-horizon)).
+`Horizon` (result-state boundary; see [Leaf Boundary](#leaf-boundary-horizon)).
 
 
 After the loop, `extractBestPath` reads the tree greedily to return the
@@ -82,13 +81,13 @@ type Action =
     | Unexplored of CoreAction              // not yet expanded
     | DeterministicAction of MCTSState      // expanded deterministic child
     | StochasticAction of StochasticOutcome[]  // expanded stochastic children
-    | HorizonAction of MCTSState            // expansion-blocked rollout leaf
+    | HorizonAction of MCTSState            // result-state boundary rollout leaf
     | Terminal of float[]                    // leaf with known outcome
 ```
 
 A `HorizonAction` wraps an `MCTSState` that accumulates rollout statistics but
-is never expanded further. It is created when the expansion guard blocks an
-`Unexplored` action (see [Expansion Guard](#expansion-guard-horizon)).
+is never expanded further. It is created when a deterministic action's exact
+result state matches the configured leaf boundary.
 
 A `StochasticOutcome` pairs a probability weight with its own `MCTSState`:
 
@@ -102,18 +101,14 @@ Selection walks from the root toward the frontier. At each node it picks the
 action with the highest evaluation score (PUCT-based) and follows it.
 
 ```
-select(root, expansionGuard):
+select(root):
     visitedStates = [root]
     current = root
     loop:
         if current has no actions → return Exhausted
         pick action with highest actionEvaluator score
         match action:
-            Unexplored →
-                if expansionGuard(current.State, action) →
-                    replace action with HorizonAction(new MCTSState)
-                    return Horizon(visitedStates, horizonState)
-                else → return Candidate(visitedStates, actionIndex)
+            Unexplored → return Candidate(visitedStates, actionIndex)
             DeterministicAction(child) → push child, continue
             StochasticAction(outcomes) → sample an outcome by weight:
                 if outcome unvisited → return StochasticCandidate(...)
@@ -127,10 +122,9 @@ The result is one of four cases:
 - **Candidate** — an unexplored action was found; expansion is needed.
 - **StochasticCandidate** — an already-expanded stochastic action has an
   unvisited outcome; no expansion needed, just simulate from that outcome.
-- **Horizon** — selection reached a `HorizonAction` node (an expansion-blocked
-  boundary). No expansion occurs; a full rollout is performed from the horizon
-  node's state and backpropagated. See
-  [Expansion Guard](#expansion-guard-horizon).
+- **Horizon** — selection reached a `HorizonAction` node (a result-state
+  boundary). No further expansion occurs; a full rollout is performed from the
+  boundary state and backpropagated. See [Leaf Boundary](#leaf-boundary-horizon).
 - **Exhausted** — the path reached a terminal node; backpropagate immediately.
 
 
@@ -172,8 +166,10 @@ The exploration constant `C_puct` is configured via
 
 When selection returns a `Candidate`, the unexplored action is expanded:
 
-- **Deterministic**: call `action.State()` to get the successor, wrap it in a
-  new `MCTSState`, and replace `Unexplored` with `DeterministicAction(newNode)`.
+- **Deterministic**: call `action.State()` to get the successor and wrap it in a
+  new `MCTSState`. If `LeafBoundary` matches that successor, replace
+  `Unexplored` with `HorizonAction(newNode)` and return the boundary for rollout;
+  otherwise use `DeterministicAction(newNode)`.
 - **Stochastic**: call `action.Outcomes()` to get all weighted outcomes, wrap
   each in a `MCTSState` and a `StochasticOutcome`, and replace `Unexplored` with
   `StochasticAction(outcomes)`. One outcome is sampled by weight and returned
@@ -182,11 +178,9 @@ When selection returns a `Candidate`, the unexplored action is expanded:
 When selection returns a `StochasticCandidate`, the stochastic action is already
 expanded — the unvisited outcome state is used directly for simulation.
 
-When selection returns a `Horizon`, the `Unexplored` action has already been
-replaced with a `HorizonAction` during selection. The `HorizonAction` wraps an
-`MCTSState` that tracks statistics but is never expanded further. No additional
-expansion step is needed. See [Expansion Guard](#expansion-guard-horizon) for
-details.
+When deterministic expansion reaches the boundary, the exact result node is
+stored as a `HorizonAction`, simulated, and backpropagated. Later selections of
+that action return `Horizon` without recursing into it.
 
 
 ## Phase 3 — Prior Request
@@ -744,40 +738,37 @@ The system degrades gracefully when the inference server is slow or unavailable:
   previous search are discarded (the node IDs no longer exist in the new tree).
 
 
-## Expansion Guard (Horizon)
+## Leaf Boundary (Horizon)
 
-The expansion guard is an optional predicate (`MCTSConfig.ExpansionGuard`) that
-prevents the MCTS tree from growing past a configurable boundary. When the
-guard blocks an `Unexplored` action, the action is replaced with a
-`HorizonAction` — a new `MCTSState` that accumulates rollout statistics but is
-never expanded further. This focuses the search budget on the region of the
-game tree where high-quality labels are needed.
+The leaf boundary is an optional result-state predicate (`MCTSConfig.LeafBoundary`)
+that prevents the MCTS tree from growing past a configurable deterministic
+boundary. After a deterministic action produces its successor, a matching state
+is stored as a `HorizonAction`. The exact successor accumulates rollout
+statistics but is never expanded further.
 
 The motivating use case is Settlers of Catan placement: expanding into the main
-game (past the first `RollDiceAction`) is counterproductive because dice
-variance dominates and dilutes placement-phase labels. The guard stops tree
-growth at that boundary while rollouts still pass through the main game to
-estimate placement quality.
+game is counterproductive because dice variance dominates and dilutes
+placement-phase labels. The boundary is the exact post-final-road state, before
+the first dice roll, while rollouts still pass through the main game to estimate
+placement quality.
 
-### Guard predicate
+### Boundary predicate
 
 ```fsharp
-ExpansionGuard: (ICoreState -> CoreAction -> bool) option
+LeafBoundary: (ICoreState -> bool) option
 ```
 
-When `None` (the default), expansion is unrestricted. When `Some(guard)`, the
-predicate is called during selection on each `Unexplored` action. Arguments are
-the parent node’s `ICoreState` and the unexplored `CoreAction`. Returning
-`true` blocks expansion.
+When `None` (the default), expansion is unrestricted. For deterministic actions,
+the predicate receives the newly produced result state. Returning `true` makes
+that exact state the horizon. Stochastic actions always expand all weighted
+outcomes normally; the predicate is not applied to an arbitrary outcome.
 
 ### HorizonAction
 
-On the first visit to a guarded action, selection materializes the successor
-state (`action.State()` for deterministic, or the canonical successor for
-stochastic), wraps it in a new `MCTSState`, and replaces the `Unexplored` entry
-with `HorizonAction(horizonState)`. On subsequent visits the `HorizonAction` is
-already present. In both cases selection returns `Horizon(visitedStates,
-horizonState)`.
+On first expansion of a matching deterministic action, expansion wraps its
+result in a new `MCTSState` and replaces the `Unexplored` entry with
+`HorizonAction(horizonState)`. That iteration rolls out from the horizon state.
+On subsequent visits selection returns `Horizon(visitedStates, horizonState)`.
 
 The `MCTSState` inside a `HorizonAction` is never recursed into by selection —
 it exists solely to accumulate `Rollouts` and `WinCounts` from rollouts.
@@ -786,11 +777,12 @@ fully resolved, so the search will not terminate early due to horizon nodes.
 
 ### Gimbur integration
 
-In `Gimbur.Cli`, the guard targets the placement/main-game boundary:
+In `Gimbur.Cli`, placement-only search targets the exact placement/main-game
+boundary:
 
 ```csharp
-ExpansionGuard = (state, action) =>
-    action is Stochastic sa && sa is RollDiceAction
+LeafBoundary = state =>
+    state is CatanState { TurnNumber: 1, Stage: TurnStage.PreRoll }
 ```
 
 ## Configuration
@@ -805,7 +797,7 @@ ExpansionGuard = (state, action) =>
 | ExplorationConstant  | float                                  | sqrt(2)        | UCB1 exploration weight (C)                        |
 | ActionRolloutLimit   | int                                    | Int32.MaxValue | Stop when any single action reaches this many rollouts |
 | PriorClient          | IPriorClient option                    | None           | Async prior client for NN-guided search (see below) |
-| ExpansionGuard       | (ICoreState -> CoreAction -> bool) opt | None           | Predicate that blocks expansion of specific actions ([details](#expansion-guard-horizon)) |
+| LeafBoundary         | (ICoreState -> bool) option            | None           | Deterministic result-state horizon predicate ([details](#leaf-boundary-horizon)) |
 
 The search stops when any budget is exhausted, or when all root actions have
 been resolved to `Terminal` via terminal propagation.
@@ -814,9 +806,8 @@ When `PriorClient` is `None`, the search uses uniform priors and rollout-based
 evaluation (the current default behavior). When set, the search fires prior
 requests on node expansion and collects responses after terminal propagation.
 
-When `ExpansionGuard` is `None`, all unexplored actions are expanded normally.
-When set, the predicate is checked during selection before expanding any
-`Unexplored` action. See [Expansion Guard](#expansion-guard-horizon).
+When `LeafBoundary` is `None`, all actions are expanded normally. When set, it
+is checked against each deterministic result state after that action executes.
 
 ## Logging
 

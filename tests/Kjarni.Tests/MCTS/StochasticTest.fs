@@ -121,7 +121,7 @@ type StochasticExpansionTests() =
         | Unexplored (Stochastic _) -> ()
         | a -> Assert.Fail $"Expected Unexplored Stochastic, got %A{a}"
 
-        let _ = expand (root, 0)
+        let _ = expand None (root, 0)
 
         match root.Actions.[0] with
         | StochasticAction outcomes ->
@@ -133,7 +133,7 @@ type StochasticExpansionTests() =
     [<Test>]
     member _.ExpandReturnsAnMCTSStateFromOutcomes() =
         let root = makeStochasticRoot ()
-        let expanded = expand (root, 0)
+        let expanded = expand None (root, 0)
 
         // The returned state should be one of the outcome states (hash 10 or 11)
         let hash = expanded.State.GetHashCode()
@@ -143,9 +143,9 @@ type StochasticExpansionTests() =
     [<Test>]
     member _.ExpandAlreadyExpanded_Throws() =
         let root = makeStochasticRoot ()
-        expand (root, 0) |> ignore
+        expand None (root, 0) |> ignore
 
-        (fun () -> expand (root, 0) |> ignore)
+        (fun () -> expand None (root, 0) |> ignore)
         |> should (throwWithMessage "Target action is already expanded") typeof<System.Exception>
 
 // ────────────────────────────────────────────────────────────────
@@ -166,7 +166,7 @@ type StochasticselectTests() =
         let root = makeStochasticRoot ()
         // The only action is Unexplored (Stochastic _), so select should
         // return Candidate for expansion.
-        match select (sqrt 2.) None root with
+        match select (sqrt 2.) root with
         | Candidate (ancestors, idx) ->
             ancestors |> should haveLength 1
             idx |> should equal 0
@@ -176,7 +176,7 @@ type StochasticselectTests() =
     member _.ExpandedStochastic_AllUnvisited_ReturnsStochasticCandidate() =
         let root = makeStochasticRoot ()
         // Expand the stochastic action (creates StochasticAction with outcome states)
-        let _ = expand (root, 0)
+        let _ = expand None (root, 0)
         // Give the root a rollout so it's no longer zero (otherwise actionEvaluator
         // treats StochasticAction with 0 total rollouts as "unexplored" score=10,
         // but since it's already expanded, select will follow the StochasticAction
@@ -184,7 +184,7 @@ type StochasticselectTests() =
         root.Rollouts <- 1
         root.WinCounts <- [| 1.; 0. |]
 
-        let result = select (sqrt 2.) None root
+        let result = select (sqrt 2.) root
 
         // Outcomes have 0 rollouts, so select should return StochasticCandidate
         match result with
@@ -205,7 +205,7 @@ type StochasticselectTests() =
         let mctsRoot = MCTSState(root :> ICoreState)
 
         // Expand the stochastic action
-        let _ = expand (mctsRoot, 0)
+        let _ = expand None (mctsRoot, 0)
 
         // Give all states rollouts so select recurses through the stochastic outcomes
         mctsRoot.Rollouts <- 10
@@ -222,7 +222,7 @@ type StochasticselectTests() =
         // childA has children so it could yield Candidate.
         // childB is terminal so it could yield Exhausted.
         // Either way it should not be a StochasticCandidate since outcomes are visited.
-        let result = select (sqrt 2.) None mctsRoot
+        let result = select (sqrt 2.) mctsRoot
 
         match result with
         | StochasticCandidate _ -> Assert.Fail "Expected recursion into visited outcome, not StochasticCandidate"
@@ -356,7 +356,7 @@ type StochasticBackPropagateTests() =
         let mctsRoot = MCTSState(root :> ICoreState)
 
         // Expand the stochastic action
-        let expandedState = expand (mctsRoot, 0)
+        let expandedState = expand None (mctsRoot, 0)
 
         // Simulate the search loop: backPropagate through expandedState and root
         let outcome = [| 1.; 0. |]
@@ -374,7 +374,7 @@ type StochasticBackPropagateTests() =
         let root = stochastic_node (p1, 0, 0, 0, [ (1, outcomeA); (3, outcomeB) ])
         let mctsRoot = MCTSState(root :> ICoreState)
 
-        let _ = expand (mctsRoot, 0)
+        let _ = expand None (mctsRoot, 0)
 
         match mctsRoot.Actions.[0] with
         | StochasticAction outcomes ->
@@ -405,7 +405,7 @@ type StochasticExtractBestPathTests() =
         let root = stochastic_node (p1, 0, 0, 0, [ (1, outcomeA); (3, outcomeB) ])
         let mctsRoot = MCTSState(root :> ICoreState)
 
-        let _ = expand (mctsRoot, 0)
+        let _ = expand None (mctsRoot, 0)
         mctsRoot.Rollouts <- 10
         mctsRoot.WinCounts <- [| 5.; 5. |]
 
@@ -437,14 +437,14 @@ type StochasticExtractBestPathTests() =
         let mctsRoot = MCTSState(rootNode :> ICoreState)
 
         // Expand the deterministic action at index 0
-        let middleMCTS = expand (mctsRoot, 0)
+        let middleMCTS = expand None (mctsRoot, 0)
         mctsRoot.Rollouts <- 10
         mctsRoot.WinCounts <- [| 5.; 5. |]
         middleMCTS.Rollouts <- 10
         middleMCTS.WinCounts <- [| 5.; 5. |]
 
         // Expand the stochastic action in the middle node
-        let _ = expand (middleMCTS, 0)
+        let _ = expand None (middleMCTS, 0)
         match middleMCTS.Actions.[0] with
         | StochasticAction outcomes ->
             outcomes.[0].State.Rollouts <- 5

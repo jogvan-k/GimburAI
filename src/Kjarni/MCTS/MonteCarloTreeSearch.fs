@@ -22,7 +22,7 @@ type MonteCarloTreeSearch(config: MCTSConfig) =
                 config.ExplorationConstant,
                 config.ActionRolloutLimit,
                 config.PriorClient,
-                config.ExpansionGuard,
+                config.LeafBoundary,
                 config.MaxPriorDepth
             )
 

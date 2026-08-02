@@ -133,7 +133,7 @@ Board symmetry permutations rearrange position-dependent data (tile indices, ver
 
 *Produces training data for the state-only `placement_state_v3` model. Records every legal composite settlement-road action, including legal composites with zero rollouts.*
 
-When `--export-type InitialPlacement` is specified, the game loop runs in placement-only mode. MCTS search is performed at settlement placement steps (`PlaceFirstSettlement` and `PlaceSecondSettlement`). Each MCTS root action is a `PlaceSettlementAction`, and its child state has `PlaceRoadAction` choices. The export combines these into composite actions serialized as `<vertex><direction>` strings (see [state-action-serialization.md](state-action-serialization.md) Part III).
+When `--export-type InitialPlacement` is specified, the game loop runs in placement-only mode. MCTS search is performed at settlement placement steps (`PlaceFirstSettlement` and `PlaceSecondSettlement`). Each MCTS root action is a `PlaceSettlementAction`, and its child state has `PlaceRoadAction` choices. The export combines these into composite actions serialized as `<vertex><direction>` strings (see [state-action-serialization.md](state-action-serialization.md) Part III). The MCTS leaf boundary is the exact deterministic result of the final placement road (`turnNumber: 1`, `stage: "r"`/`PreRoll`); it does not block or sample the subsequent stochastic `RollDiceAction`.
 
 Player 1 is always the player that placed the first settlement. No player rotation is applied.
 

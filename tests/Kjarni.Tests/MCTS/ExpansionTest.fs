@@ -27,7 +27,7 @@ type ExpansionTest() =
     [<Test>]
     member _.ExpandUnexplored([<Range(0, 2)>] expandTo) =
         let sut = constructSut ()
-        let expandedState = expand (sut, expandTo)
+        let expandedState = expand None (sut, expandTo)
 
         // The expanded state should be an MCTSState wrapping the child node
         expandedState |> should not' (be Null)
@@ -42,13 +42,13 @@ type ExpansionTest() =
 
         // The child node (hash=2) has no children, so it's terminal.
         // expand should still return the MCTSState for it.
-        let expandedState = expand (sut, 0)
+        let expandedState = expand None (sut, 0)
         expandedState |> should not' (be Null)
 
     [<Test>]
     member _.ExpandAlreadyExpanded() =
         let sut = constructSut ()
-        expand (sut, 0) |> ignore
+        expand None (sut, 0) |> ignore
 
-        (fun () -> expand (sut, 0) |> ignore)
+        (fun () -> expand None (sut, 0) |> ignore)
         |> should (throwWithMessage "Target action is already expanded") typeof<Exception>

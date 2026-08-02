@@ -373,7 +373,7 @@ type CollectActionStatesTests() =
         let root = MCTSState(rootNode :> ICoreState)
 
         // Expand the action
-        let expanded = expand(root, 0)
+        let expanded = expand None (root, 0)
 
         let (states, layout, _) = collectActionStates root
 

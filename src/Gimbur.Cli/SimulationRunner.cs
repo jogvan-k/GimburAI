@@ -106,9 +106,8 @@ internal record SimulationOptions
 
     /// <summary>
     /// When true, stops the MCTS tree expansion at the placement/main-game boundary.
-    /// The expansion guard blocks any action whose underlying CoreAction is a
-    /// Stochastic action wrapping a RollDiceAction. The game simulation loop also
-    /// stops when the best MCTS action is a HorizonAction.
+    /// The leaf boundary matches the post-placement PreRoll state. The game simulation
+    /// loop also stops when the best MCTS action is a HorizonAction.
     /// </summary>
     public bool PlacementOnly { get; init; }
 
@@ -437,7 +436,7 @@ internal class SimulationRunner
             if (_options.Prior)
                 Console.WriteLine($"  NN server: {_options.NnUrl}");
             if (_options.PlacementOnly)
-                Console.WriteLine("  Mode: placement-only (expansion guard active)");
+                Console.WriteLine("  Mode: placement-only (leaf boundary active)");
             if (_options.ExportType == ExportType.InitialPlacement)
                 Console.WriteLine("  Export type: InitialPlacement");
             var parallelism = _options.Parallelism > 0
@@ -851,11 +850,9 @@ internal class SimulationRunner
         PriorClient? priorClient)
     {
         var state = new CatanState(config, playerCount, rng);
-        // Build the expansion guard when placement-only mode is active.
-        var expansionGuard = _options.PlacementOnly
-            ? Microsoft.FSharp.Core.FSharpOption<Microsoft.FSharp.Core.FSharpFunc<Kjarni.ICoreState, Microsoft.FSharp.Core.FSharpFunc<Kjarni.CoreAction, bool>>>.Some(
-                Microsoft.FSharp.Core.FuncConvert.FromFunc<Kjarni.ICoreState, Kjarni.CoreAction, bool>(
-                    (state, action) => action.IsStochastic && ((Kjarni.CoreAction.Stochastic)action).Item is RollDiceAction))
+        var leafBoundary = _options.PlacementOnly
+            ? Microsoft.FSharp.Core.FSharpOption<Microsoft.FSharp.Core.FSharpFunc<Kjarni.ICoreState, bool>>.Some(
+                Microsoft.FSharp.Core.FuncConvert.FromFunc<Kjarni.ICoreState, bool>(IsPlacementLeafBoundary))
             : null;
 
         var mctsConfig = new Kjarni.MCTSConfig(
@@ -865,7 +862,7 @@ internal class SimulationRunner
             System.Math.Sqrt(2.0),
             _options.ActionRolloutLimit,
             priorClient,
-            expansionGuard,
+            leafBoundary,
             _options.MaxPriorDepth);
         var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(mctsConfig);
         var states = new List<StateRecord>();
@@ -995,6 +992,9 @@ internal class SimulationRunner
         };
     }
 
+    internal static bool IsPlacementLeafBoundary(ICoreState state) =>
+        state is CatanState { TurnNumber: 1, Stage: TurnStage.PreRoll };
+
     private PlacementGameResult RunSinglePlacementGame(
         GameConfig config,
         int playerCount,
@@ -1004,9 +1004,8 @@ internal class SimulationRunner
         PriorClient? priorClient)
     {
         var state = new CatanState(config, playerCount, rng);
-        var expansionGuard = Microsoft.FSharp.Core.FSharpOption<Microsoft.FSharp.Core.FSharpFunc<Kjarni.ICoreState, Microsoft.FSharp.Core.FSharpFunc<Kjarni.CoreAction, bool>>>.Some(
-            Microsoft.FSharp.Core.FuncConvert.FromFunc<Kjarni.ICoreState, Kjarni.CoreAction, bool>(
-                (s, action) => action.IsStochastic && ((Kjarni.CoreAction.Stochastic)action).Item is RollDiceAction));
+        var leafBoundary = Microsoft.FSharp.Core.FSharpOption<Microsoft.FSharp.Core.FSharpFunc<Kjarni.ICoreState, bool>>.Some(
+            Microsoft.FSharp.Core.FuncConvert.FromFunc<Kjarni.ICoreState, bool>(IsPlacementLeafBoundary));
 
         var mctsConfig = new Kjarni.MCTSConfig(
             searchTime.NewMilliSeconds(_options.SearchTimeMs),
@@ -1015,7 +1014,7 @@ internal class SimulationRunner
             System.Math.Sqrt(2.0),
             _options.ActionRolloutLimit,
             priorClient,
-            expansionGuard,
+            leafBoundary,
             _options.MaxPriorDepth);
         var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(mctsConfig);
         var placementStates = new List<PlacementStateRecord>();
@@ -1070,7 +1069,7 @@ internal class SimulationRunner
                     System.Math.Sqrt(2.0),
                     _options.ActionRolloutLimit,
                     priorClient,
-                    expansionGuard,
+                    leafBoundary,
                     _options.MaxPriorDepth);
                 var perActionMcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(perActionMctsConfig);
 

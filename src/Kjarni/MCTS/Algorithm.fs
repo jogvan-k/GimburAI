@@ -67,7 +67,7 @@ let rollStochasticAction(probWeights: int array) =
     i
 
 
-let rec recSelect (explorationConstant: float) (expansionGuard: (ICoreState -> CoreAction -> bool) option) (s: MCTSState, visitedStates: MCTSState list) =
+let rec recSelect (explorationConstant: float) (s: MCTSState, visitedStates: MCTSState list) =
     if Array.isEmpty s.Actions then
         Exhausted(visitedStates, oneHotOutcome(s.State.PlayerTurn, s.State.NumberOfPlayers))
     else
@@ -76,34 +76,30 @@ let rec recSelect (explorationConstant: float) (expansionGuard: (ICoreState -> C
               |> Array.indexed
               |> Array.maxBy (fun (i, a) -> actionEvaluator explorationConstant s i a)
         match snd selectedAction with
-        | Unexplored coreAction ->
-            match expansionGuard with
-            | Some guard when guard s.State coreAction ->
-                // Expansion blocked — create HorizonAction on first visit.
-                let horizonState = MCTSState(coreAction |> function Deterministic da -> da.State() | Stochastic sa -> (sa.Outcomes() |> Array.head |> snd))
-                s.Actions.[fst selectedAction] <- HorizonAction horizonState
-                Horizon(visitedStates, horizonState)
-            | _ -> Candidate(visitedStates, fst selectedAction)
-        | DeterministicAction ds -> recSelect explorationConstant expansionGuard (ds,  ds :: visitedStates)
+        | Unexplored _ -> Candidate(visitedStates, fst selectedAction)
+        | DeterministicAction ds -> recSelect explorationConstant (ds,  ds :: visitedStates)
         | StochasticAction so ->
             let i = rollStochasticAction (Array.map (fun o -> o.ProbabilityWeight) so)
             let state = so.[i].State
             if state.Rollouts = 0 // Unexplored outcome, return state
             then StochasticCandidate(visitedStates, fst selectedAction, i)
-            else recSelect explorationConstant expansionGuard (state, state :: visitedStates)
+            else recSelect explorationConstant (state, state :: visitedStates)
         | Terminal outcome -> Exhausted(visitedStates, outcome)
         | HorizonAction hs -> Horizon(visitedStates, hs)
 
-let select (explorationConstant: float) (expansionGuard: (ICoreState -> CoreAction -> bool) option) (root: MCTSState) =
-    recSelect explorationConstant expansionGuard (root, [root])
+let select (explorationConstant: float) (root: MCTSState) =
+    recSelect explorationConstant (root, [root])
 
-let expand (s: MCTSState, i) =
+let expand (leafBoundary: (ICoreState -> bool) option) (s: MCTSState, i) =
       match s.Actions.[i] with
       | Unexplored a ->
           match a with
           | Deterministic da ->
               let expandedState = MCTSState(da.State())
-              s.Actions.[i] <- DeterministicAction(expandedState)
+              s.Actions.[i] <-
+                  match leafBoundary with
+                  | Some predicate when predicate expandedState.State -> HorizonAction expandedState
+                  | _ -> DeterministicAction expandedState
               expandedState
           | Stochastic sa ->
               let stochasticActions = sa.Outcomes() |> Array.map (fun i -> { ProbabilityWeight = fst i; State = MCTSState(snd i)})
@@ -470,7 +466,7 @@ let propagateTerminals (visitedStates: MCTSState list) =
 
     propagate visitedStates
 
-let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float, actionRolloutLimit: int, priorClient: IPriorClient option, expansionGuard: (ICoreState -> CoreAction -> bool) option, maxPriorDepth: int) =
+let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float, actionRolloutLimit: int, priorClient: IPriorClient option, leafBoundary: (ICoreState -> bool) option, maxPriorDepth: int) =
     // Normalise the option to guard against C# passing Some(null).
     let priorClient =
         match priorClient with
@@ -603,7 +599,7 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
               || timer.ElapsedTicks < evaluateUntil.Value)
           && maxActionRollouts root < actionRolloutLimit
           && not (isResolved root) do
-        match select explorationConstant expansionGuard root with
+        match select explorationConstant root with
         | Exhausted (stateHistory, outcome) ->
             resubmitPriors stateHistory
             backPropagate stateHistory outcome
@@ -614,19 +610,21 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
             let mostRecentState = stateHistory.[0]
             let depth = stateHistory.Length
 
-            let expandedState = expand (mostRecentState, i)
+            let expandedState = expand leafBoundary (mostRecentState, i)
             let visitedStates = expandedState :: stateHistory
 
-            // Phase 3 — Prior request: enqueue async NN evaluation for the
-            // expanded node's actions.
-            requestPrior expandedState depth
-
+            match mostRecentState.Actions.[i] with
+            | HorizonAction _ ->
+                let outcome = simulate maxRolloutDepth expandedState
+                backPropagate visitedStates outcome
+                priorStats.horizonSkips <- priorStats.horizonSkips + 1
+                collectPriors ()
             // Check if the expanded state is a terminal game state (no actions).
             // For deterministic actions, replace the parent's action with Terminal
             // immediately. For stochastic actions (which expand all outcomes at
             // once), let propagateTerminals handle resolution after all outcomes
             // are visited.
-            if Array.isEmpty expandedState.Actions then
+            | _ when Array.isEmpty expandedState.Actions ->
                 let outcome = oneHotOutcome (expandedState.State.PlayerTurn, expandedState.State.NumberOfPlayers)
                 backPropagate visitedStates outcome
                 match mostRecentState.Actions.[i] with
@@ -635,7 +633,10 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                 | _ -> ()
                 propagateTerminals visitedStates
                 collectPriors ()
-            else
+            | _ ->
+                // Phase 3 — Prior request: enqueue async NN evaluation for the
+                // expanded node's actions.
+                requestPrior expandedState depth
                 let outcome = simulate maxRolloutDepth expandedState
                 backPropagate visitedStates outcome
                 propagateTerminals visitedStates

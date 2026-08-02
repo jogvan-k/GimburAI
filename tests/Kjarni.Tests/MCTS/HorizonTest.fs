@@ -20,24 +20,31 @@ type horizonTests() =
             .build ()
 
     [<Test>]
-    member _.GuardBlocks_ReturnsHorizon() =
+    member _.DeterministicResultAtBoundary_BecomesExactHorizonState() =
         let root = MCTSState twoChildNode
-        let guard (_state: ICoreState) (_action: CoreAction) = true
-        let result = select (sqrt 2.) (Some guard) root
+        let expectedState =
+            match root.Actions.[0] with
+            | Unexplored (Deterministic action) -> action.State()
+            | _ -> failwith "Expected deterministic action"
+
+        let expandedState = expand (Some (fun state -> Object.ReferenceEquals(state, expectedState))) (root, 0)
+        let result = select (sqrt 2.) root
 
         result |> should be (ofCase <@ Horizon @>)
 
         match root.Actions.[0] with
-        | HorizonAction _ -> ()
+        | HorizonAction horizonState ->
+            Object.ReferenceEquals(horizonState, expandedState) |> should equal true
+            Object.ReferenceEquals(horizonState.State, expectedState) |> should equal true
         | other -> Assert.Fail $"Expected HorizonAction but got %A{other}"
 
     [<Test>]
-    member _.GuardBlocks_SubsequentVisit_ReturnsHorizon() =
-        let root = MCTSState twoChildNode
-        let guard (_state: ICoreState) (_action: CoreAction) = true
+    member _.Boundary_SubsequentVisit_ReturnsHorizon() =
+        let rootNode = node_builder(p1, 0, 0, 110, node_builder(p2, 0, 0, 111)).build()
+        let root = MCTSState rootNode
 
-        // First select converts Unexplored -> HorizonAction
-        let firstResult = select (sqrt 2.) (Some guard) root
+        expand (Some (fun _ -> true)) (root, 0) |> ignore
+        let firstResult = select (sqrt 2.) root
         firstResult |> should be (ofCase <@ Horizon @>)
 
         // Give the horizon state and root some rollouts so selection revisits
@@ -51,23 +58,43 @@ type horizonTests() =
         root.WinCounts <- [| 3.; 2. |]
 
         // Second select should still return Horizon (from the HorizonAction match arm)
-        let secondResult = select (sqrt 2.) (Some guard) root
+        let secondResult = select (sqrt 2.) root
         secondResult |> should be (ofCase <@ Horizon @>)
 
     [<Test>]
-    member _.GuardDoesNotBlock_ReturnsCandidate() =
+    member _.NonBoundaryResult_RemainsDeterministic() =
         let root = MCTSState twoChildNode
-        let guard (_state: ICoreState) (_action: CoreAction) = false
-        let result = select (sqrt 2.) (Some guard) root
+        expand (Some (fun _ -> false)) (root, 0) |> ignore
 
-        result |> should be (ofCase <@ Candidate @>)
+        root.Actions.[0] |> should be (ofCase <@ DeterministicAction @>)
 
     [<Test>]
     member _.NoGuard_ReturnsCandidate() =
         let root = MCTSState twoChildNode
-        let result = select (sqrt 2.) None root
+        let result = select (sqrt 2.) root
 
         result |> should be (ofCase <@ Candidate @>)
+
+    [<Test>]
+    member _.StochasticExpansion_DoesNotApplyBoundaryToFirstOutcome() =
+        let first = node (p1, 1, 0, 801)
+        let second = node (p2, 2, 0, 802)
+        let rootNode = stochastic_node(p1, 0, 0, 800, [ (1, first); (1, second) ])
+        let root = MCTSState rootNode
+        let mutable predicateCalls = 0
+        let predicate (_: ICoreState) =
+            predicateCalls <- predicateCalls + 1
+            true
+
+        expand (Some predicate) (root, 0) |> ignore
+
+        predicateCalls |> should equal 0
+        match root.Actions.[0] with
+        | StochasticAction outcomes ->
+            outcomes |> should haveLength 2
+            Object.ReferenceEquals(outcomes.[0].State.State, first) |> should equal true
+            Object.ReferenceEquals(outcomes.[1].State.State, second) |> should equal true
+        | other -> Assert.Fail $"Expected StochasticAction but got %A{other}"
 
     [<Test>]
     member _.ActionEvaluator_HorizonAction_SameAsDeterministic() =

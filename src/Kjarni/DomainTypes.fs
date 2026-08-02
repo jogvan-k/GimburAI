@@ -119,7 +119,7 @@ type MCTSConfig =
       ExplorationConstant: float
       ActionRolloutLimit: int
       PriorClient: IPriorClient option
-      ExpansionGuard: (ICoreState -> CoreAction -> bool) option
+      LeafBoundary: (ICoreState -> bool) option
       MaxPriorDepth: int }
 
     static member Default =
@@ -129,5 +129,5 @@ type MCTSConfig =
           ExplorationConstant = sqrt 2.
           ActionRolloutLimit = System.Int32.MaxValue
           PriorClient = None
-          ExpansionGuard = None
+          LeafBoundary = None
           MaxPriorDepth = System.Int32.MaxValue }

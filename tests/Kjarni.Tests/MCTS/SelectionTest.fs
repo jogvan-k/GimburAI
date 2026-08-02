@@ -25,14 +25,14 @@ type selectTests() =
     [<Test>]
     member _.TerminalNode([<Values(Player.Player1, Player.Player2)>] playerTurn) =
         let terminalNode = MCTSState(node (playerTurn, 0, 0, 0))
-        let result = select (sqrt 2.) None terminalNode
+        let result = select (sqrt 2.) terminalNode
 
         result |> should be (ofCase <@ Exhausted @>)
 
     [<Test>]
     member _.AllUnexploredLeaves_SelectsFirst() =
         let root = MCTSState branchingNode
-        let result = select (sqrt 2.) None root
+        let result = select (sqrt 2.) root
 
         match result with
         | Candidate (ancestors, i) ->
@@ -47,13 +47,13 @@ type selectTests() =
         let root = MCTSState branchingNode
 
         // Expand first action to make it non-Unexplored
-        let expandedState = expand (root, 0)
+        let expandedState = expand None (root, 0)
         expandedState.Rollouts <- 1
         expandedState.WinCounts <- [| 0.; 1. |]
         root.Rollouts <- 1
         root.WinCounts <- [| 0.; 1. |]
 
-        let result = select (sqrt 2.) None root
+        let result = select (sqrt 2.) root
 
         match result with
         | Candidate (_, i) ->
@@ -67,14 +67,14 @@ type selectTests() =
 
         // Expand all actions
         for i in 0..2 do
-            let expanded = expand (root, i)
+            let expanded = expand None (root, i)
             expanded.Rollouts <- 1
             expanded.WinCounts <- [| 0.; 0. |]
 
         root.Rollouts <- 3
         root.WinCounts <- [| 0.; 0. |]
 
-        let result = select (sqrt 2.) None root
+        let result = select (sqrt 2.) root
 
         // When all are expanded with equal stats, select should still return a candidate
         result |> should be (ofCase <@ Candidate @>)
