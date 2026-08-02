@@ -282,6 +282,14 @@ internal static class RootCommandFactory
             int maxPendingEvaluations = parseResult.GetValue(maxPendingEvaluationsOption);
             int leafEvaluationTimeoutMs = parseResult.GetValue(leafEvaluationTimeoutOption);
             int drainTimeoutMs = parseResult.GetValue(drainTimeoutOption);
+            var maxErrorsPerGame = 5;
+            var maxErrorRatePerGame = 0.02;
+            var minimumRequestsForRate = 50;
+            var discardGamesWithFallbacks = false;
+            var maxDiscardedGames = 20;
+            var maxDiscardRate = 0.05;
+            var minimumAttemptsForDiscardRate = 50;
+            var maxConsecutiveDiscards = 5;
 
             // ── Apply config file defaults for simulate ──────────────
             if (cfg.ValueKind == JsonValueKind.Object)
@@ -346,6 +354,14 @@ internal static class RootCommandFactory
                     leafEvaluationTimeoutMs = ConfigLoader.GetInt(cfg, "leafEvaluationTimeoutMs") ?? leafEvaluationTimeoutMs;
                 if (!WasProvided(parseResult, "--drain-timeout"))
                     drainTimeoutMs = ConfigLoader.GetInt(cfg, "drainTimeoutMs") ?? drainTimeoutMs;
+                maxErrorsPerGame = ConfigLoader.GetInt(cfg, "maxErrorsPerGame") ?? maxErrorsPerGame;
+                maxErrorRatePerGame = ConfigLoader.GetDouble(cfg, "maxErrorRatePerGame") ?? maxErrorRatePerGame;
+                minimumRequestsForRate = ConfigLoader.GetInt(cfg, "minimumRequestsForRate") ?? minimumRequestsForRate;
+                discardGamesWithFallbacks = ConfigLoader.GetBool(cfg, "discardGamesWithFallbacks") ?? discardGamesWithFallbacks;
+                maxDiscardedGames = ConfigLoader.GetInt(cfg, "maxDiscardedGames") ?? maxDiscardedGames;
+                maxDiscardRate = ConfigLoader.GetDouble(cfg, "maxDiscardRate") ?? maxDiscardRate;
+                minimumAttemptsForDiscardRate = ConfigLoader.GetInt(cfg, "minimumAttemptsForDiscardRate") ?? minimumAttemptsForDiscardRate;
+                maxConsecutiveDiscards = ConfigLoader.GetInt(cfg, "maxConsecutiveDiscards") ?? maxConsecutiveDiscards;
                 if (!WasProvided(parseResult, "--verbosity", "-v") && !WasProvided(parseResult, "-q") && !WasProvided(parseResult, "--verbose"))
                     verbosity = ConfigLoader.GetString(cfg, "verbosity") ?? verbosity;
             }
@@ -382,10 +398,18 @@ internal static class RootCommandFactory
                 MaxPendingEvaluations = maxPendingEvaluations,
                 LeafEvaluationTimeoutMs = leafEvaluationTimeoutMs,
                 DrainTimeoutMs = drainTimeoutMs,
+                MaxErrorsPerGame = maxErrorsPerGame,
+                MaxErrorRatePerGame = maxErrorRatePerGame,
+                MinimumRequestsForRate = minimumRequestsForRate,
+                DiscardGamesWithFallbacks = discardGamesWithFallbacks,
+                MaxDiscardedGames = maxDiscardedGames,
+                MaxDiscardRate = maxDiscardRate,
+                MinimumAttemptsForDiscardRate = minimumAttemptsForDiscardRate,
+                MaxConsecutiveDiscards = maxConsecutiveDiscards,
             };
 
             var runner = new SimulationRunner(options);
-            runner.Run();
+            return runner.Run();
         });
 
         return command;

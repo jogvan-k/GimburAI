@@ -76,6 +76,22 @@ maps them to Python `snake_case` internally.
 | `maxPendingEvaluations` | int | `32` | Maximum outstanding neural leaf requests per search. |
 | `leafEvaluationTimeoutMs` | int | `500` | Request timeout before rollout fallback. |
 | `drainTimeoutMs` | int | `1000` | Maximum post-deadline response drain time. |
+| `maxErrorsPerGame` | int | `5` | Discard a game when hard evaluation errors exceed this count. |
+| `maxErrorRatePerGame` | float | `0.02` | Discard when hard errors/submitted requests exceeds this rate. |
+| `minimumRequestsForRate` | int | `50` | Minimum submitted requests before applying the per-game rate. |
+| `discardGamesWithFallbacks` | bool | `false` | Discard any game that used rollout fallback. |
+| `maxDiscardedGames` | int | `20` | Stop generation after this many discarded games are exceeded. |
+| `maxDiscardRate` | float | `0.05` | Stop when discarded/attempted exceeds this rate. |
+| `minimumAttemptsForDiscardRate` | int | `50` | Minimum attempts before applying the discard rate. |
+| `maxConsecutiveDiscards` | int | `5` | Stop after this completion-order discard streak is exceeded. |
+
+Hard errors are leaf evaluation timeouts, invalid responses, and orphan responses.
+Deadline cancellation and rollout fallback are reported separately. Accepted games are
+written directly under `data/genN/`; compact rejected-game records are written under
+`data/genN/discarded/`. The monitor counts only direct `.json` children toward the target,
+observes discarded records during oversampling, and stops promptly when a generation gate
+is exceeded. The CLI itself retries attempts until the requested accepted count is reached,
+so `oversample` remains useful only for terminating long-tail in-flight work early.
 
 ### `train` Section
 
@@ -158,6 +174,7 @@ pipeline/
 ├── data/
 │   ├── gen0/          # One .json file per game
 │   │   ├── a1b2c3.json
+│   │   ├── discarded/     # Compact diagnostics for rejected attempts
 │   │   └── ...
 │   ├── gen1/
 │   └── ...

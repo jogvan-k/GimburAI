@@ -136,6 +136,74 @@ internal record SimulationOptions
     public int MaxPendingEvaluations { get; init; } = 32;
     public int LeafEvaluationTimeoutMs { get; init; } = 500;
     public int DrainTimeoutMs { get; init; } = 1000;
+    public int MaxErrorsPerGame { get; init; } = 5;
+    public double MaxErrorRatePerGame { get; init; } = 0.02;
+    public int MinimumRequestsForRate { get; init; } = 50;
+    public bool DiscardGamesWithFallbacks { get; init; }
+    public int MaxDiscardedGames { get; init; } = 20;
+    public double MaxDiscardRate { get; init; } = 0.05;
+    public int MinimumAttemptsForDiscardRate { get; init; } = 50;
+    public int MaxConsecutiveDiscards { get; init; } = 5;
+}
+
+internal record EvaluationDiagnostics
+{
+    public int Submitted { get; set; }
+    public int Applied { get; set; }
+    public int Timeouts { get; set; }
+    public int InvalidResponses { get; set; }
+    public int Cancelled { get; set; }
+    public int Fallbacks { get; set; }
+    public int Orphans { get; set; }
+    public int Batches { get; set; }
+    public int States { get; set; }
+    public long LatencyMs { get; set; }
+    public int PriorResponsesOrphaned { get; set; }
+
+    public int HardErrors => Timeouts + InvalidResponses + Orphans;
+
+    public void Add(Kjarni.MCTS.Types.LogInfo info)
+    {
+        Submitted += info.leafEvaluationsSubmitted;
+        Applied += info.leafEvaluationsApplied;
+        Timeouts += info.leafEvaluationTimeouts;
+        InvalidResponses += info.leafEvaluationsInvalid;
+        Cancelled += info.leafEvaluationsCancelled;
+        Fallbacks += info.leafEvaluationFallbacks;
+        Orphans += info.leafEvaluationOrphans;
+        Batches += info.leafEvaluationBatches;
+        States += info.leafEvaluationStates;
+        LatencyMs += info.leafEvaluationLatencyMs;
+        PriorResponsesOrphaned += info.priorResponsesOrphaned;
+    }
+}
+
+internal static class SimulationErrorPolicy
+{
+    public static string? GetGameDiscardReason(EvaluationDiagnostics diagnostics, SimulationOptions options)
+    {
+        if (diagnostics.HardErrors > options.MaxErrorsPerGame)
+            return $"hard errors {diagnostics.HardErrors} exceeded {options.MaxErrorsPerGame}";
+        if (diagnostics.Submitted >= options.MinimumRequestsForRate
+            && diagnostics.HardErrors / (double)Math.Max(1, diagnostics.Submitted) > options.MaxErrorRatePerGame)
+            return $"hard error rate {diagnostics.HardErrors / (double)diagnostics.Submitted:P2} exceeded {options.MaxErrorRatePerGame:P2}";
+        if (options.DiscardGamesWithFallbacks && diagnostics.Fallbacks > 0)
+            return $"fallbacks prohibited ({diagnostics.Fallbacks})";
+        return null;
+    }
+
+    public static string? GetGenerationStopReason(
+        int attempted, int discarded, int consecutiveDiscards, SimulationOptions options)
+    {
+        if (discarded > options.MaxDiscardedGames)
+            return $"discarded games {discarded} exceeded {options.MaxDiscardedGames}";
+        if (attempted >= options.MinimumAttemptsForDiscardRate
+            && discarded / (double)Math.Max(1, attempted) > options.MaxDiscardRate)
+            return $"discard rate {discarded / (double)attempted:P2} exceeded {options.MaxDiscardRate:P2}";
+        if (consecutiveDiscards > options.MaxConsecutiveDiscards)
+            return $"consecutive discards {consecutiveDiscards} exceeded {options.MaxConsecutiveDiscards}";
+        return null;
+    }
 }
 
 /// <summary>
@@ -356,6 +424,7 @@ internal record GameResult
     /// Null when no priors were used.
     /// </summary>
     public Dictionary<int, int>? PriorInferencesPerDepth { get; init; }
+    public EvaluationDiagnostics EvaluationDiagnostics { get; init; } = new();
 }
 
 /// <summary>
@@ -386,6 +455,7 @@ internal record PlacementGameResult
     /// Null when no priors were used.
     /// </summary>
     public Dictionary<int, int>? PriorInferencesPerDepth { get; init; }
+    public EvaluationDiagnostics EvaluationDiagnostics { get; init; } = new();
 }
 
 /// <summary>
@@ -416,7 +486,7 @@ internal class SimulationRunner
         _quiet = options.Verbosity is "quiet" or "q";
     }
 
-    public void Run()
+    public int Run()
     {
         var config = ResolveGameConfig();
         var playerCount = ResolvePlayerCount(config);
@@ -494,6 +564,19 @@ internal class SimulationRunner
         }
 
         var totalStopwatch = Stopwatch.StartNew();
+        var discardedDir = exportDir is not null
+            ? Path.Combine(exportDir, "discarded")
+            : _options.ExportPath?.Directory is { } parent
+                ? Path.Combine(parent.FullName, "discarded")
+                : Path.Combine(Environment.CurrentDirectory, "discarded");
+        var attempted = 0;
+        var nextAttempt = 0;
+        var accepted = 0;
+        var discarded = 0;
+        var consecutiveDiscards = 0;
+        string? stopReason = null;
+        using var stop = new CancellationTokenSource();
+        var targetGames = checked((int)_options.NumberOfGames);
 
         // Create shared PriorClient when prior evaluation is enabled.
         PriorClient? priorClient = null;
@@ -513,88 +596,116 @@ internal class SimulationRunner
 
         try
         {
-            Parallel.For(0, (int)_options.NumberOfGames, new ParallelOptions
+            var parallelism = _options.Parallelism > 0
+                ? Math.Min(_options.Parallelism, Environment.ProcessorCount)
+                : priorClient is not null
+                    ? Math.Min(4, Environment.ProcessorCount)
+                    : Environment.ProcessorCount;
+            Parallel.For(0, parallelism, new ParallelOptions
             {
                 // When NN priors are active the inference server is the bottleneck;
                 // limit parallelism to avoid OOM from too many concurrent MCTS
                 // trees blocking on root-prior waits.
-                MaxDegreeOfParallelism = _options.Parallelism > 0
-                    ? Math.Min(_options.Parallelism, Environment.ProcessorCount)
-                    : priorClient is not null
-                        ? Math.Min(4, Environment.ProcessorCount)
-                        : Environment.ProcessorCount,
-            }, gameIndex =>
+                MaxDegreeOfParallelism = parallelism,
+                CancellationToken = stop.Token,
+            }, _ =>
             {
-                // Each game gets a deterministic seed derived from the base seed + game index.
-                var gameSeed = unchecked(_options.Seed + gameIndex);
-                var rng = new Random(gameSeed);
-
-                var gameStopwatch = Stopwatch.StartNew();
-
-                if (isPlacementExport)
+                while (!stop.IsCancellationRequested)
                 {
-                    var result = RunSinglePlacementGame(config, playerCount, rng, gameSeed, gameIndex + 1, priorClient);
-                    gameStopwatch.Stop();
-                    placementResults.Add((gameIndex + 1, result, gameStopwatch.Elapsed));
-
-                    if (exportFormat == ExportFormat.Jsonl && exportWriter is not null)
+                    int attemptNumber;
+                    lock (exportLock)
                     {
-                        var jsonObj = BuildPlacementGameJsonObject(result, symmetryPerms);
-                        var line = JsonSerializer.Serialize(jsonObj, jsonOptions);
+                        if (accepted >= targetGames || stopReason is not null)
+                            break;
+                        attemptNumber = ++nextAttempt;
+                    }
+
+                    var gameSeed = unchecked(_options.Seed + attemptNumber - 1);
+                    var rng = new Random(gameSeed);
+
+                    var gameStopwatch = Stopwatch.StartNew();
+
+                    if (isPlacementExport)
+                    {
+                    var result = RunSinglePlacementGame(config, playerCount, rng, gameSeed, attemptNumber, priorClient);
+                    gameStopwatch.Stop();
                         lock (exportLock)
                         {
-                            exportWriter.WriteLine(line);
-                            exportWriter.Flush();
+                            if (stopReason is not null || accepted >= targetGames)
+                                continue;
+                            attempted++;
+                            var reason = SimulationErrorPolicy.GetGameDiscardReason(result.EvaluationDiagnostics, _options);
+                            if (reason is not null)
+                            {
+                                discarded++;
+                                consecutiveDiscards++;
+                                if (exportFormat != ExportFormat.None)
+                                    WriteDiscardDiagnostic(discardedDir, result.Seed, result.Map, result.Players,
+                                        "initialPlacement", result.Winner, null, reason, result.EvaluationDiagnostics, jsonOptions);
+                            }
+                            else if (accepted < targetGames)
+                            {
+                                accepted++;
+                                consecutiveDiscards = 0;
+                                placementResults.Add((accepted, result, gameStopwatch.Elapsed));
+                                WriteAcceptedPlacement(result, symmetryPerms, exportFormat, exportWriter, exportDir, jsonOptions);
+                            }
+                            stopReason = SimulationErrorPolicy.GetGenerationStopReason(
+                                attempted, discarded, consecutiveDiscards, _options);
+                            if (accepted >= targetGames || stopReason is not null)
+                                stop.Cancel();
                         }
-                    }
-                    else if (exportFormat == ExportFormat.Json && exportDir is not null)
-                    {
-                        var prettyOptions = new JsonSerializerOptions(jsonOptions) { WriteIndented = true };
-                        var jsonObj = BuildPlacementGameJsonObject(result, symmetryPerms);
-                        var json = JsonSerializer.Serialize(jsonObj, prettyOptions);
-                        var path = Path.Combine(exportDir, $"{Guid.NewGuid()}.json");
-                        File.WriteAllText(path, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-                    }
 
                     if (!_quiet)
                     {
                         Console.WriteLine(
-                            $"Game {gameIndex + 1}: {result.States.Count} placement states, " +
+                            $"Attempt {attemptNumber}: {result.States.Count} placement states, " +
                             $"{gameStopwatch.Elapsed.TotalSeconds:F1}s");
                     }
-                }
-                else
-                {
-                    var result = RunSingleGame(config, playerCount, rng, gameSeed, gameIndex + 1, priorClient);
-                    gameStopwatch.Stop();
-                    gameResults.Add((gameIndex + 1, result, gameStopwatch.Elapsed));
-
-                    if (exportFormat == ExportFormat.Jsonl && exportWriter is not null)
+                    }
+                    else
                     {
-                        var line = SerializeGameJsonl(result, symmetryPerms, jsonOptions);
+                    var result = RunSingleGame(config, playerCount, rng, gameSeed, attemptNumber, priorClient);
+                    gameStopwatch.Stop();
                         lock (exportLock)
                         {
-                            exportWriter.WriteLine(line);
-                            exportWriter.Flush();
+                            if (stopReason is not null || accepted >= targetGames)
+                                continue;
+                            attempted++;
+                            var reason = SimulationErrorPolicy.GetGameDiscardReason(result.EvaluationDiagnostics, _options);
+                            if (reason is not null)
+                            {
+                                discarded++;
+                                consecutiveDiscards++;
+                                if (exportFormat != ExportFormat.None)
+                                    WriteDiscardDiagnostic(discardedDir, result.Seed, result.Map, result.Players,
+                                        "gameState", result.Winner, result.Turns, reason, result.EvaluationDiagnostics, jsonOptions);
+                            }
+                            else if (accepted < targetGames)
+                            {
+                                accepted++;
+                                consecutiveDiscards = 0;
+                                gameResults.Add((accepted, result, gameStopwatch.Elapsed));
+                                WriteAcceptedGame(result, symmetryPerms, exportFormat, exportWriter, exportDir, jsonOptions);
+                            }
+                            stopReason = SimulationErrorPolicy.GetGenerationStopReason(
+                                attempted, discarded, consecutiveDiscards, _options);
+                            if (accepted >= targetGames || stopReason is not null)
+                                stop.Cancel();
                         }
-                    }
-                    else if (exportFormat == ExportFormat.Json && exportDir is not null)
-                    {
-                        var json = SerializeGameJson(result, symmetryPerms, jsonOptions);
-                        var path = Path.Combine(exportDir, $"{Guid.NewGuid()}.json");
-                        File.WriteAllText(path, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-                    }
 
                     if (!_quiet)
                     {
                         Console.WriteLine(
-                            $"Game {gameIndex + 1}: {result.States.Count} states, " +
+                            $"Attempt {attemptNumber}: {result.States.Count} states, " +
                             $"winner=P{result.Winner}, turns={result.Turns}, " +
                             $"{gameStopwatch.Elapsed.TotalSeconds:F1}s");
+                    }
                     }
                 }
             });
         }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
         finally
         {
             exportWriter?.Dispose();
@@ -602,6 +713,9 @@ internal class SimulationRunner
         }
 
         totalStopwatch.Stop();
+        Console.WriteLine($"Simulation attempts: {attempted}, accepted: {accepted}, discarded: {discarded}");
+        if (stopReason is not null)
+            Console.Error.WriteLine($"Simulation stopped: {stopReason}");
 
         if (isPlacementExport)
         {
@@ -637,9 +751,9 @@ internal class SimulationRunner
             var stats = new SimulationStats
             {
                 Games = allGames,
-                TotalGames = (int)_options.NumberOfGames,
+                TotalGames = allGames.Count,
                 TotalElapsed = totalStopwatch.Elapsed,
-                AverageTimePerGame = TimeSpan.FromTicks(totalStopwatch.Elapsed.Ticks / Math.Max(1, (int)_options.NumberOfGames)),
+                AverageTimePerGame = TimeSpan.FromTicks(totalStopwatch.Elapsed.Ticks / Math.Max(1, allGames.Count)),
             };
 
             if (!_quiet)
@@ -653,6 +767,52 @@ internal class SimulationRunner
                 Console.WriteLine($"Exported {allGames.Count} game(s) ({totalStates} states) to {_options.ExportPath.FullName}");
             }
         }
+        return stopReason is null && accepted >= targetGames ? 0 : 2;
+    }
+
+    private static void WriteAcceptedGame(
+        GameResult result, ImmutableArray<SymmetryPermutation> symmetryPerms, ExportFormat format,
+        StreamWriter? writer, string? exportDir, JsonSerializerOptions options)
+    {
+        if (format == ExportFormat.Jsonl && writer is not null)
+        {
+            writer.WriteLine(SerializeGameJsonl(result, symmetryPerms, options));
+            writer.Flush();
+        }
+        else if (format == ExportFormat.Json && exportDir is not null)
+        {
+            File.WriteAllText(Path.Combine(exportDir, $"{Guid.NewGuid()}.json"),
+                SerializeGameJson(result, symmetryPerms, options), new UTF8Encoding(false));
+        }
+    }
+
+    private static void WriteAcceptedPlacement(
+        PlacementGameResult result, ImmutableArray<SymmetryPermutation> symmetryPerms, ExportFormat format,
+        StreamWriter? writer, string? exportDir, JsonSerializerOptions options)
+    {
+        var obj = BuildPlacementGameJsonObject(result, symmetryPerms);
+        if (format == ExportFormat.Jsonl && writer is not null)
+        {
+            writer.WriteLine(JsonSerializer.Serialize(obj, options));
+            writer.Flush();
+        }
+        else if (format == ExportFormat.Json && exportDir is not null)
+        {
+            var pretty = new JsonSerializerOptions(options) { WriteIndented = true };
+            File.WriteAllText(Path.Combine(exportDir, $"{Guid.NewGuid()}.json"),
+                JsonSerializer.Serialize(obj, pretty), new UTF8Encoding(false));
+        }
+    }
+
+    private static void WriteDiscardDiagnostic(
+        string directory, int seed, string map, int players, string exportType, int winner, int? turns,
+        string reason, EvaluationDiagnostics diagnostics, JsonSerializerOptions options)
+    {
+        Directory.CreateDirectory(directory);
+        var payload = new { seed, map, players, exportType, winner, turns, reason, evaluationDiagnostics = diagnostics };
+        var pretty = new JsonSerializerOptions(options) { WriteIndented = true };
+        File.WriteAllText(Path.Combine(directory, $"discarded-{seed}.json"),
+            JsonSerializer.Serialize(payload, pretty), new UTF8Encoding(false));
     }
 
     /// <summary>
@@ -875,6 +1035,7 @@ internal class SimulationRunner
             _options.DrainTimeoutMs);
         var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(mctsConfig);
         var states = new List<StateRecord>();
+        var evaluationDiagnostics = new EvaluationDiagnostics();
 
         // Capture the board serialization once (invariant across turns).
         var boardSerialized = state.SerializeBoard();
@@ -899,6 +1060,7 @@ internal class SimulationRunner
                 mctsRoot ??= new Kjarni.MCTS.Types.MCTSState((ICoreState)state);
                 mcts.RunSimulation(mctsRoot);
                 var logInfo = mcts.LatestLogInfo();
+                evaluationDiagnostics.Add(logInfo);
                 states.Add(CreateStateRecord(state, serialized, mctsRoot, logInfo));
 
                 if (mctsRoot.Actions[0].IsHorizonAction)
@@ -929,6 +1091,7 @@ internal class SimulationRunner
                 mcts.RunSimulation(mctsRoot);
                 var bestPath = extractBestPath(mctsRoot);
                 var logInfo = mcts.LatestLogInfo();
+                evaluationDiagnostics.Add(logInfo);
 
                 states.Add(CreateStateRecord(state, serialized, mctsRoot, logInfo));
 
@@ -998,6 +1161,7 @@ internal class SimulationRunner
             States = states,
             PriorActionsPerDepth = priorActionsPerDepth,
             PriorInferencesPerDepth = priorInferencesPerDepth,
+            EvaluationDiagnostics = evaluationDiagnostics,
         };
     }
 
@@ -1031,6 +1195,7 @@ internal class SimulationRunner
             _options.DrainTimeoutMs);
         var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(mctsConfig);
         var placementStates = new List<PlacementStateRecord>();
+        var evaluationDiagnostics = new EvaluationDiagnostics();
 
         var boardSerialized = state.SerializeBoard();
         var actionSerializer = PlacementActionSerializer.ForTopology(config.Map.Topology);
@@ -1118,6 +1283,7 @@ internal class SimulationRunner
 
                         // Accumulate prior stats from this per-action MCTS run.
                         var actionLogInfo = perActionMcts.LatestLogInfo();
+                        evaluationDiagnostics.Add(actionLogInfo);
                         totalPriorNodesRequested += actionLogInfo.priorNodesRequested;
                         totalPriorActionsApplied += actionLogInfo.priorActionsApplied;
                         totalPriorActionsRequested += actionLogInfo.priorActionsRequested;
@@ -1203,6 +1369,7 @@ internal class SimulationRunner
                 mcts.RunSimulation(mctsRoot);
                 var bestPath = extractBestPath(mctsRoot);
                 var logInfo = mcts.LatestLogInfo();
+                evaluationDiagnostics.Add(logInfo);
 
                 var playerIndex = (int)state.PlayerTurn;
                 var stageChar = StateToken.EncodeTurnStage(state.Stage).ToString();
@@ -1305,6 +1472,7 @@ internal class SimulationRunner
                 mctsRoot ??= new Kjarni.MCTS.Types.MCTSState((ICoreState)state);
                 mcts.RunSimulation(mctsRoot);
                 var bestPath = extractBestPath(mctsRoot);
+                evaluationDiagnostics.Add(mcts.LatestLogInfo());
 
                 if (!bestPath.IsEmpty && bestPath.Head < actions.Length)
                 {
@@ -1376,6 +1544,7 @@ internal class SimulationRunner
             States = placementStates,
             PriorActionsPerDepth = priorActionsPerDepth,
             PriorInferencesPerDepth = priorInferencesPerDepth,
+            EvaluationDiagnostics = evaluationDiagnostics,
         };
     }
 
@@ -1621,6 +1790,7 @@ internal class SimulationRunner
             priorInferencesPerDepth = game.PriorInferencesPerDepth != null
                 ? game.PriorInferencesPerDepth.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
                 : null,
+            evaluationDiagnostics = game.EvaluationDiagnostics,
         };
     }
 
@@ -1700,6 +1870,7 @@ internal class SimulationRunner
             priorInferencesPerDepth = game.PriorInferencesPerDepth != null
                 ? game.PriorInferencesPerDepth.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
                 : null,
+            evaluationDiagnostics = game.EvaluationDiagnostics,
         };
     }
 }

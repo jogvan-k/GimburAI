@@ -55,6 +55,14 @@ class SimulateConfig:
     max_pending_evaluations: int = 32
     leaf_evaluation_timeout_ms: int = 500
     drain_timeout_ms: int = 1000
+    max_errors_per_game: int = 5
+    max_error_rate_per_game: float = 0.02
+    minimum_requests_for_rate: int = 50
+    discard_games_with_fallbacks: bool = False
+    max_discarded_games: int = 20
+    max_discard_rate: float = 0.05
+    minimum_attempts_for_discard_rate: int = 50
+    max_consecutive_discards: int = 5
 
 
 @dataclass
@@ -867,6 +875,9 @@ def _step_simulate(
 
     remaining = target_games - existing
     requested_games = math.ceil(remaining * max(sim.oversample, 1.0))
+    existing_discard_reason = _discard_stop_reason(out_dir, sim)
+    if existing_discard_reason is not None:
+        raise RuntimeError(f"Simulation discard policy already exceeded: {existing_discard_reason}")
 
     # Build config JSON for gimbur simulate.
     sim_config: dict[str, Any] = {
@@ -890,6 +901,14 @@ def _step_simulate(
     sim_config["maxPendingEvaluations"] = sim.max_pending_evaluations
     sim_config["leafEvaluationTimeoutMs"] = sim.leaf_evaluation_timeout_ms
     sim_config["drainTimeoutMs"] = sim.drain_timeout_ms
+    sim_config["maxErrorsPerGame"] = sim.max_errors_per_game
+    sim_config["maxErrorRatePerGame"] = sim.max_error_rate_per_game
+    sim_config["minimumRequestsForRate"] = sim.minimum_requests_for_rate
+    sim_config["discardGamesWithFallbacks"] = sim.discard_games_with_fallbacks
+    sim_config["maxDiscardedGames"] = sim.max_discarded_games
+    sim_config["maxDiscardRate"] = sim.max_discard_rate
+    sim_config["minimumAttemptsForDiscardRate"] = sim.minimum_attempts_for_discard_rate
+    sim_config["maxConsecutiveDiscards"] = sim.max_consecutive_discards
     if not sim.symmetries:
         sim_config["noSymmetries"] = True
     if sim.verbosity:
@@ -950,6 +969,16 @@ def _step_simulate(
     try:
         while proc.poll() is None:
             count = _count_json_files(out_dir)
+            discard_reason = _discard_stop_reason(out_dir, sim)
+            if discard_reason is not None:
+                print(f"  Simulation discard policy exceeded: {discard_reason}")
+                os.killpg(proc.pid, signal.SIGINT)
+                try:
+                    proc.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    proc.wait()
+                raise RuntimeError(f"{label} stopped: {discard_reason}")
             if count >= target_games:
                 print(
                     f"  Target reached: {count}/{target_games} games. Terminating simulation early."
@@ -992,6 +1021,37 @@ def _step_simulate(
 def _count_json_files(directory: Path) -> int:
     """Count ``.json`` files in *directory* (non-recursive)."""
     return sum(1 for _ in directory.glob("*.json"))
+
+
+def _discard_stop_reason(directory: Path, sim: SimulateConfig) -> str | None:
+    """Return a stop reason from accepted and discarded per-game files."""
+    accepted = list(directory.glob("*.json"))
+    discarded = list((directory / "discarded").glob("*.json"))
+    attempts = len(accepted) + len(discarded)
+    if len(discarded) > sim.max_discarded_games:
+        return f"discarded games {len(discarded)} exceeded {sim.max_discarded_games}"
+    if (
+        attempts >= sim.minimum_attempts_for_discard_rate
+        and len(discarded) / max(1, attempts) > sim.max_discard_rate
+    ):
+        return (
+            f"discard rate {len(discarded) / attempts:.2%} exceeded "
+            f"{sim.max_discard_rate:.2%}"
+        )
+
+    events = sorted(
+        [(path.stat().st_mtime_ns, False) for path in accepted]
+        + [(path.stat().st_mtime_ns, True) for path in discarded]
+    )
+    consecutive = 0
+    for _, is_discarded in events:
+        consecutive = consecutive + 1 if is_discarded else 0
+    if consecutive > sim.max_consecutive_discards:
+        return (
+            f"consecutive discards {consecutive} exceeded "
+            f"{sim.max_consecutive_discards}"
+        )
+    return None
 
 
 def _step_train(

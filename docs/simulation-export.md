@@ -13,6 +13,27 @@ This document defines the JSON output schemas for the `gimbur simulate --export`
 
 When `--export-type InitialPlacement` is specified, `--placement-only` is automatically enabled.
 
+## Evaluation Diagnostics And Discards
+
+Both game schemas contain a game-level `evaluationDiagnostics` object aggregated across
+every MCTS decision. It reports `submitted`, `applied`, `timeouts`, `invalidResponses`,
+`cancelled`, `fallbacks`, `orphans`, `batches`, `states`, `latencyMs`,
+`priorResponsesOrphaned`, and derived `hardErrors`. Latency is the sum of completed batch
+latencies. Asynchronous leaf HTTP enqueue failures surface as invalid responses; prior
+response orphans are reported separately.
+
+Simulation config supports `maxErrorsPerGame` (5), `maxErrorRatePerGame` (0.02),
+`minimumRequestsForRate` (50), and `discardGamesWithFallbacks` (false). Hard errors are
+timeout + invalid response + leaf orphan. A rejected game is omitted from normal training
+output and a compact reproducible record is written to the adjacent `discarded/` directory
+with seed, map, export type, outcome metadata, reason, and diagnostics. Full states are not
+duplicated there.
+
+The accepted target excludes discarded attempts. Generation safety settings are
+`maxDiscardedGames` (20), `maxDiscardRate` (0.05), `minimumAttemptsForDiscardRate` (50),
+and `maxConsecutiveDiscards` (5). Exceeding one stops generation and produces a nonzero CLI
+exit code, preventing endless retries when inference is unhealthy.
+
 ---
 
 ## GameState Export Schema

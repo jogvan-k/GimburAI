@@ -32,7 +32,17 @@
     // Request oversample*games from the CLI and stop early once "games"
     // files have been written.  Avoids waiting for long-tail slow games.
     // 1.0 = no oversampling (default), 1.1 = request 10% extra.
-    "oversample": 1.1
+    "oversample": 1.1,
+    // Per-game evaluation quality gates. Hard errors are timeout + invalid + orphan.
+    "maxErrorsPerGame": 5,
+    "maxErrorRatePerGame": 0.02,
+    "minimumRequestsForRate": 50,
+    "discardGamesWithFallbacks": false,
+    // Stop generation rather than retrying forever when inference is unhealthy.
+    "maxDiscardedGames": 20,
+    "maxDiscardRate": 0.05,
+    "minimumAttemptsForDiscardRate": 50,
+    "maxConsecutiveDiscards": 5
   },
 
   // Model training parameters (python -m gimbur_nn.train).

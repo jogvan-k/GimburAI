@@ -53,6 +53,13 @@ internal static class ConfigLoader
             : null;
     }
 
+    public static double? GetDouble(JsonElement root, string key)
+    {
+        return root.TryGetProperty(key, out var el) && el.ValueKind == JsonValueKind.Number
+            ? el.GetDouble()
+            : null;
+    }
+
     /// <summary>
     /// Returns the value of a boolean property, or <c>null</c> if the key
     /// is missing or the value is not a boolean.

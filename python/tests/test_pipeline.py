@@ -6,7 +6,10 @@ from gimbur_nn.pipeline import (
     PipelineConfig,
     SimulateConfig,
     TrainConfig,
+    _count_json_files,
+    _discard_stop_reason,
     _load_section,
+    _step_simulate,
     _step_train,
 )
 
@@ -40,6 +43,8 @@ def test_simulate_config_loads_parallelism() -> None:
             "maxPendingEvaluations": 16,
             "leafEvaluationTimeoutMs": 250,
             "drainTimeoutMs": 750,
+            "maxErrorsPerGame": 3,
+            "maxDiscardRate": 0.1,
         },
     )
 
@@ -47,6 +52,54 @@ def test_simulate_config_loads_parallelism() -> None:
     assert config.max_pending_evaluations == 16
     assert config.leaf_evaluation_timeout_ms == 250
     assert config.drain_timeout_ms == 750
+    assert config.max_errors_per_game == 3
+    assert config.max_discard_rate == 0.1
+
+
+def test_accepted_count_excludes_discarded_files(tmp_path) -> None:
+    (tmp_path / "accepted.json").write_text("{}")
+    discarded = tmp_path / "discarded"
+    discarded.mkdir()
+    (discarded / "bad.json").write_text("{}")
+
+    assert _count_json_files(tmp_path) == 1
+
+
+def test_discard_stop_thresholds(tmp_path) -> None:
+    discarded = tmp_path / "discarded"
+    discarded.mkdir()
+    for index in range(3):
+        (discarded / f"{index}.json").write_text("{}")
+
+    sim = SimulateConfig(max_discarded_games=2)
+    assert _discard_stop_reason(tmp_path, sim).startswith("discarded games")
+
+    sim = SimulateConfig(max_discarded_games=10, max_consecutive_discards=2)
+    assert _discard_stop_reason(tmp_path, sim).startswith("consecutive discards")
+
+
+def test_step_simulate_writes_discard_policy_config(tmp_path, monkeypatch) -> None:
+    cfg = PipelineConfig(
+        data_dir=str(tmp_path / "data"),
+        model_dir=str(tmp_path / "models"),
+        simulate=SimulateConfig(
+            games=1,
+            max_errors_per_game=3,
+            discard_games_with_fallbacks=True,
+            max_discard_rate=0.1,
+        ),
+    )
+    monkeypatch.setattr(
+        "gimbur_nn.pipeline.subprocess.run",
+        lambda *args, **kwargs: type("R", (), {"returncode": 0})(),
+    )
+
+    _step_simulate(cfg, 0, tmp_path, None)
+
+    config = json.loads((tmp_path / "models/.configs/simulate_gen0.json").read_text())
+    assert config["maxErrorsPerGame"] == 3
+    assert config["discardGamesWithFallbacks"] is True
+    assert config["maxDiscardRate"] == 0.1
 
 
 def test_step_train_passes_value_blending_and_state_sampling(tmp_path, monkeypatch) -> None:
