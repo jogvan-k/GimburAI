@@ -595,7 +595,11 @@ internal class BenchmarkRunner
                 int.MaxValue,
                 null,
                 null,
-                int.MaxValue)),
+                null,
+                int.MaxValue,
+                32,
+                500,
+                1000)),
             AiKind.Nn => new NnPlayer(_nnClient!),
             AiKind.NnPlacement => new NnPlacementPlayer(
                 _nnClient!, PlacementActionSerializer.ForTopology(config.Map.Topology)),

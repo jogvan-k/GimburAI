@@ -89,6 +89,27 @@ type IPriorClient =
     /// shared with other concurrent callers.
     abstract Flush : knownNodeIds: IReadOnlySet<int64> -> unit
 
+/// Completed asynchronous value evaluation for a batch of leaf states.
+/// Values contains one per-player vector for each state supplied to Enqueue.
+type LeafEvaluationResponse =
+  struct
+    val RequestId: int64
+    val Values: float[][]
+    val LatencyMs: int64
+    new(requestId, values, latencyMs) =
+        { RequestId = requestId; Values = values; LatencyMs = latencyMs }
+  end
+
+/// Shared, non-blocking neural leaf evaluator. Request IDs are opaque and
+/// globally unique; implementations may batch requests from concurrent games.
+type ILeafEvaluator =
+    abstract Enqueue : requestId: int64 * states: ICoreState[] * priority: int -> bool
+    abstract Collect : knownRequestIds: IReadOnlySet<int64> -> LeafEvaluationResponse[]
+    /// Wait until a result may be available. Implementations must not busy-spin.
+    abstract WaitForResults : timeoutMs: int -> bool
+    /// Cancel local ownership of requests without disturbing other searches.
+    abstract Cancel : requestIds: IReadOnlySet<int64> -> unit
+
 
 type SimulationResult = 
   struct
@@ -119,8 +140,12 @@ type MCTSConfig =
       ExplorationConstant: float
       ActionRolloutLimit: int
       PriorClient: IPriorClient option
+      LeafEvaluator: ILeafEvaluator option
       LeafBoundary: (ICoreState -> bool) option
-      MaxPriorDepth: int }
+      MaxPriorDepth: int
+      MaxPendingEvaluations: int
+      LeafEvaluationTimeoutMs: int
+      DrainTimeoutMs: int }
 
     static member Default =
         { SearchTime = Unlimited
@@ -129,5 +154,9 @@ type MCTSConfig =
           ExplorationConstant = sqrt 2.
           ActionRolloutLimit = System.Int32.MaxValue
           PriorClient = None
+          LeafEvaluator = None
           LeafBoundary = None
-          MaxPriorDepth = System.Int32.MaxValue }
+          MaxPriorDepth = System.Int32.MaxValue
+          MaxPendingEvaluations = 32
+          LeafEvaluationTimeoutMs = 500
+          DrainTimeoutMs = 1000 }

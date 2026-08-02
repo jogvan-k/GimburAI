@@ -11,6 +11,8 @@ from test_data_loader import MINI_BOARD, MINI_STATE_ONLY
 
 from gimbur_nn.game_config import MINI_2P
 from gimbur_nn.serve import (
+    LeafEnqueueRequest,
+    LeafRequest,
     PlacementPriorRequest,
     PredictPlacementRequest,
     PredictPlacementResponse,
@@ -85,6 +87,48 @@ def test_predict_player_gathers_from_one_unrotated_vector_inference(monkeypatch)
 
     assert model.calls == 1
     assert response.win_probabilities == pytest.approx([0.880797, 0.119203])
+
+
+def test_leaf_queue_batches_all_outcomes_into_one_model_invocation() -> None:
+    class FixedModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.batch_sizes: list[int] = []
+
+        def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+            self.batch_sizes.append(tokens.shape[0])
+            return torch.tensor([[2.0, 0.0]] * tokens.shape[0])
+
+    model = FixedModel()
+    app = create_app(
+        state_model=model,
+        state_device=torch.device("cpu"),
+        state_game_cfg=MINI_2P,
+    )
+    state = MINI_BOARD + "|" + MINI_STATE_ONLY
+    enqueue = next(route.endpoint for route in app.routes if route.path == "/state/leaf-enqueue")
+    collect = next(route.endpoint for route in app.routes if route.path == "/state/leaf-collect")
+
+    async def run() -> object:
+        async with app.router.lifespan_context(app):
+            response = await enqueue(
+                LeafEnqueueRequest(
+                    requests=[LeafRequest(id="chance", states=[state, state, state], priority=1)]
+                )
+            )
+            assert response.status_code == 202
+            for _ in range(100):
+                result = await collect()
+                if result.responses:
+                    return result
+                await asyncio.sleep(0.005)
+            pytest.fail("leaf response did not arrive")
+
+    result = asyncio.run(run())
+    assert model.batch_sizes == [3]
+    assert result.responses[0].id == "chance"
+    assert len(result.responses[0].values) == 3
+    assert result.responses[0].values[0] == pytest.approx([0.880797, 0.119203])
 
 
 @pytest.mark.parametrize("architecture", ["state_player_value_v1", "placement_state_v3"])

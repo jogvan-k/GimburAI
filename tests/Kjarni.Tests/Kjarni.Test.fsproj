@@ -26,6 +26,7 @@
         <Compile Include="MCTS\TerminalPropagationTest.fs" />
         <Compile Include="MCTS\PriorTest.fs" />
         <Compile Include="MCTS\HorizonTest.fs" />
+        <Compile Include="MCTS\LeafEvaluatorTest.fs" />
         <Compile Include="program.fs" />
     </ItemGroup>
 

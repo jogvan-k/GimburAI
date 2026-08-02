@@ -79,6 +79,7 @@ type SelectionResult =
     | StochasticCandidate of (SelectionPath * int)
     | Exhausted of (SelectionPath * float array)
     | Horizon of (SelectionPath * MCTSState)
+    | Blocked
 
 type LogInfo =
     struct
@@ -113,4 +114,14 @@ type LogInfo =
         val mutable priorResponsesOrphaned: int
         /// Number of selection paths that hit the maxPriorDepth horizon.
         val mutable horizonSkips: int
+        val mutable leafEvaluationsSubmitted: int
+        val mutable leafEvaluationsApplied: int
+        val mutable leafEvaluationTimeouts: int
+        val mutable leafEvaluationsInvalid: int
+        val mutable leafEvaluationsCancelled: int
+        val mutable leafEvaluationFallbacks: int
+        val mutable leafEvaluationOrphans: int
+        val mutable leafEvaluationBatches: int
+        val mutable leafEvaluationStates: int
+        val mutable leafEvaluationLatencyMs: int64
     end

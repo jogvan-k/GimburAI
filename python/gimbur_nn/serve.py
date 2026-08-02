@@ -191,6 +191,27 @@ class PriorCollectResponse(BaseModel):
     responses: list[PriorResponseItem]
 
 
+class LeafRequest(BaseModel):
+    """One value request; all states are evaluated in one model batch."""
+
+    id: str
+    states: list[str]
+    priority: int
+
+
+class LeafEnqueueRequest(BaseModel):
+    requests: list[LeafRequest]
+
+
+class LeafResponseItem(BaseModel):
+    id: str
+    values: list[list[float]]
+
+
+class LeafCollectResponse(BaseModel):
+    responses: list[LeafResponseItem]
+
+
 # ── Placement prior queue models ──────────────────────────────────────────────
 
 
@@ -458,6 +479,7 @@ def create_app(
         assert state_game_cfg is not None
         tokenizer = StateTokenizer(state_game_cfg)
         prior_queue: PriorQueue[PriorRequest] = PriorQueue()
+        leaf_queue: PriorQueue[LeafRequest] = PriorQueue()
 
         def _infer_prior_batch(batch: list[PriorRequest]) -> list[PriorResponseItem]:
             """Run inference on a batch of prior requests and return results."""
@@ -523,6 +545,40 @@ def create_app(
                     await asyncio.sleep(0.005)
 
         _worker_coros.append(_prior_worker)
+
+        def _infer_leaf_batch(batch: list[LeafRequest]) -> list[LeafResponseItem]:
+            """Flatten requests so one model call evaluates every stochastic outcome."""
+            states = [state for request in batch for state in request.states]
+            if not states:
+                return [LeafResponseItem(id=request.id, values=[]) for request in batch]
+            try:
+                token_ids = tokenizer.tokenize_batch(states).to(state_device)
+            except (KeyError, ValueError):
+                return [LeafResponseItem(id=request.id, values=[]) for request in batch]
+            with torch.no_grad():
+                probabilities = F.softmax(_extract_logits(state_model(token_ids)), dim=-1)
+            values = probabilities.cpu().tolist()
+            results: list[LeafResponseItem] = []
+            offset = 0
+            for request in batch:
+                count = len(request.states)
+                results.append(
+                    LeafResponseItem(id=request.id, values=values[offset : offset + count])
+                )
+                offset += count
+            return results
+
+        async def _leaf_worker() -> None:
+            while True:
+                batch = leaf_queue.dequeue_batch(32)
+                if batch:
+                    loop = asyncio.get_running_loop()
+                    results = await loop.run_in_executor(None, _infer_leaf_batch, batch)
+                    leaf_queue.add_results(results)  # type: ignore[arg-type]
+                else:
+                    await asyncio.sleep(0.005)
+
+        _worker_coros.append(_leaf_worker)
 
     if placement_model is not None:
         assert placement_device is not None
@@ -691,6 +747,18 @@ def create_app(
             """Return all completed prior inference results."""
             results = prior_queue.collect_results()
             return PriorCollectResponse(responses=results)
+
+        @app.post("/state/leaf-enqueue", status_code=202)
+        async def leaf_enqueue(request: LeafEnqueueRequest) -> JSONResponse:
+            accepted = sum(1 for item in request.requests if leaf_queue.enqueue(item))
+            return JSONResponse(
+                status_code=202,
+                content={"accepted": accepted, "dropped": len(request.requests) - accepted},
+            )
+
+        @app.post("/state/leaf-collect", response_model=LeafCollectResponse)
+        async def leaf_collect() -> LeafCollectResponse:
+            return LeafCollectResponse(responses=leaf_queue.collect_results())  # type: ignore[arg-type]
 
         @app.post("/state/prior-flush")
         async def prior_flush() -> dict[str, str]:

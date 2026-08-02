@@ -210,6 +210,21 @@ internal static class RootCommandFactory
             Description = "Maximum games simulated concurrently (default: 4 with NN priors, otherwise all processors)",
             DefaultValueFactory = _ => 0,
         };
+        var maxPendingEvaluationsOption = new Option<int>("--max-pending-evaluations")
+        {
+            Description = "Maximum asynchronous neural leaf requests per search",
+            DefaultValueFactory = _ => 32,
+        };
+        var leafEvaluationTimeoutOption = new Option<int>("--leaf-evaluation-timeout")
+        {
+            Description = "Neural leaf request timeout in milliseconds",
+            DefaultValueFactory = _ => 500,
+        };
+        var drainTimeoutOption = new Option<int>("--drain-timeout")
+        {
+            Description = "Maximum post-search neural response drain time in milliseconds",
+            DefaultValueFactory = _ => 1000,
+        };
 
         var command = new Command("simulate", "Run Settlers of Catan AI self-play simulations.")
         {
@@ -229,6 +244,9 @@ internal static class RootCommandFactory
           maxPriorDepthOption,
           simulationsPerActionOption,
           parallelismOption,
+          maxPendingEvaluationsOption,
+          leafEvaluationTimeoutOption,
+          drainTimeoutOption,
         };
 
         command.SetAction(parseResult =>
@@ -261,6 +279,9 @@ internal static class RootCommandFactory
             int maxPriorDepth = parseResult.GetValue(maxPriorDepthOption);
             int simulationsPerAction = parseResult.GetValue(simulationsPerActionOption);
             int parallelism = parseResult.GetValue(parallelismOption);
+            int maxPendingEvaluations = parseResult.GetValue(maxPendingEvaluationsOption);
+            int leafEvaluationTimeoutMs = parseResult.GetValue(leafEvaluationTimeoutOption);
+            int drainTimeoutMs = parseResult.GetValue(drainTimeoutOption);
 
             // ── Apply config file defaults for simulate ──────────────
             if (cfg.ValueKind == JsonValueKind.Object)
@@ -319,6 +340,12 @@ internal static class RootCommandFactory
                     simulationsPerAction = ConfigLoader.GetInt(cfg, "simulationsPerAction") ?? simulationsPerAction;
                 if (!WasProvided(parseResult, "--parallelism"))
                     parallelism = ConfigLoader.GetInt(cfg, "parallelism") ?? parallelism;
+                if (!WasProvided(parseResult, "--max-pending-evaluations"))
+                    maxPendingEvaluations = ConfigLoader.GetInt(cfg, "maxPendingEvaluations") ?? maxPendingEvaluations;
+                if (!WasProvided(parseResult, "--leaf-evaluation-timeout"))
+                    leafEvaluationTimeoutMs = ConfigLoader.GetInt(cfg, "leafEvaluationTimeoutMs") ?? leafEvaluationTimeoutMs;
+                if (!WasProvided(parseResult, "--drain-timeout"))
+                    drainTimeoutMs = ConfigLoader.GetInt(cfg, "drainTimeoutMs") ?? drainTimeoutMs;
                 if (!WasProvided(parseResult, "--verbosity", "-v") && !WasProvided(parseResult, "-q") && !WasProvided(parseResult, "--verbose"))
                     verbosity = ConfigLoader.GetString(cfg, "verbosity") ?? verbosity;
             }
@@ -352,6 +379,9 @@ internal static class RootCommandFactory
                 MaxPriorDepth = maxPriorDepth,
                 SimulationsPerAction = simulationsPerAction,
                 Parallelism = parallelism,
+                MaxPendingEvaluations = maxPendingEvaluations,
+                LeafEvaluationTimeoutMs = leafEvaluationTimeoutMs,
+                DrainTimeoutMs = drainTimeoutMs,
             };
 
             var runner = new SimulationRunner(options);

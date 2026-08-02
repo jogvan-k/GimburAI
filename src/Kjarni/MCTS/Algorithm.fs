@@ -7,6 +7,8 @@ open System.Threading
 open Kjarni
 open Kjarni.MCTS.Types
 
+let mutable private nextLeafRequestId = 0L
+
 let emptyOutcome maxTrackedPlayers = Array.zeroCreate<float> maxTrackedPlayers
 
 let oneHotOutcome (winner: Player, maxTrackedPlayers) =
@@ -69,29 +71,34 @@ let rec recSelect (explorationConstant: float) (s: MCTSState, path: SelectionPat
     if Array.isEmpty s.Actions then
         Exhausted(path, oneHotOutcome(s.State.PlayerTurn, s.State.NumberOfPlayers))
     else
-        let selectedAction =
+        let available =
             s.Actions
-              |> Array.indexed
-              |> Array.maxBy (fun (i, a) -> actionEvaluator explorationConstant s i a)
-        match snd selectedAction with
-        | Unexplored _ -> Candidate(path, fst selectedAction)
-        | DeterministicAction ds ->
-            let edge = { Parent = s; ActionIndex = fst selectedAction }
-            recSelect explorationConstant (ds, { States = ds :: path.States; Edges = edge :: path.Edges })
-        | StochasticAction so ->
-            let i = rollStochasticAction (Array.map (fun o -> o.ProbabilityWeight) so)
-            let state = so.[i].State
-            let edge = { Parent = s; ActionIndex = fst selectedAction }
-            let nextPath = { States = state :: path.States; Edges = edge :: path.Edges }
-            if state.Rollouts = 0 // Unexplored outcome, return state
-            then StochasticCandidate(nextPath, i)
-            else recSelect explorationConstant (state, nextPath)
-        | Terminal outcome ->
-            let edge = { Parent = s; ActionIndex = fst selectedAction }
-            Exhausted({ path with Edges = edge :: path.Edges }, outcome)
-        | HorizonAction hs ->
-            let edge = { Parent = s; ActionIndex = fst selectedAction }
-            Horizon({ path with Edges = edge :: path.Edges }, hs)
+            |> Array.indexed
+            |> Array.filter (fun (i, _) -> s.ActionStats.[i].PendingVisits = 0)
+        if Array.isEmpty available then
+            Blocked
+        else
+            let selectedAction =
+                available |> Array.maxBy (fun (i, a) -> actionEvaluator explorationConstant s i a)
+            match snd selectedAction with
+            | Unexplored _ -> Candidate(path, fst selectedAction)
+            | DeterministicAction ds ->
+                let edge = { Parent = s; ActionIndex = fst selectedAction }
+                recSelect explorationConstant (ds, { States = ds :: path.States; Edges = edge :: path.Edges })
+            | StochasticAction so ->
+                let i = rollStochasticAction (Array.map (fun o -> o.ProbabilityWeight) so)
+                let state = so.[i].State
+                let edge = { Parent = s; ActionIndex = fst selectedAction }
+                let nextPath = { States = state :: path.States; Edges = edge :: path.Edges }
+                if state.Rollouts = 0 // Unexplored outcome, return state
+                then StochasticCandidate(nextPath, i)
+                else recSelect explorationConstant (state, nextPath)
+            | Terminal outcome ->
+                let edge = { Parent = s; ActionIndex = fst selectedAction }
+                Exhausted({ path with Edges = edge :: path.Edges }, outcome)
+            | HorizonAction hs ->
+                let edge = { Parent = s; ActionIndex = fst selectedAction }
+                Horizon({ path with Edges = edge :: path.Edges }, hs)
 
 let select (explorationConstant: float) (root: MCTSState) =
     recSelect explorationConstant (root, { States = [root]; Edges = [] })
@@ -437,6 +444,27 @@ type PriorStats =
     val mutable horizonSkips: int
   end
 
+type LeafEvaluationStats =
+  struct
+    val mutable submitted: int
+    val mutable applied: int
+    val mutable timeouts: int
+    val mutable invalid: int
+    val mutable cancelled: int
+    val mutable fallback: int
+    val mutable orphan: int
+    val mutable batches: int
+    val mutable states: int
+    val mutable latencyMs: int64
+  end
+
+type private PendingEvaluation =
+    { Path: SelectionPath
+      States: MCTSState[]
+      Weights: int[]
+      ExactOutcomes: (int * float[])[]
+      SubmittedAtMs: int64 }
+
 /// Walk the selection path bottom-up, replacing actions with Terminal when
 /// their subtree is fully resolved. The path is ordered [deepest; ...; root].
 /// In the visitedStates list from selection, index 0 is the most recent
@@ -487,11 +515,15 @@ let propagateTerminals (visitedStates: MCTSState list) =
 
     propagate visitedStates
 
-let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float, actionRolloutLimit: int, priorClient: IPriorClient option, leafBoundary: (ICoreState -> bool) option, maxPriorDepth: int) =
+let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float, actionRolloutLimit: int, priorClient: IPriorClient option, leafEvaluator: ILeafEvaluator option, leafBoundary: (ICoreState -> bool) option, maxPriorDepth: int, maxPendingEvaluations: int, leafEvaluationTimeoutMs: int, drainTimeoutMs: int) =
     // Normalise the option to guard against C# passing Some(null).
     let priorClient =
         match priorClient with
         | Some client when not (isNull (box client)) -> Some client
+        | _ -> None
+    let leafEvaluator =
+        match leafEvaluator with
+        | Some evaluator when not (isNull (box evaluator)) -> Some evaluator
         | _ -> None
 
     // Node registry and layout registry for correlating prior responses.
@@ -508,6 +540,113 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
     let mutable priorStats = PriorStats()
     priorStats.priorActionsPerDepth <- Dictionary<int, int>()
     priorStats.priorInferencesPerDepth <- Dictionary<int, int>()
+    let mutable leafStats = LeafEvaluationStats()
+    let pendingEvaluations = Dictionary<int64, PendingEvaluation>()
+
+    let beforeDeadline () =
+        not evaluateUntil.IsSome || timer.ElapsedTicks < evaluateUntil.Value
+
+    let reservePath (path: SelectionPath) delta =
+        for edge in path.Edges do
+            let stats = edge.Parent.ActionStats.[edge.ActionIndex]
+            stats.PendingVisits <- max 0 (stats.PendingVisits + delta)
+
+    let validValues playerCount (values: float[][]) expectedCount =
+        values.Length = expectedCount
+        && values
+           |> Array.forall (fun vector ->
+               let total = Array.sum vector
+               vector.Length = playerCount
+               && (vector |> Array.forall (fun value -> Double.IsFinite(value) && value >= 0.))
+               && Double.IsFinite(total)
+               && total > 0.)
+
+    let normalizeValues (values: float[]) =
+        let total = Array.sum values
+        values |> Array.map (fun value -> value / total)
+
+    let applyPending (pending: PendingEvaluation) (values: float[][]) =
+        reservePath pending.Path -1
+        let normalized = values |> Array.map normalizeValues
+        for i in 0 .. pending.States.Length - 1 do
+            backPropagate [ pending.States.[i] ] normalized.[i]
+        let outcome =
+            Array.append
+                (Array.map2 (fun weight value -> weight, value) pending.Weights normalized)
+                pending.ExactOutcomes
+            |> weightedOutcome
+        backPropagatePath pending.Path outcome
+        propagateTerminals ((pending.States |> Array.toList) @ pending.Path.States)
+        leafStats.applied <- leafStats.applied + 1
+
+    let fallbackPending (pending: PendingEvaluation) =
+        reservePath pending.Path -1
+        let values = pending.States |> Array.map (simulate maxRolloutDepth)
+        for i in 0 .. pending.States.Length - 1 do
+            backPropagate [ pending.States.[i] ] values.[i]
+        let outcome =
+            Array.append
+                (Array.map2 (fun weight value -> weight, value) pending.Weights values)
+                pending.ExactOutcomes
+            |> weightedOutcome
+        backPropagatePath pending.Path outcome
+        leafStats.fallback <- leafStats.fallback + 1
+
+    let collectLeaves allowFallback =
+        match leafEvaluator with
+        | Some evaluator when pendingEvaluations.Count > 0 ->
+            let knownIds = HashSet<int64>(pendingEvaluations.Keys) :> IReadOnlySet<int64>
+            for response in evaluator.Collect(knownIds) do
+                match pendingEvaluations.TryGetValue(response.RequestId) with
+                | true, pending ->
+                    pendingEvaluations.Remove(response.RequestId) |> ignore
+                    leafStats.batches <- leafStats.batches + 1
+                    leafStats.latencyMs <- leafStats.latencyMs + response.LatencyMs
+                    if validValues pending.States.[0].State.NumberOfPlayers response.Values pending.States.Length then
+                        applyPending pending response.Values
+                    else
+                        leafStats.invalid <- leafStats.invalid + 1
+                        if allowFallback then fallbackPending pending
+                        else
+                            reservePath pending.Path -1
+                            leafStats.cancelled <- leafStats.cancelled + 1
+                | _ -> leafStats.orphan <- leafStats.orphan + 1
+
+            let timedOut =
+                pendingEvaluations
+                |> Seq.filter (fun pair -> timer.ElapsedMilliseconds - pair.Value.SubmittedAtMs >= int64 leafEvaluationTimeoutMs)
+                |> Seq.map (fun pair -> pair.Key)
+                |> Seq.toArray
+            for requestId in timedOut do
+                let pending = pendingEvaluations.[requestId]
+                pendingEvaluations.Remove(requestId) |> ignore
+                evaluator.Cancel(HashSet<int64>([ requestId ]) :> IReadOnlySet<int64>)
+                leafStats.timeouts <- leafStats.timeouts + 1
+                if allowFallback then fallbackPending pending
+                else
+                    reservePath pending.Path -1
+                    leafStats.cancelled <- leafStats.cancelled + 1
+        | _ -> ()
+
+    let enqueueLeaf (path: SelectionPath) (states: MCTSState[]) (weights: int[]) exactOutcomes depth =
+        match leafEvaluator with
+        | Some evaluator ->
+            let requestId = Interlocked.Increment(&nextLeafRequestId)
+            reservePath path 1
+            if evaluator.Enqueue(requestId, states |> Array.map (fun state -> state.State), depth) then
+                pendingEvaluations.[requestId] <-
+                    { Path = path
+                      States = states
+                      Weights = weights
+                      ExactOutcomes = exactOutcomes
+                      SubmittedAtMs = timer.ElapsedMilliseconds }
+                leafStats.submitted <- leafStats.submitted + 1
+                leafStats.states <- leafStats.states + states.Length
+                true
+            else
+                reservePath path -1
+                false
+        | None -> false
 
     let normalizeValueEstimates playerCount (values: float[]) =
         if values.Length <> playerCount
@@ -616,11 +755,28 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
         collectPriors ()
 
     while root.Rollouts < maxSimulationCount
-          && (not evaluateUntil.IsSome
-              || timer.ElapsedTicks < evaluateUntil.Value)
+          && beforeDeadline ()
           && maxActionRollouts root < actionRolloutLimit
           && not (isResolved root) do
-        match select explorationConstant root with
+        let selection =
+            if pendingEvaluations.Count >= max 1 maxPendingEvaluations
+               || pendingEvaluations.Count >= maxSimulationCount - root.Rollouts then Blocked
+            else select explorationConstant root
+        match selection with
+        | Blocked ->
+            collectPriors ()
+            collectLeaves true
+            if pendingEvaluations.Count > 0 then
+                match leafEvaluator with
+                | Some evaluator ->
+                    let remaining =
+                        pendingEvaluations.Values
+                        |> Seq.map (fun pending ->
+                            int64 leafEvaluationTimeoutMs - (timer.ElapsedMilliseconds - pending.SubmittedAtMs))
+                        |> Seq.min
+                    evaluator.WaitForResults(max 1 (min 10 (int remaining))) |> ignore
+                    collectLeaves true
+                | None -> ()
         | Exhausted (path, outcome) ->
             resubmitPriors path.States
             backPropagatePath path outcome
@@ -639,31 +795,50 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
 
             match mostRecentState.Actions.[i] with
             | HorizonAction _ ->
-                let outcome = simulate maxRolloutDepth expandedState
-                backPropagatePath expandedPath outcome
                 priorStats.horizonSkips <- priorStats.horizonSkips + 1
+                let evaluationPath = { path with Edges = selectedEdge :: path.Edges }
+                if not (enqueueLeaf evaluationPath [| expandedState |] [| 1 |] Array.empty depth) then
+                    let outcome = simulate maxRolloutDepth expandedState
+                    backPropagatePath expandedPath outcome
                 collectPriors ()
             | StochasticAction stochasticOutcomes ->
                 for stochasticOutcome in stochasticOutcomes do
                     requestPrior stochasticOutcome.State depth
 
-                let evaluateOutcome (outcomeState: MCTSState) =
-                    let outcome =
-                        if Array.isEmpty outcomeState.Actions then
-                            oneHotOutcome (outcomeState.State.PlayerTurn, outcomeState.State.NumberOfPlayers)
-                        else
-                            simulate maxRolloutDepth outcomeState
-                    backPropagate [ outcomeState ] outcome
-                    outcome
-
-                let outcome = evaluateStochasticOutcomes evaluateOutcome stochasticOutcomes
-                backPropagatePath
+                let evaluationPath =
                     { States = path.States
                       Edges = selectedEdge :: path.Edges }
-                    outcome
-
-                for stochasticOutcome in stochasticOutcomes do
-                    propagateTerminals (stochasticOutcome.State :: path.States)
+                let nonterminal =
+                    stochasticOutcomes |> Array.filter (fun outcome -> not (Array.isEmpty outcome.State.Actions))
+                let exactOutcomes =
+                    stochasticOutcomes
+                    |> Array.choose (fun outcome ->
+                        if Array.isEmpty outcome.State.Actions then
+                            Some (
+                                outcome.ProbabilityWeight,
+                                oneHotOutcome (outcome.State.State.PlayerTurn, outcome.State.State.NumberOfPlayers))
+                        else None)
+                if nonterminal.Length > 0
+                   && enqueueLeaf
+                        evaluationPath
+                        (nonterminal |> Array.map (fun outcome -> outcome.State))
+                        (nonterminal |> Array.map (fun outcome -> outcome.ProbabilityWeight))
+                        exactOutcomes
+                        depth then
+                    ()
+                else
+                    let evaluateOutcome (outcomeState: MCTSState) =
+                        let outcome =
+                            if Array.isEmpty outcomeState.Actions then
+                                oneHotOutcome (outcomeState.State.PlayerTurn, outcomeState.State.NumberOfPlayers)
+                            else
+                                simulate maxRolloutDepth outcomeState
+                        backPropagate [ outcomeState ] outcome
+                        outcome
+                    let outcome = evaluateStochasticOutcomes evaluateOutcome stochasticOutcomes
+                    backPropagatePath evaluationPath outcome
+                    for stochasticOutcome in stochasticOutcomes do
+                        propagateTerminals (stochasticOutcome.State :: path.States)
                 collectPriors ()
             // Check if the expanded state is a terminal game state (no actions).
             | _ when Array.isEmpty expandedState.Actions ->
@@ -679,31 +854,71 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                 // Phase 3 — Prior request: enqueue async NN evaluation for the
                 // expanded node's actions.
                 requestPrior expandedState depth
-                let outcome = simulate maxRolloutDepth expandedState
-                backPropagatePath expandedPath outcome
-                propagateTerminals expandedPath.States
                 collectPriors ()
+                let evaluationPath = { path with Edges = selectedEdge :: path.Edges }
+                match expandedState.ValueEstimates with
+                | Some outcome ->
+                    backPropagate [ expandedState ] outcome
+                    backPropagatePath evaluationPath outcome
+                    propagateTerminals expandedPath.States
+                | None when enqueueLeaf evaluationPath [| expandedState |] [| 1 |] Array.empty depth -> ()
+                | None ->
+                    let outcome = simulate maxRolloutDepth expandedState
+                    backPropagatePath expandedPath outcome
+                    propagateTerminals expandedPath.States
         | StochasticCandidate (path, _) ->
             resubmitPriors path.States
             let expandedState = path.States.[0]
-            let outcome =
-                if Array.isEmpty expandedState.Actions then
-                    oneHotOutcome (expandedState.State.PlayerTurn, expandedState.State.NumberOfPlayers)
-                else
-                    simulate maxRolloutDepth expandedState
-            backPropagatePath path outcome
-            propagateTerminals path.States
+            if Array.isEmpty expandedState.Actions then
+                let outcome = oneHotOutcome (expandedState.State.PlayerTurn, expandedState.State.NumberOfPlayers)
+                backPropagatePath path outcome
+                propagateTerminals path.States
+            else
+                let evaluationPath = { path with States = List.tail path.States }
+                if not (enqueueLeaf evaluationPath [| expandedState |] [| 1 |] Array.empty path.States.Length) then
+                    let outcome = simulate maxRolloutDepth expandedState
+                    backPropagatePath path outcome
+                    propagateTerminals path.States
             collectPriors ()
         | Horizon (path, horizonState) ->
             resubmitPriors path.States
-            let outcome = simulate maxRolloutDepth horizonState
-            backPropagatePath { path with States = horizonState :: path.States } outcome
             priorStats.horizonSkips <- priorStats.horizonSkips + 1
+            if not (enqueueLeaf path [| horizonState |] [| 1 |] Array.empty path.States.Length) then
+                let outcome = simulate maxRolloutDepth horizonState
+                backPropagatePath { path with States = horizonState :: path.States } outcome
             collectPriors ()
+
+        collectLeaves true
+
+        if pendingEvaluations.Count >= max 1 maxPendingEvaluations then
+            match leafEvaluator with
+            | Some evaluator -> evaluator.WaitForResults(min 10 leafEvaluationTimeoutMs) |> ignore
+            | None -> ()
+            collectLeaves true
 
     // Final collection: apply any priors that arrived during the last
     // iterations of the search loop, before the caller flushes.
     collectPriors ()
+
+    let drainDeadline = timer.ElapsedMilliseconds + int64 (max 0 drainTimeoutMs)
+    while pendingEvaluations.Count > 0 && timer.ElapsedMilliseconds < drainDeadline do
+        collectLeaves false
+        if pendingEvaluations.Count > 0 then
+            match leafEvaluator with
+            | Some evaluator ->
+                evaluator.WaitForResults(min 10 (int (drainDeadline - timer.ElapsedMilliseconds))) |> ignore
+            | None -> ()
+    collectLeaves false
+    if pendingEvaluations.Count > 0 then
+        match leafEvaluator with
+        | Some evaluator ->
+            let ids = HashSet<int64>(pendingEvaluations.Keys)
+            evaluator.Cancel(ids :> IReadOnlySet<int64>)
+        | None -> ()
+        for pending in pendingEvaluations.Values do
+            reservePath pending.Path -1
+            leafStats.cancelled <- leafStats.cancelled + 1
+        pendingEvaluations.Clear()
 
     // Drop this search's pending responses from the shared client
     // mailbox. Responses for other concurrent searches are preserved.
@@ -714,4 +929,4 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
         client.Flush(knownIds)
     | _ -> ()
 
-    (extractBestPath root |> List.toArray, priorStats)
+    (extractBestPath root |> List.toArray, priorStats, leafStats)

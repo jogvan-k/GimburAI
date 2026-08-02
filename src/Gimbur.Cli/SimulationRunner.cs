@@ -133,6 +133,9 @@ internal record SimulationOptions
     /// four with NN priors, otherwise all logical processors.
     /// </summary>
     public int Parallelism { get; init; }
+    public int MaxPendingEvaluations { get; init; } = 32;
+    public int LeafEvaluationTimeoutMs { get; init; } = 500;
+    public int DrainTimeoutMs { get; init; } = 1000;
 }
 
 /// <summary>
@@ -862,8 +865,14 @@ internal class SimulationRunner
             System.Math.Sqrt(2.0),
             _options.ActionRolloutLimit,
             priorClient,
+            _options.Prior && _options.ExportType != ExportType.InitialPlacement
+                ? CatanStateLeafEvaluatorPool.Get(_options.NnUrl)
+                : null,
             leafBoundary,
-            _options.MaxPriorDepth);
+            _options.MaxPriorDepth,
+            _options.MaxPendingEvaluations,
+            _options.LeafEvaluationTimeoutMs,
+            _options.DrainTimeoutMs);
         var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(mctsConfig);
         var states = new List<StateRecord>();
 
@@ -1014,8 +1023,12 @@ internal class SimulationRunner
             System.Math.Sqrt(2.0),
             _options.ActionRolloutLimit,
             priorClient,
+            null,
             leafBoundary,
-            _options.MaxPriorDepth);
+            _options.MaxPriorDepth,
+            _options.MaxPendingEvaluations,
+            _options.LeafEvaluationTimeoutMs,
+            _options.DrainTimeoutMs);
         var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(mctsConfig);
         var placementStates = new List<PlacementStateRecord>();
 
@@ -1069,8 +1082,12 @@ internal class SimulationRunner
                     System.Math.Sqrt(2.0),
                     _options.ActionRolloutLimit,
                     priorClient,
+                    null,
                     leafBoundary,
-                    _options.MaxPriorDepth);
+                    _options.MaxPriorDepth,
+                    _options.MaxPendingEvaluations,
+                    _options.LeafEvaluationTimeoutMs,
+                    _options.DrainTimeoutMs);
                 var perActionMcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(perActionMctsConfig);
 
                 int bestSettlementIdx = 0;

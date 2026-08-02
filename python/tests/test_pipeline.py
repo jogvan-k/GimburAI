@@ -33,9 +33,20 @@ def test_train_config_loads_value_blending_and_state_sampling() -> None:
 
 
 def test_simulate_config_loads_parallelism() -> None:
-    config = _load_section(SimulateConfig, {"parallelism": 8})
+    config = _load_section(
+        SimulateConfig,
+        {
+            "parallelism": 8,
+            "maxPendingEvaluations": 16,
+            "leafEvaluationTimeoutMs": 250,
+            "drainTimeoutMs": 750,
+        },
+    )
 
     assert config.parallelism == 8
+    assert config.max_pending_evaluations == 16
+    assert config.leaf_evaluation_timeout_ms == 250
+    assert config.drain_timeout_ms == 750
 
 
 def test_step_train_passes_value_blending_and_state_sampling(tmp_path, monkeypatch) -> None:

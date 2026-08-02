@@ -52,6 +52,9 @@ class SimulateConfig:
     verbosity: str = "quiet"
     oversample: float = 1.0
     parallelism: int | None = None
+    max_pending_evaluations: int = 32
+    leaf_evaluation_timeout_ms: int = 500
+    drain_timeout_ms: int = 1000
 
 
 @dataclass
@@ -884,6 +887,9 @@ def _step_simulate(
         sim_config["simulationsPerAction"] = sim.simulations_per_action
     if sim.parallelism is not None:
         sim_config["parallelism"] = sim.parallelism
+    sim_config["maxPendingEvaluations"] = sim.max_pending_evaluations
+    sim_config["leafEvaluationTimeoutMs"] = sim.leaf_evaluation_timeout_ms
+    sim_config["drainTimeoutMs"] = sim.drain_timeout_ms
     if not sim.symmetries:
         sim_config["noSymmetries"] = True
     if sim.verbosity:

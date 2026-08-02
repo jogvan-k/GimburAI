@@ -111,8 +111,14 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
             explorationConstant: Math.Sqrt(2.0),
             actionRolloutLimit: int.MaxValue,
             priorClient: priorClient,
+            leafEvaluator: aiMode == "mcts-nn-ai" && priorMode == PriorMode.State
+                ? CatanStateLeafEvaluatorPool.Get(req.NnUrl!)
+                : null,
             leafBoundary: null,
-            maxPriorDepth: maxPriorDepth);
+            maxPriorDepth: maxPriorDepth,
+            maxPendingEvaluations: 32,
+            leafEvaluationTimeoutMs: 500,
+            drainTimeoutMs: 1000);
 
         var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(mctsConfig);
         var mctsRoot = new Kjarni.MCTS.Types.MCTSState((ICoreState)state);

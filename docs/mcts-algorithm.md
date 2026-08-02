@@ -797,7 +797,12 @@ LeafBoundary = state =>
 | ExplorationConstant  | float                                  | sqrt(2)        | UCB1 exploration weight (C)                        |
 | ActionRolloutLimit   | int                                    | Int32.MaxValue | Stop when any single action reaches this many rollouts |
 | PriorClient          | IPriorClient option                    | None           | Async prior client for NN-guided search (see below) |
+| LeafEvaluator        | ILeafEvaluator option                  | None           | Async per-player neural leaf values                 |
 | LeafBoundary         | (ICoreState -> bool) option            | None           | Deterministic result-state horizon predicate ([details](#leaf-boundary-horizon)) |
+| MaxPriorDepth        | int                                    | Int32.MaxValue | Deepest node that requests priors                    |
+| MaxPendingEvaluations| int                                    | 32             | Maximum reserved neural leaf requests                |
+| LeafEvaluationTimeoutMs | int                                 | 500            | Per-request timeout before rollout fallback          |
+| DrainTimeoutMs       | int                                    | 1000           | Bounded post-deadline response drain                 |
 
 The search stops when any budget is exhausted, or when all root actions have
 been resolved to `Terminal` via terminal propagation.
@@ -808,6 +813,35 @@ requests on node expansion and collects responses after terminal propagation.
 
 When `LeafBoundary` is `None`, all actions are expanded normally. When set, it
 is checked against each deterministic result state after that action executes.
+
+## Asynchronous Leaf Evaluation
+
+With `LeafEvaluator` configured, newly expanded deterministic leaves, horizon
+leaves, and stochastic outcome sets are submitted to a shared non-blocking value
+queue instead of immediately running random rollouts. Exact game terminals are
+still evaluated by the rules engine. A stochastic action submits all nonterminal
+outcomes as one request; the returned per-player vectors are probability-weighted
+and commit exactly one action-edge visit.
+
+Selection reserves every edge in an outstanding path through `PendingVisits`.
+Reserved edges are excluded from selection, reducing duplicate leaf requests
+without counting unfinished work as simulations. Completed responses first remove
+the reservation and then backpropagate once. Invalid responses and requests that
+time out while the search still has budget fall back to one random rollout. At the
+search deadline, Kjarni stops enqueueing, drains responses for at most
+`DrainTimeoutMs`, and cancels anything unresolved without adding visits.
+
+If every selectable path is reserved, or `MaxPendingEvaluations` is reached, the
+search calls `ILeafEvaluator.WaitForResults` rather than spinning. A shared HTTP
+evaluator can therefore batch work from other concurrent games while each blocked
+search sleeps on the same completion signal.
+
+Placement search reuses `ValueEstimates` already carried by an `IPriorClient`
+response when that response is available immediately after expansion. This avoids
+a duplicate placement-model request. It deliberately does not race a random
+rollout against a late placement value; absent an immediately collected value,
+placement retains the existing rollout path. Main-game values use the dedicated
+`/state/leaf-enqueue` queue.
 
 ## Logging
 
@@ -822,3 +856,8 @@ is checked against each deterministic result state after that action executes.
 | priorsApplied       | int      | Number of prior responses received and applied to nodes        |
 | priorStatesEvaluated| int      | Total action-result states sent for NN evaluation              |
 | horizonSkips        | int      | Number of selection passes that returned `Horizon`             |
+| leafEvaluationsSubmitted/applied | int | Neural leaf requests submitted and committed       |
+| leafEvaluationTimeouts/Invalid | int | Timed-out and malformed responses                    |
+| leafEvaluationsCancelled/fallbacks/orphans | int | Cleanup, rollout fallback, and stale response counts |
+| leafEvaluationBatches/states | int | Response batches and state vectors evaluated          |
+| leafEvaluationLatencyMs | int64 | Sum of client-observed request latency                  |

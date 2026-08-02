@@ -73,6 +73,9 @@ maps them to Python `snake_case` internally.
 | `verbosity`          | string | `"quiet"` | CLI verbosity level. |
 | `oversample`         | float  | `1.0`     | Request `oversample * remaining` games and stop early. `1.1` = 10% extra. |
 | `parallelism`        | int    | *(auto)*  | Maximum concurrent games. Defaults to 4 with NN priors, otherwise all logical processors. |
+| `maxPendingEvaluations` | int | `32` | Maximum outstanding neural leaf requests per search. |
+| `leafEvaluationTimeoutMs` | int | `500` | Request timeout before rollout fallback. |
+| `drainTimeoutMs` | int | `1000` | Maximum post-deadline response drain time. |
 
 ### `train` Section
 
@@ -104,6 +107,23 @@ Full-state sampling runs independently inside each dataset after the game-level 
 The model emits raw logits. Combined training constructs a legal mask from every exported legal composite action and applies it to policy loss. Policy targets must come from standard shared-root MCTS visit shares; `simulationsPerAction` rollout counts are independent evaluation budgets and are unsuitable. Serving softmaxes the full vocabulary, while C# remains authoritative for legality and masks and normalizes policy probabilities before MCTS use.
 
 Old action-conditioned and bucket-value checkpoints cannot be resumed or served; retrain them as version 3 checkpoints.
+
+### Asynchronous MCTS Values
+
+State-model MCTS submits leaf batches through `/state/leaf-enqueue` and collects
+full `[B,N]` player distributions from `/state/leaf-collect`. The inference worker
+flattens queued requests from concurrent games into one model invocation and then
+restores request boundaries; all outcomes of one stochastic action therefore stay
+in one request and model batch. Searches reserve pending tree edges and sleep on a
+client completion event when the tree is blocked, allowing the shared evaluator to
+spend that time batching other games. Completed evaluations, not submissions, are
+the simulation and visit counts.
+
+Placement prior responses already contain their node's full player distribution.
+Kjarni consumes that value when the prior response is available at expansion, so a
+placement policy/value prediction can serve both purposes without another HTTP
+request. Late placement values are retained on the node for later use and are not
+raced against an already-started rollout.
 
 `summary.json` and `progress.png` are refreshed after every individual benchmark result, so partial generation progress is visible while later benchmarks are still running.
 

@@ -12,7 +12,7 @@ type MonteCarloTreeSearch(config: MCTSConfig) =
     member _.RunSimulation (root : MCTSState) =
         let timer = Stopwatch.StartNew()
 
-        let (result, priorStats) =
+        let (result, priorStats, leafStats) =
             search (
                 root,
                 config.MaxSimulations,
@@ -22,8 +22,12 @@ type MonteCarloTreeSearch(config: MCTSConfig) =
                 config.ExplorationConstant,
                 config.ActionRolloutLimit,
                 config.PriorClient,
+                config.LeafEvaluator,
                 config.LeafBoundary,
-                config.MaxPriorDepth
+                config.MaxPriorDepth,
+                config.MaxPendingEvaluations,
+                config.LeafEvaluationTimeoutMs,
+                config.DrainTimeoutMs
             )
 
         // search() handles per-search Flush internally so that it can
@@ -43,6 +47,16 @@ type MonteCarloTreeSearch(config: MCTSConfig) =
         logInfo.priorNodesSkipped <- priorStats.priorNodesSkipped
         logInfo.priorResponsesOrphaned <- priorStats.priorResponsesOrphaned
         logInfo.horizonSkips <- priorStats.horizonSkips
+        logInfo.leafEvaluationsSubmitted <- leafStats.submitted
+        logInfo.leafEvaluationsApplied <- leafStats.applied
+        logInfo.leafEvaluationTimeouts <- leafStats.timeouts
+        logInfo.leafEvaluationsInvalid <- leafStats.invalid
+        logInfo.leafEvaluationsCancelled <- leafStats.cancelled
+        logInfo.leafEvaluationFallbacks <- leafStats.fallback
+        logInfo.leafEvaluationOrphans <- leafStats.orphan
+        logInfo.leafEvaluationBatches <- leafStats.batches
+        logInfo.leafEvaluationStates <- leafStats.states
+        logInfo.leafEvaluationLatencyMs <- leafStats.latencyMs
 
         _logInfos <- logInfo :: _logInfos
 
