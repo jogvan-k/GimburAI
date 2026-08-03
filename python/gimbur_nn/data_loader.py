@@ -113,6 +113,10 @@ def _select_state_entries(
     mandatory: set[tuple[int, int]] = set()
     for game_index, game in enumerate(games):
         states = game["states"]
+        # Adaptive VP sampling requires authoritative score metadata. Older
+        # exports may still feed placement replay, but not state replay.
+        if any(not (state.get("scores") or []) for state in states):
+            continue
         if states:
             mandatory.add((game_index, len(states) - 1))
         post_placement_index = next(
@@ -127,9 +131,7 @@ def _select_state_entries(
             mandatory.add((game_index, post_placement_index))
 
         for state_index, state in enumerate(states):
-            scores = state.get("scores") or []
-            if not scores:
-                raise ValueError("Full-state records must include non-empty scores")
+            scores = state["scores"]
             total_victory_points = math.floor(sum(float(score) for score in scores))
             buckets.setdefault(total_victory_points, []).append((game_index, state_index))
 

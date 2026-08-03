@@ -245,6 +245,17 @@ class TestVictoryPointStateSampling:
 
         assert original_ids == rotated_ids
 
+    def test_legacy_game_without_scores_is_excluded_from_state_replay(self) -> None:
+        legacy = self._game(10, [4, 5])
+        for state in legacy["states"]:
+            state.pop("scores")
+        current = self._game(20, [4, 5])
+
+        selected = _select_state_entries([legacy, current], "median", 0.10)
+
+        assert selected[0] == []
+        assert selected[1]
+
 
 # ---------------------------------------------------------------------------
 # load_games
