@@ -23,15 +23,27 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
     private readonly object _mailboxLock = new();
     private readonly ConcurrentDictionary<long, long> _submittedAt = new();
     private readonly BlockingCollection<QueuedLeafRequest> _pending;
-    private readonly BlockingCollection<long[]> _pendingCancellations = new();
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Thread _senderThread;
-    private readonly Thread _pollThread;
     private readonly int _batchSize;
     private readonly int _batchWindowMs;
     private long _completionVersion;
+    private long _requestsQueued;
+    private long _requestsSent;
+    private long _requestsAcknowledged;
+    private long _responsesPolled;
     private int _disposeStarted;
     private volatile bool _disposed;
+    private long _lastDiagnosticAt = Environment.TickCount64;
+
+    public (long Queued, long Sent, long Acknowledged, long Polled, int Owned, int Mailbox)
+        Diagnostics => (
+            Interlocked.Read(ref _requestsQueued),
+            Interlocked.Read(ref _requestsSent),
+            Interlocked.Read(ref _requestsAcknowledged),
+            Interlocked.Read(ref _responsesPolled),
+            _submittedAt.Count,
+            _mailbox.Count);
 
     public CatanStateLeafEvaluator(string baseUrl)
         : this(baseUrl, new HttpClientHandler())
@@ -55,9 +67,7 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
         _batchSize = batchSize;
         _batchWindowMs = batchWindowMs;
         _senderThread = new Thread(SenderLoop) { IsBackground = true, Name = "CatanLeafEvaluator-Send" };
-        _pollThread = new Thread(PollLoop) { IsBackground = true, Name = "CatanLeafEvaluator-Poll" };
         _senderThread.Start();
-        _pollThread.Start();
     }
 
     public bool Enqueue(long requestId, ICoreState[] states, int priority)
@@ -82,7 +92,10 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
         try
         {
             if (_pending.TryAdd(request))
+            {
+                Interlocked.Increment(ref _requestsQueued);
                 return true;
+            }
         }
         catch (InvalidOperationException)
         {
@@ -99,9 +112,11 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
         {
             try
             {
-                SendPendingCancellations(token);
                 if (!_pending.TryTake(out var first, 5, token))
+                {
+                    LogDiagnosticsIfDue();
                     continue;
+                }
                 if (_batchWindowMs > 0 && token.WaitHandle.WaitOne(_batchWindowMs))
                     break;
 
@@ -112,6 +127,7 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
                 var owned = queued.Where(item => _submittedAt.ContainsKey(item.RequestId)).ToArray();
                 if (owned.Length > 0)
                     SendBatch(owned, token);
+                LogDiagnosticsIfDue();
             }
             catch (OperationCanceledException)
             {
@@ -124,54 +140,43 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
         }
     }
 
-    private void SendPendingCancellations(CancellationToken cancellationToken)
-    {
-        if (!_pendingCancellations.TryTake(out var first))
-            return;
-
-        var ids = new HashSet<long>(first);
-        while (_pendingCancellations.TryTake(out var next))
-            ids.UnionWith(next);
-
-        try
-        {
-            using var response = _http.PostAsJsonAsync(
-                "state/leaf-cancel",
-                new LeafCancelPayload { Ids = ids.Select(id => id.ToString()).ToArray() },
-                JsonOptions,
-                cancellationToken).GetAwaiter().GetResult();
-        }
-        catch (OperationCanceledException) when (_disposed)
-        {
-        }
-        catch
-        {
-            // Cancellation is best effort; local ownership has already been removed.
-        }
-    }
-
     private void SendBatch(QueuedLeafRequest[] requests, CancellationToken cancellationToken)
     {
         try
         {
             var payload = new LeafEnqueuePayload { Requests = requests.Select(x => x.Item).ToArray() };
+            Interlocked.Add(ref _requestsSent, requests.Length);
             using var response = _http.PostAsJsonAsync(
-                "state/leaf-enqueue", payload, JsonOptions, cancellationToken).GetAwaiter().GetResult();
+                "state/leaf-predict", payload, JsonOptions, cancellationToken).GetAwaiter().GetResult();
             response.EnsureSuccessStatusCode();
-            var acknowledgment = response.Content.ReadFromJsonAsync<LeafEnqueueResponse>(
+            var result = response.Content.ReadFromJsonAsync<LeafCollectPayload>(
                 JsonOptions, cancellationToken).GetAwaiter().GetResult()
-                ?? throw new JsonException("Missing leaf enqueue acknowledgment.");
-            var acceptedIds = acknowledgment.AcceptedIds.ToHashSet(StringComparer.Ordinal);
-            var droppedIds = acknowledgment.DroppedIds.ToHashSet(StringComparer.Ordinal);
-            foreach (var id in droppedIds)
+                ?? throw new JsonException("Missing leaf prediction response.");
+            var expectedIds = requests.Select(request => request.Item.Id).ToHashSet(StringComparer.Ordinal);
+            var responseIds = result.Responses.Select(item => item.Id).ToArray();
+            if (responseIds.Length != requests.Length ||
+                responseIds.Distinct(StringComparer.Ordinal).Count() != responseIds.Length ||
+                responseIds.Any(id => !expectedIds.Contains(id)))
+                throw new JsonException("Leaf prediction response IDs did not match the request IDs.");
+
+            Interlocked.Add(ref _requestsAcknowledged, result.Responses.Length);
+            Interlocked.Add(ref _responsesPolled, result.Responses.Length);
+            lock (_mailboxLock)
             {
-                if (long.TryParse(id, out var requestId))
-                    FailIfOwned(requestId);
-            }
-            foreach (var request in requests)
-            {
-                if (!acceptedIds.Contains(request.Item.Id) && !droppedIds.Contains(request.Item.Id))
-                    FailIfOwned(request.RequestId);
+                var addedResponse = false;
+                foreach (var item in result.Responses)
+                {
+                    var requestId = long.Parse(item.Id);
+                    if (!_submittedAt.TryRemove(requestId, out var submitted))
+                        continue;
+                    var values = item.Values.Select(vector =>
+                        Array.ConvertAll(vector, value => (double)value)).ToArray();
+                    _mailbox.Enqueue(new LeafEvaluationResponse(
+                        requestId, values, Math.Max(0, Environment.TickCount64 - submitted)));
+                    addedResponse = true;
+                }
+                if (addedResponse)
+                    NotifyCompletion();
             }
         }
         catch (OperationCanceledException) when (_disposed)
@@ -257,56 +262,18 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
             NotifyCompletion();
         }
 
-        try
-        {
-            _pendingCancellations.Add(requestIds.ToArray());
-        }
-        catch (InvalidOperationException)
-        {
-            // Disposal completed the producer side between the initial check and add.
-        }
     }
 
-    private void PollLoop()
+    private void LogDiagnosticsIfDue()
     {
-        while (!_disposed)
-        {
-            try
-            {
-                using var response = _http.PostAsync("state/leaf-collect", null).GetAwaiter().GetResult();
-                if (response.IsSuccessStatusCode)
-                {
-                    var payload = response.Content.ReadFromJsonAsync<LeafCollectPayload>(JsonOptions)
-                        .GetAwaiter().GetResult();
-                    lock (_mailboxLock)
-                    {
-                        var addedResponse = false;
-                        foreach (var item in payload?.Responses ?? [])
-                        {
-                            if (!long.TryParse(item.Id, out var requestId))
-                                continue;
-                            // A cancelled search no longer owns this response. Discard it
-                            // instead of leaving an uncollectable mailbox entry forever.
-                            if (!_submittedAt.TryRemove(requestId, out var submitted))
-                                continue;
-                            var values = item.Values.Select(vector =>
-                                Array.ConvertAll(vector, value => (double)value)).ToArray();
-                            _mailbox.Enqueue(new LeafEvaluationResponse(
-                                requestId, values, Math.Max(0, Environment.TickCount64 - submitted)));
-                            addedResponse = true;
-                        }
-                        if (addedResponse)
-                            NotifyCompletion();
-                    }
-                }
-            }
-            catch
-            {
-                // Transient server failures are retried; request timeouts are owned by MCTS.
-            }
-            if (_shutdown.Token.WaitHandle.WaitOne(5))
-                break;
-        }
+        if (Environment.TickCount64 - _lastDiagnosticAt < 30_000)
+            return;
+        _lastDiagnosticAt = Environment.TickCount64;
+        var diagnostic = Diagnostics;
+        Console.WriteLine(
+            $"[LeafEvaluator] queued={diagnostic.Queued} sent={diagnostic.Sent} " +
+            $"ack={diagnostic.Acknowledged} polled={diagnostic.Polled} " +
+            $"owned={diagnostic.Owned} mailbox={diagnostic.Mailbox}");
     }
 
     public void Dispose()
@@ -315,15 +282,11 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
             return;
         _disposed = true;
         _pending.CompleteAdding();
-        _pendingCancellations.CompleteAdding();
         _shutdown.Cancel();
-        _http.CancelPendingRequests();
         lock (_mailboxLock)
             NotifyCompletion();
         _senderThread.Join();
-        _pollThread.Join();
         _pending.Dispose();
-        _pendingCancellations.Dispose();
         _shutdown.Dispose();
         _http.Dispose();
     }
@@ -345,22 +308,11 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
         public LeafRequestItem[] Requests { get; init; } = [];
     }
 
-    private sealed class LeafCancelPayload
-    {
-        public string[] Ids { get; init; } = [];
-    }
-
     private sealed class LeafRequestItem
     {
         public string Id { get; init; } = "";
         public string[] States { get; init; } = [];
         public int Priority { get; init; }
-    }
-
-    private sealed class LeafEnqueueResponse
-    {
-        public string[] AcceptedIds { get; init; } = [];
-        public string[] DroppedIds { get; init; } = [];
     }
 
     private sealed class LeafCollectPayload

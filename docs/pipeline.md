@@ -131,28 +131,26 @@ Old action-conditioned and bucket-value checkpoints cannot be resumed or served;
 
 ### Asynchronous MCTS Values
 
-State-model MCTS submits leaf batches through `/state/leaf-enqueue` and collects
-full `[B,N]` player distributions from `/state/leaf-collect`. The inference worker
-flattens queued requests from concurrent games into one model invocation and then
-restores request boundaries; all outcomes of one stochastic action therefore stay
-in one request and model batch. Searches reserve pending tree edges and sleep on a
-client completion event when the tree is blocked, allowing the shared evaluator to
+State-model MCTS submits locally coalesced leaf batches through `/state/leaf-predict`,
+which synchronously returns full `[B,N]` player distributions. The endpoint flattens
+requests into one model invocation and then restores request boundaries; all outcomes
+of one stochastic action therefore stay in one request and model batch. Searches
+reserve pending tree edges and sleep on a client completion event when the tree is
+blocked, allowing the shared evaluator to
 spend that time batching other games. Completed evaluations, not submissions, are
 the simulation and visit counts.
 
-The C# transport uses a bounded local queue and coalesces leaves into short-window
-batches before enqueueing them on the server. The enqueue acknowledgment includes
-accepted and dropped request IDs; dropped or failed requests become immediate invalid
-responses, while cancellation removes ownership so late results are discarded. Leaf
-admission does not evict older work because that work may belong to another client.
-`POST /state/leaf-cancel` accepts `{"ids":[...]}`, removes matching queued and
-completed results, and tombstones in-flight IDs until their inference finishes so
-they cannot appear in a later collect response.
+The C# transport uses a bounded local queue and a dedicated sender to coalesce leaves
+from concurrent games into short-window batches without blocking MCTS threads. Each
+direct response must contain every request ID exactly once; malformed or failed batches
+become immediate invalid responses. Cancellation removes local ownership, omits work
+not yet sent, and discards responses that arrive after an in-flight cancellation. The
+older enqueue, collect, and cancel endpoints remain temporarily for compatibility.
 
 In `placement-and-state` simulation, main-game MCTS uses uniform PUCT with the
 state model as its leaf evaluator. It does not also request child-state value
 "priors": that would duplicate state-model inference for every expansion and
-starve the shared leaf queue. Placement MCTS still uses the placement policy head
+duplicate state-model inference. Placement MCTS still uses the placement policy head
 for PUCT and the state value model at the exact `PreRoll` horizon.
 
 Placement prior responses already contain their node's full player distribution.

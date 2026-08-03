@@ -93,7 +93,7 @@ def test_predict_player_gathers_from_one_unrotated_vector_inference(monkeypatch)
     assert response.win_probabilities == pytest.approx([0.880797, 0.119203])
 
 
-def test_leaf_queue_batches_all_outcomes_into_one_model_invocation() -> None:
+def test_leaf_predict_batches_requests_and_restores_boundaries() -> None:
     class FixedModel(torch.nn.Module):
         def __init__(self) -> None:
             super().__init__()
@@ -110,29 +110,57 @@ def test_leaf_queue_batches_all_outcomes_into_one_model_invocation() -> None:
         state_game_cfg=MINI_2P,
     )
     state = MINI_BOARD + "|" + MINI_STATE_ONLY
-    enqueue = next(route.endpoint for route in app.routes if route.path == "/state/leaf-enqueue")
-    collect = next(route.endpoint for route in app.routes if route.path == "/state/leaf-collect")
+    predict = next(route.endpoint for route in app.routes if route.path == "/state/leaf-predict")
 
-    async def run() -> object:
-        async with app.router.lifespan_context(app):
-            response = await enqueue(
-                LeafEnqueueRequest(
-                    requests=[LeafRequest(id="chance", states=[state, state, state], priority=1)]
-                )
+    result = asyncio.run(
+        predict(
+            LeafEnqueueRequest(
+                requests=[
+                    LeafRequest(id="first", states=[state], priority=1),
+                    LeafRequest(id="chance", states=[state, state], priority=2),
+                ]
             )
-            assert response.status_code == 202
-            for _ in range(100):
-                result = await collect()
-                if result.responses:
-                    return result
-                await asyncio.sleep(0.005)
-            pytest.fail("leaf response did not arrive")
-
-    result = asyncio.run(run())
+        )
+    )
     assert model.batch_sizes == [3]
-    assert result.responses[0].id == "chance"
-    assert len(result.responses[0].values) == 3
+    assert [response.id for response in result.responses] == ["first", "chance"]
+    assert [len(response.values) for response in result.responses] == [1, 2]
     assert result.responses[0].values[0] == pytest.approx([0.880797, 0.119203])
+
+
+def test_leaf_predict_returns_empty_only_for_malformed_request() -> None:
+    class FixedModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.batch_sizes: list[int] = []
+
+        def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+            self.batch_sizes.append(tokens.shape[0])
+            return torch.tensor([[2.0, 0.0]] * tokens.shape[0])
+
+    model = FixedModel()
+    app = create_app(
+        state_model=model,
+        state_device=torch.device("cpu"),
+        state_game_cfg=MINI_2P,
+    )
+    state = MINI_BOARD + "|" + MINI_STATE_ONLY
+    predict = next(route.endpoint for route in app.routes if route.path == "/state/leaf-predict")
+
+    result = asyncio.run(
+        predict(
+            LeafEnqueueRequest(
+                requests=[
+                    LeafRequest(id="bad", states=["invalid"], priority=1),
+                    LeafRequest(id="valid", states=[state], priority=1),
+                ]
+            )
+        )
+    )
+
+    assert model.batch_sizes == [1]
+    assert result.responses[0].values == []
+    assert result.responses[1].values[0] == pytest.approx([0.880797, 0.119203])
 
 
 def test_leaf_enqueue_reports_accepted_request_ids() -> None:
@@ -203,9 +231,7 @@ def test_leaf_cancel_endpoint_reports_removed_counts() -> None:
     cancel = next(route.endpoint for route in app.routes if route.path == "/state/leaf-cancel")
     asyncio.run(
         enqueue(
-            LeafEnqueueRequest(
-                requests=[LeafRequest(id="cancel", states=["state"], priority=1)]
-            )
+            LeafEnqueueRequest(requests=[LeafRequest(id="cancel", states=["state"], priority=1)])
         )
     )
 

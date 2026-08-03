@@ -347,7 +347,9 @@ class PriorQueue(Generic[T]):
         with self._lock:
             queued_before = len(self._heap)
             self._heap = [
-                item for item in self._heap if item[2].id not in ids  # type: ignore[union-attr]
+                item
+                for item in self._heap
+                if item[2].id not in ids  # type: ignore[union-attr]
             ]
             removed_queued = queued_before - len(self._heap)
             if removed_queued:
@@ -600,25 +602,36 @@ def create_app(
 
         def _infer_leaf_batch(batch: list[LeafRequest]) -> list[LeafResponseItem]:
             """Flatten requests so one model call evaluates every stochastic outcome."""
-            states = [state for request in batch for state in request.states]
-            if not states:
-                return [LeafResponseItem(id=request.id, values=[]) for request in batch]
-            try:
-                token_ids = tokenizer.tokenize_batch(states).to(state_device)
-            except (KeyError, ValueError):
-                return [LeafResponseItem(id=request.id, values=[]) for request in batch]
+            valid: list[tuple[int, LeafRequest]] = []
+            results: list[LeafResponseItem | None] = [None] * len(batch)
+            token_batches: list[torch.Tensor] = []
+            for index, request in enumerate(batch):
+                if not request.states:
+                    results[index] = LeafResponseItem(id=request.id, values=[])
+                    continue
+                try:
+                    tokens = tokenizer.tokenize_batch(request.states)
+                    if tokens.shape[1] != state_game_cfg.state_token_size:
+                        raise ValueError("state has the wrong token length")
+                    token_batches.append(tokens)
+                    valid.append((index, request))
+                except (KeyError, ValueError):
+                    results[index] = LeafResponseItem(id=request.id, values=[])
+
+            if not token_batches:
+                return [result for result in results if result is not None]
+            token_ids = torch.cat(token_batches).to(state_device)
             with torch.no_grad():
                 probabilities = F.softmax(_extract_logits(state_model(token_ids)), dim=-1)
             values = probabilities.cpu().tolist()
-            results: list[LeafResponseItem] = []
             offset = 0
-            for request in batch:
+            for result_index, request in valid:
                 count = len(request.states)
-                results.append(
-                    LeafResponseItem(id=request.id, values=values[offset : offset + count])
+                results[result_index] = LeafResponseItem(
+                    id=request.id, values=values[offset : offset + count]
                 )
                 offset += count
-            return results
+            return [result for result in results if result is not None]
 
         async def _leaf_worker() -> None:
             while True:
@@ -816,6 +829,13 @@ def create_app(
                     "dropped_ids": dropped_ids,
                 },
             )
+
+        @app.post("/state/leaf-predict", response_model=LeafCollectResponse)
+        async def leaf_predict(request: LeafEnqueueRequest) -> LeafCollectResponse:
+            """Evaluate all requested leaves in one flattened model batch."""
+            loop = asyncio.get_running_loop()
+            responses = await loop.run_in_executor(None, _infer_leaf_batch, request.requests)
+            return LeafCollectResponse(responses=responses)
 
         @app.post("/state/leaf-collect", response_model=LeafCollectResponse)
         async def leaf_collect() -> LeafCollectResponse:

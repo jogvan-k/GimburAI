@@ -838,16 +838,17 @@ search sleeps on the same completion signal. Completion is broadcast so one resp
 batch wakes every blocked search, which then collects only its own request IDs.
 
 The HTTP evaluator also coalesces locally queued leaves for 2 ms, sending up to 64
-requests in one `/state/leaf-enqueue` POST. Cancelled requests are omitted before
-send, and transport failures or server-reported drops complete as invalid responses
-so MCTS can use its normal fallback instead of waiting for a timeout.
+requests in one direct `/state/leaf-predict` POST. Cancelled requests are omitted
+before send, late responses for in-flight cancellations are discarded, and transport
+or response-ID validation failures complete as invalid responses so MCTS can use its
+normal fallback instead of waiting for a timeout.
 
 Placement search reuses `ValueEstimates` already carried by an `IPriorClient`
 response when that response is available immediately after expansion. This avoids
 a duplicate placement-model request. It deliberately does not race a random
 rollout against a late placement value; absent an immediately collected value,
 placement retains the existing rollout path. Main-game values use the dedicated
-`/state/leaf-enqueue` queue.
+direct `/state/leaf-predict` batching endpoint.
 
 ## Logging
 

@@ -10,20 +10,26 @@ namespace Gimbur.Rules.Tests;
 public class CatanStateLeafEvaluatorTests
 {
     [Test]
-    public void Enqueue_CoalescesRequestsIntoOnePost()
+    public void Enqueue_CoalescesRequestsIntoOnePostAndFansOutResponse()
     {
         using var handler = new RecordingHandler();
         using var evaluator = CreateEvaluator(handler);
         var state = CreateState();
+        var known = new HashSet<long> { 1, 2 };
 
         Assert.That(evaluator.Enqueue(1, [state], 1), Is.True);
         Assert.That(evaluator.Enqueue(2, [state], 2), Is.True);
 
-        Assert.That(handler.EnqueueReceived.Wait(TimeSpan.FromSeconds(2)), Is.True);
-        Assert.That(handler.EnqueueBodies, Has.Count.EqualTo(1));
-        using var body = JsonDocument.Parse(handler.EnqueueBodies.Single());
-        var requests = body.RootElement.GetProperty("requests");
-        Assert.That(requests.GetArrayLength(), Is.EqualTo(2));
+        var responses = CollectUntil(evaluator, known, 2);
+        Assert.That(handler.RequestReceived.Wait(TimeSpan.FromSeconds(2)), Is.True);
+        Assert.That(handler.RequestBodies, Has.Count.EqualTo(1));
+        using var body = JsonDocument.Parse(handler.RequestBodies.Single());
+        Assert.Multiple(() =>
+        {
+            Assert.That(body.RootElement.GetProperty("requests").GetArrayLength(), Is.EqualTo(2));
+            Assert.That(responses.Select(x => x.RequestId), Is.EquivalentTo(known));
+            Assert.That(responses, Has.All.Matches<LeafEvaluationResponse>(x => x.Values.Length == 1));
+        });
     }
 
     [Test]
@@ -37,42 +43,37 @@ public class CatanStateLeafEvaluatorTests
         evaluator.Cancel(new HashSet<long> { 1 });
         Assert.That(evaluator.Enqueue(2, [state], 1), Is.True);
 
-        Assert.That(handler.EnqueueReceived.Wait(TimeSpan.FromSeconds(2)), Is.True);
-        using var body = JsonDocument.Parse(handler.EnqueueBodies.Single());
+        Assert.That(handler.RequestReceived.Wait(TimeSpan.FromSeconds(2)), Is.True);
+        using var body = JsonDocument.Parse(handler.RequestBodies.Single());
         var ids = body.RootElement.GetProperty("requests").EnumerateArray()
             .Select(item => item.GetProperty("id").GetString()).ToArray();
         Assert.That(ids, Is.EqualTo(new[] { "2" }));
     }
 
     [Test]
-    public void Cancel_PostsOnePayloadAndDiscardsLateResponse()
+    public void Cancel_DuringInFlightRequestDiscardsResponse()
     {
-        using var handler = new RecordingHandler();
+        using var handler = new RecordingHandler(blockResponse: true);
         using var evaluator = CreateEvaluator(handler);
-        var known = new HashSet<long> { 1, 2 };
+        var known = new HashSet<long> { 1 };
 
         Assert.That(evaluator.Enqueue(1, [CreateState()], 1), Is.True);
-        Assert.That(evaluator.Enqueue(2, [CreateState()], 1), Is.True);
-        Assert.That(handler.EnqueueReceived.Wait(TimeSpan.FromSeconds(2)), Is.True);
+        Assert.That(handler.RequestReceived.Wait(TimeSpan.FromSeconds(2)), Is.True);
 
         evaluator.Cancel(known);
-
-        Assert.That(handler.CancelReceived.Wait(TimeSpan.FromSeconds(2)), Is.True);
-        Assert.That(handler.CancelBodies, Has.Count.EqualTo(1));
-        using var body = JsonDocument.Parse(handler.CancelBodies.Single());
-        Assert.That(
-            body.RootElement.GetProperty("ids").EnumerateArray().Select(x => x.GetString()),
-            Is.EquivalentTo(new[] { "1", "2" }));
-
-        handler.CollectResponses.Enqueue(
-            "{\"responses\":[{\"id\":\"1\",\"values\":[[0.5,0.5]]}]}");
-        Assert.That(handler.CollectResponseServed.Wait(TimeSpan.FromSeconds(2)), Is.True);
+        handler.ReleaseResponse();
         Thread.Sleep(50);
-        Assert.That(evaluator.Collect(known), Is.Empty);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(evaluator.Collect(known), Is.Empty);
+            Assert.That(evaluator.Diagnostics.Owned, Is.Zero);
+            Assert.That(evaluator.Diagnostics.Mailbox, Is.Zero);
+        });
     }
 
     [Test]
-    public void EnqueueFailure_ProducesInvalidResponses()
+    public void HttpFailure_ProducesInvalidResponses()
     {
         using var handler = new RecordingHandler(HttpStatusCode.ServiceUnavailable);
         using var evaluator = CreateEvaluator(handler);
@@ -87,39 +88,39 @@ public class CatanStateLeafEvaluatorTests
     }
 
     [Test]
-    public void ServerDroppedRequest_ProducesInvalidResponse()
+    public void MismatchedResponseIds_ProduceInvalidResponses()
     {
         using var handler = new RecordingHandler(
-            acknowledgment: "{\"accepted\":0,\"dropped\":1,\"accepted_ids\":[],\"dropped_ids\":[\"7\"]}");
+            responseBody: "{\"responses\":[{\"id\":\"1\",\"values\":[[0.5,0.5]]}," +
+                "{\"id\":\"1\",\"values\":[[0.5,0.5]]}]}");
         using var evaluator = CreateEvaluator(handler);
+        var known = new HashSet<long> { 1, 2 };
 
-        Assert.That(evaluator.Enqueue(7, [CreateState()], 1), Is.True);
+        Assert.That(evaluator.Enqueue(1, [CreateState()], 1), Is.True);
+        Assert.That(evaluator.Enqueue(2, [CreateState()], 1), Is.True);
 
-        var responses = CollectUntil(evaluator, new HashSet<long> { 7 }, 1);
-        Assert.That(responses.Single().RequestId, Is.EqualTo(7));
-        Assert.That(responses.Single().Values, Is.Empty);
+        var responses = CollectUntil(evaluator, known, 2);
+        Assert.That(responses.Select(x => x.RequestId), Is.EquivalentTo(known));
+        Assert.That(responses, Has.All.Matches<LeafEvaluationResponse>(x => x.Values.Length == 0));
     }
 
     [Test]
-    public void CollectResponse_WakesAllWaitersAndRetainsResponsesForEachSearch()
+    public void DirectResponse_WakesAllWaitersAndRetainsResponsesForEachSearch()
     {
-        using var handler = new RecordingHandler();
+        using var handler = new RecordingHandler(blockResponse: true);
         using var evaluator = CreateEvaluator(handler);
         var state = CreateState();
 
         Assert.That(evaluator.Enqueue(1, [state], 1), Is.True);
         Assert.That(evaluator.Enqueue(2, [state], 1), Is.True);
-        Assert.That(handler.EnqueueReceived.Wait(TimeSpan.FromSeconds(2)), Is.True);
+        Assert.That(handler.RequestReceived.Wait(TimeSpan.FromSeconds(2)), Is.True);
 
         using var ready = new CountdownEvent(2);
         var first = WaitAndCollect(1);
         var second = WaitAndCollect(2);
         Assert.That(ready.Wait(TimeSpan.FromSeconds(2)), Is.True);
         Thread.Sleep(50);
-
-        handler.CollectResponses.Enqueue(
-            "{\"responses\":[{\"id\":\"1\",\"values\":[[0.25,0.75]]}," +
-            "{\"id\":\"2\",\"values\":[[0.6,0.4]]}]}");
+        handler.ReleaseResponse();
 
         Assert.That(Task.WaitAll([first, second], TimeSpan.FromSeconds(2)), Is.True);
         Assert.Multiple(() =>
@@ -154,11 +155,9 @@ public class CatanStateLeafEvaluatorTests
         using var handler = new RecordingHandler();
         using var evaluator = CreateEvaluator(handler);
         Assert.That(evaluator.Enqueue(1, [CreateState()], 1), Is.True);
-        Assert.That(handler.EnqueueReceived.Wait(TimeSpan.FromSeconds(2)), Is.True);
-        handler.CollectResponses.Enqueue(
-            "{\"responses\":[{\"id\":\"1\",\"values\":[[0.5,0.5]]}]}");
-        Assert.That(handler.CollectResponseServed.Wait(TimeSpan.FromSeconds(2)), Is.True);
-        Thread.Sleep(25);
+        var deadline = Environment.TickCount64 + 2000;
+        while (evaluator.Diagnostics.Mailbox == 0 && Environment.TickCount64 < deadline)
+            Thread.Sleep(5);
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var woke = evaluator.WaitForResults(1000);
@@ -191,40 +190,43 @@ public class CatanStateLeafEvaluatorTests
     }
 
     private sealed class RecordingHandler(
-        HttpStatusCode enqueueStatus = HttpStatusCode.Accepted,
-        string acknowledgment =
-            "{\"accepted\":2,\"dropped\":0,\"accepted_ids\":[\"1\",\"2\"],\"dropped_ids\":[]}")
+        HttpStatusCode status = HttpStatusCode.OK,
+        string? responseBody = null,
+        bool blockResponse = false)
         : HttpMessageHandler
     {
-        public ConcurrentQueue<string> EnqueueBodies { get; } = new();
-        public ConcurrentQueue<string> CancelBodies { get; } = new();
-        public ConcurrentQueue<string> CollectResponses { get; } = new();
-        public ManualResetEventSlim EnqueueReceived { get; } = new();
-        public ManualResetEventSlim CancelReceived { get; } = new();
-        public ManualResetEventSlim CollectResponseServed { get; } = new();
+        private readonly TaskCompletionSource _responseRelease = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ConcurrentQueue<string> RequestBodies { get; } = new();
+        public ManualResetEventSlim RequestReceived { get; } = new();
+
+        public void ReleaseResponse() => _responseRelease.TrySetResult();
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-            if (request.RequestUri!.AbsolutePath.EndsWith("/state/leaf-enqueue", StringComparison.Ordinal))
-            {
-                EnqueueBodies.Enqueue(await request.Content!.ReadAsStringAsync(cancellationToken));
-                EnqueueReceived.Set();
-                return Response(enqueueStatus, acknowledgment);
-            }
-            if (request.RequestUri.AbsolutePath.EndsWith("/state/leaf-cancel", StringComparison.Ordinal))
-            {
-                CancelBodies.Enqueue(await request.Content!.ReadAsStringAsync(cancellationToken));
-                CancelReceived.Set();
-                return Response(HttpStatusCode.OK, "{\"removed_queued\":0,\"removed_results\":0}");
-            }
+            Assert.That(request.RequestUri!.AbsolutePath, Does.EndWith("/state/leaf-predict"));
+            var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+            RequestBodies.Enqueue(body);
+            RequestReceived.Set();
+            if (blockResponse)
+                await _responseRelease.Task.WaitAsync(cancellationToken);
+            return Response(status, responseBody ?? BuildResponse(body));
+        }
 
-            if (!CollectResponses.TryDequeue(out var collect))
-                return Response(HttpStatusCode.OK, "{\"responses\":[]}");
-
-            CollectResponseServed.Set();
-            return Response(HttpStatusCode.OK, collect);
+        private static string BuildResponse(string body)
+        {
+            using var document = JsonDocument.Parse(body);
+            var responses = document.RootElement.GetProperty("requests").EnumerateArray()
+                .Select(request => new
+                {
+                    id = request.GetProperty("id").GetString(),
+                    values = request.GetProperty("states").EnumerateArray()
+                        .Select(_ => new[] { 0.5, 0.5 }).ToArray(),
+                });
+            return JsonSerializer.Serialize(new { responses });
         }
 
         private static HttpResponseMessage Response(HttpStatusCode status, string json) =>
