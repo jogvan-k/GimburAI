@@ -1169,26 +1169,10 @@ internal class SimulationRunner
 
             if (actions.Length == 1)
             {
-                var serialized = state.SerializeStateOnly();
-                mctsRoot ??= new Kjarni.MCTS.Types.MCTSState((ICoreState)state);
-                mcts.RunSimulation(mctsRoot);
-                var logInfo = mcts.LatestLogInfo();
-                evaluationDiagnostics.Add(logInfo);
-                states.Add(CreateStateRecord(state, serialized, mctsRoot, logInfo));
-
-                if (isPlacementPhase
-                    && state.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement)
-                {
-                    placementStates!.Add(CreatePlacementStateRecord(
-                        state, actions, mctsRoot, logInfo, placementActionSerializer!));
-                }
-
-                if (mctsRoot.Actions[0].IsHorizonAction && !combined)
-                    break;
-
+                // A forced transition cannot benefit from search and used to consume
+                // the full per-decision MCTS budget. It is also not a useful policy
+                // training root because no action choice exists.
                 state = (CatanState)UnwrapCoreAction(actions[0]).DoCoreAction();
-
-                // Reuse inherited rollouts and top up the resulting root next iteration.
                 mctsRoot = AdvanceMctsRoot(mctsRoot, 0, (ICoreState)state);
             }
             else

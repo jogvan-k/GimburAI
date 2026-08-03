@@ -145,6 +145,10 @@ its cap independently. Placement datasets are unaffected.
 Candidate result states are not exported or trained unless they naturally become a
 later searched root.
 
+States with exactly one legal action are advanced without MCTS and are not exported as
+training roots. They contain no policy decision and searching them would spend the full
+per-decision budget without changing game play.
+
 The iterative pipeline replays the current and recent generations (three by default)
 when training a state model. Configure `train.replayGenerations` to bound this window;
 replay reduces forgetting and prevents the latest guided search distribution from

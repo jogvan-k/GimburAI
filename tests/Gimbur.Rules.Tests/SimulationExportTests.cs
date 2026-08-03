@@ -10,6 +10,23 @@ public class SimulationExportTests
     private static SimulationOptions Options => new() { NumberOfGames = 1 };
 
     [Test]
+    public void ForcedStateHasNoPolicyChoice()
+    {
+        var state = new CatanState(GameConfig.Mini, 2, new Random(42));
+        while (state.Actions().Length != 1)
+        {
+            var action = state.Actions()[0];
+            state = (CatanState)(action.IsDeterministic
+                ? ((CatanDeterministicAction)((Kjarni.CoreAction.Deterministic)action).Item)
+                    .DoCoreAction()
+                : ((CatanStochasticAction)((Kjarni.CoreAction.Stochastic)action).Item)
+                    .DoCoreAction());
+        }
+
+        Assert.That(state.Actions(), Has.Length.EqualTo(1));
+    }
+
+    [Test]
     public void GameStateExport_IncludesTurnStageAndScores()
     {
         var game = new GameResult
