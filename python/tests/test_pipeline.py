@@ -32,13 +32,15 @@ def test_train_config_loads_value_blending_and_state_sampling() -> None:
         {
             "mctsValueWeightStart": 0.75,
             "mctsValueWeightEnd": 0.25,
-            "maxStatesPerVictoryPoint": 12,
+            "victoryPointSamplingStatistic": "average",
+            "victoryPointSamplingUpperPercentage": 0.25,
         },
     )
 
     assert config.mcts_value_weight_start == 0.75
     assert config.mcts_value_weight_end == 0.25
-    assert config.max_states_per_victory_point == 12
+    assert config.victory_point_sampling_statistic == "average"
+    assert config.victory_point_sampling_upper_percentage == 0.25
 
 
 def test_simulate_config_loads_parallelism() -> None:
@@ -125,7 +127,8 @@ def test_step_train_passes_value_blending_and_state_sampling(tmp_path, monkeypat
         train=TrainConfig(
             mcts_value_weight_start=0.75,
             mcts_value_weight_end=0.25,
-            max_states_per_victory_point=12,
+            victory_point_sampling_statistic="average",
+            victory_point_sampling_upper_percentage=0.25,
         ),
     )
     monkeypatch.setattr("gimbur_nn.pipeline._run", lambda *args, **kwargs: None)
@@ -135,7 +138,8 @@ def test_step_train_passes_value_blending_and_state_sampling(tmp_path, monkeypat
     config = json.loads((tmp_path / "models/.configs/train_gen0.json").read_text())
     assert config["mctsValueWeightStart"] == 0.75
     assert config["mctsValueWeightEnd"] == 0.25
-    assert config["maxStatesPerVictoryPoint"] == 12
+    assert config["victoryPointSamplingStatistic"] == "average"
+    assert config["victoryPointSamplingUpperPercentage"] == 0.25
 
 
 def test_placement_and_state_generates_shared_sim_and_separate_train_configs(

@@ -112,7 +112,8 @@ so `oversample` remains useful only for terminating long-tail in-flight work ear
 | `target`      | string | `"winrate"` | Placement data target; combined output uses dense visit-share policy targets. |
 | `mctsValueWeightStart` | float | `0.9` | Initial weight of normalized MCTS wins in value targets. Placement states use this weight. |
 | `mctsValueWeightEnd` | float | `0.1` | Final MCTS weight reached linearly at `turnNumber / game.turns = 1`. |
-| `maxStatesPerVictoryPoint` | int | `20` | Full-state only: deterministic per-game cap for each maximum-VP progress level. |
+| `victoryPointSamplingStatistic` | string | `"median"` | Full-state only: bucket-size reference statistic, `median` or `average`. |
+| `victoryPointSamplingUpperPercentage` | float | `0.10` | Full-state only: fraction above the reference used for the adaptive bucket cap. |
 | `valueLossWeight` | float | `1.0` | Value-loss weight for combined placement training. |
 | `policyLossWeight` | float | `1.0` | Masked policy-loss weight for combined placement training. |
 
@@ -122,7 +123,7 @@ Placement checkpoints use `checkpoint_version: 3` and `architecture: "placement_
 
 Value labels blend normalized per-player MCTS wins with the game's one-hot final winner. For full states, the MCTS weight is `start + (end - start) * clamp(turnNumber / max(1, game.turns), 0, 1)`; placement states use `mctsValueWeightStart`. If either source is invalid or has no positive evidence, the available source is used alone; samples with neither source are skipped rather than assigned a uniform label. Placement MCTS values are rollout-weighted across legal composite actions before blending.
 
-Full-state sampling runs independently inside each dataset after the game-level train/validation/test split and before symmetry or player rotation. States are grouped by the rotation-invariant level `max(floor(player victory points))`, then at most `maxStatesPerVictoryPoint` are selected from each level with a deterministic RNG seeded by game seed and level. The exact first normal-play state (`turnNumber: 1`, `stage: "r"`) and final exported root are always retained, even when that exceeds a stratum cap. Placement datasets do not use this sampling policy.
+Full-state sampling runs independently inside each dataset after the game-level train/validation/test split and before symmetry or player rotation. States from all games in that split are grouped by `floor(sum(player victory points))`. The median (default) or average bucket size is computed before augmentation, and the cap is `ceil(reference * (1 + victoryPointSamplingUpperPercentage))`. Buckets at or below the cap, including short high-VP tails, are retained fully; oversized buckets are sampled deterministically from dataset/game seeds and the total-VP bucket. The exact first normal-play state (`turnNumber: 1`, `stage: "r"`) and final exported root of every game are mandatory, even when they exceed the cap. This per-split policy means train, validation, and test can have different adaptive caps. Placement datasets do not use this sampling policy.
 
 The model emits raw logits. Combined training constructs a legal mask from every exported legal composite action and applies it to policy loss. Policy targets must come from standard shared-root MCTS visit shares; `simulationsPerAction` rollout counts are independent evaluation budgets and are unsuitable. Serving softmaxes the full vocabulary, while C# remains authoritative for legality and masks and normalizes policy probabilities before MCTS use.
 

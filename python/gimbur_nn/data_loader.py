@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import statistics
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -98,45 +99,70 @@ def _scheduled_mcts_value_weight(
 
 
 def _select_state_entries(
-    game: dict,
-    max_states_per_victory_point: int,
-) -> list[dict]:
-    """Deterministically cap full-game roots within rotation-invariant VP strata."""
-    if max_states_per_victory_point < 0:
-        raise ValueError("max_states_per_victory_point must be non-negative")
+    games: list[dict],
+    statistic: str,
+    upper_percentage: float,
+) -> list[list[dict]]:
+    """Select full-game roots using dataset-level total-VP bucket caps."""
+    if statistic not in ("median", "average"):
+        raise ValueError("victory_point_sampling_statistic must be 'median' or 'average'")
+    if upper_percentage < 0:
+        raise ValueError("victory_point_sampling_upper_percentage must be non-negative")
 
-    states = game["states"]
-    if not states:
-        return []
-    post_placement_index = next(
-        (
-            index
-            for index, state in enumerate(states)
-            if state["turnNumber"] == 1 and state["stage"] == "r"
-        ),
-        None,
+    buckets: dict[int, list[tuple[int, int]]] = {}
+    mandatory: set[tuple[int, int]] = set()
+    for game_index, game in enumerate(games):
+        states = game["states"]
+        if states:
+            mandatory.add((game_index, len(states) - 1))
+        post_placement_index = next(
+            (
+                state_index
+                for state_index, state in enumerate(states)
+                if state["turnNumber"] == 1 and state["stage"] == "r"
+            ),
+            None,
+        )
+        if post_placement_index is not None:
+            mandatory.add((game_index, post_placement_index))
+
+        for state_index, state in enumerate(states):
+            scores = state.get("scores") or []
+            if not scores:
+                raise ValueError("Full-state records must include non-empty scores")
+            total_victory_points = math.floor(sum(float(score) for score in scores))
+            buckets.setdefault(total_victory_points, []).append((game_index, state_index))
+
+    if not buckets:
+        return [[] for _ in games]
+
+    bucket_sizes = [len(identities) for identities in buckets.values()]
+    reference = (
+        statistics.median(bucket_sizes) if statistic == "median" else statistics.fmean(bucket_sizes)
     )
-    mandatory = {len(states) - 1}
-    if post_placement_index is not None:
-        mandatory.add(post_placement_index)
+    cap = math.ceil(reference * (1 + upper_percentage))
+    dataset_seed = ":".join(str(game.get("seed", "")) for game in games)
+    selected: set[tuple[int, int]] = set()
+    for total_victory_points, identities in buckets.items():
+        if len(identities) <= cap:
+            selected.update(identities)
+            continue
 
-    strata: dict[int, list[int]] = {}
-    for index, state in enumerate(states):
-        scores = state.get("scores") or []
-        if not scores:
-            raise ValueError("Full-state records must include non-empty scores")
-        progress_level = max(math.floor(float(score)) for score in scores)
-        strata.setdefault(progress_level, []).append(index)
+        required = mandatory.intersection(identities)
+        selected.update(required)
+        available = max(0, cap - len(required))
+        candidates = [identity for identity in identities if identity not in required]
+        rng = random.Random(f"{dataset_seed}:{total_victory_points}")
+        selected.update(rng.sample(candidates, min(available, len(candidates))))
 
-    selected = set(mandatory)
-    for progress_level, indices in strata.items():
-        candidates = [index for index in indices if index not in mandatory]
-        available = max(0, max_states_per_victory_point - len(mandatory.intersection(indices)))
-        if len(candidates) > available:
-            rng = random.Random(f"{game['seed']}:{progress_level}")
-            candidates = rng.sample(candidates, available)
-        selected.update(candidates)
-    return [states[index] for index in sorted(selected)]
+    return [
+        [
+            state
+            for state_index, state in enumerate(game["states"])
+            if (game_index, state_index) in selected
+        ]
+        for game_index, game in enumerate(games)
+    ]
 
 
 # ── Loading games ────────────────────────────────────────────────────
@@ -248,7 +274,8 @@ def expand_games(
     tokenizer: StateTokenizer | None = None,
     mcts_value_weight_start: float = 0.9,
     mcts_value_weight_end: float = 0.1,
-    max_states_per_victory_point: int = 20,
+    victory_point_sampling_statistic: str = "median",
+    victory_point_sampling_upper_percentage: float = 0.10,
 ) -> list[tuple[torch.Tensor, torch.Tensor]]:
     """Expand games into player-rotated state and value-distribution samples.
 
@@ -265,7 +292,12 @@ def expand_games(
         tokenizer = StateTokenizer(cfg)
     samples: list[tuple[torch.Tensor, torch.Tensor]] = []
     n_players = cfg.player_count
-    for game in games:
+    selected_entries = _select_state_entries(
+        games,
+        victory_point_sampling_statistic,
+        victory_point_sampling_upper_percentage,
+    )
+    for game, state_entries in zip(games, selected_entries):
         _process_game(
             game,
             cfg,
@@ -274,7 +306,7 @@ def expand_games(
             tokenizer,
             mcts_value_weight_start,
             mcts_value_weight_end,
-            max_states_per_victory_point,
+            state_entries,
         )
     return samples
 
@@ -287,13 +319,12 @@ def _process_game(
     tokenizer: StateTokenizer,
     mcts_value_weight_start: float,
     mcts_value_weight_end: float,
-    max_states_per_victory_point: int,
+    state_entries: list[dict],
 ) -> None:
     """Expand one game record into training samples."""
     board_serialized: str = game["board"]["serialized"]
     board_permutations: list[str] = game["board"]["permutations"]
 
-    state_entries = _select_state_entries(game, max_states_per_victory_point)
     for state_entry in state_entries:
         wins: list[float] = state_entry.get("wins") or []
         state_serialized: str = state_entry["serializedState"]
@@ -361,7 +392,8 @@ class SimulationDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         *,
         mcts_value_weight_start: float = 0.9,
         mcts_value_weight_end: float = 0.1,
-        max_states_per_victory_point: int = 20,
+        victory_point_sampling_statistic: str = "median",
+        victory_point_sampling_upper_percentage: float = 0.10,
     ) -> None:
         tok = StateTokenizer(cfg)
         raw = expand_games(
@@ -370,7 +402,8 @@ class SimulationDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
             tokenizer=tok,
             mcts_value_weight_start=mcts_value_weight_start,
             mcts_value_weight_end=mcts_value_weight_end,
-            max_states_per_victory_point=max_states_per_victory_point,
+            victory_point_sampling_statistic=victory_point_sampling_statistic,
+            victory_point_sampling_upper_percentage=victory_point_sampling_upper_percentage,
         )
         self._tokens = [t for t, _ in raw]
         self._targets = [target for _, target in raw]

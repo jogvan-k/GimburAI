@@ -116,7 +116,8 @@ _CONFIG_KEYS: dict[str, str] = {
     "policyLossWeight": "policy_loss_weight",
     "mctsValueWeightStart": "mcts_value_weight_start",
     "mctsValueWeightEnd": "mcts_value_weight_end",
-    "maxStatesPerVictoryPoint": "max_states_per_victory_point",
+    "victoryPointSamplingStatistic": "victory_point_sampling_statistic",
+    "victoryPointSamplingUpperPercentage": "victory_point_sampling_upper_percentage",
 }
 
 # Attributes whose CLI type is Path.
@@ -190,7 +191,8 @@ def _build_dataset(
         game_cfg,
         mcts_value_weight_start=args.mcts_value_weight_start,
         mcts_value_weight_end=args.mcts_value_weight_end,
-        max_states_per_victory_point=args.max_states_per_victory_point,
+        victory_point_sampling_statistic=args.victory_point_sampling_statistic,
+        victory_point_sampling_upper_percentage=args.victory_point_sampling_upper_percentage,
     )
 
 
@@ -254,7 +256,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--policy-loss-weight", type=float, default=1.0)
     parser.add_argument("--mcts-value-weight-start", type=float, default=0.9)
     parser.add_argument("--mcts-value-weight-end", type=float, default=0.1)
-    parser.add_argument("--max-states-per-victory-point", type=int, default=20)
+    parser.add_argument(
+        "--victory-point-sampling-statistic",
+        choices=["median", "average"],
+        default="median",
+    )
+    parser.add_argument("--victory-point-sampling-upper-percentage", type=float, default=0.10)
     parser.add_argument(
         "--advantage",
         action="store_true",
@@ -344,7 +351,8 @@ _ARG_DEFAULTS: dict[str, object] = {
     "policy_loss_weight": 1.0,
     "mcts_value_weight_start": 0.9,
     "mcts_value_weight_end": 0.1,
-    "max_states_per_victory_point": 20,
+    "victory_point_sampling_statistic": "median",
+    "victory_point_sampling_upper_percentage": 0.10,
 }
 
 

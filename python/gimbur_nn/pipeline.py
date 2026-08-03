@@ -88,7 +88,8 @@ class TrainConfig:
     policy_loss_weight: float = 1.0
     mcts_value_weight_start: float = 0.9
     mcts_value_weight_end: float = 0.1
-    max_states_per_victory_point: int = 20
+    victory_point_sampling_statistic: str = "median"
+    victory_point_sampling_upper_percentage: float = 0.10
 
 
 @dataclass
@@ -1146,7 +1147,8 @@ def _step_train(
         "policyLossWeight": tr.policy_loss_weight,
         "mctsValueWeightStart": tr.mcts_value_weight_start,
         "mctsValueWeightEnd": tr.mcts_value_weight_end,
-        "maxStatesPerVictoryPoint": tr.max_states_per_victory_point,
+        "victoryPointSamplingStatistic": tr.victory_point_sampling_statistic,
+        "victoryPointSamplingUpperPercentage": tr.victory_point_sampling_upper_percentage,
     }
 
     # Enable per-epoch checkpointing if configured.
@@ -1632,6 +1634,7 @@ def _run_combined_generation(
     """
     effective_placement_model_config = cfg.placement_model_config or cfg.model_config
 
+
     # ---------------------------------------------------------------
     # Step 1: Simulate placement states
     # ---------------------------------------------------------------
@@ -1709,7 +1712,6 @@ def _run_combined_generation(
             all_results.setdefault(gen, {}).update(gen_results)
             _save_summary(cfg, all_results)
             _save_progress_chart(cfg, all_results)
-
 
     # ---------------------------------------------------------------
     # Step 4: Simulate value states

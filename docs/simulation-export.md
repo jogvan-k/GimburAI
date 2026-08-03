@@ -136,8 +136,12 @@ one-hot final game winner. The MCTS weight decreases linearly from
 `mctsValueWeightStart` to `mctsValueWeightEnd` using `turnNumber / game.turns`.
 If one target is unavailable, the other is used alone; if both are unavailable,
 the state is skipped.
-Full-state sampling groups roots by `max(floor(scores))` and deterministically retains
-at most `maxStatesPerVictoryPoint` per group, plus the exact post-placement and final roots.
+After the game-level split, full-state sampling groups all roots in each split by
+`floor(sum(scores))`. It derives an adaptive cap from the median (default) or average bucket
+size plus a configurable upper percentage. Short buckets are retained fully; oversized
+buckets are sampled deterministically, with every game's exact post-placement and final
+roots mandatory. Sampling before symmetry and player augmentation means each split derives
+its cap independently. Placement datasets are unaffected.
 Candidate result states are not exported or trained unless they naturally become a
 later searched root.
 

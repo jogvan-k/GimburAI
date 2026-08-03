@@ -161,45 +161,89 @@ class TestScheduledMctsValueWeight:
 
 class TestVictoryPointStateSampling:
     @staticmethod
-    def _game(seed: int = 42) -> dict:
-        states = [
-            {"id": "placement", "turnNumber": 0, "stage": "a", "scores": [1, 1]},
-            {"id": "post-placement", "turnNumber": 1, "stage": "r", "scores": [2, 2]},
-            {"id": "same-vp-a", "turnNumber": 2, "stage": "b", "scores": [2, 2]},
-            {"id": "same-vp-b", "turnNumber": 3, "stage": "r", "scores": [2, 2]},
-            *[
-                {"id": f"vp3-{turn}", "turnNumber": turn, "stage": "r", "scores": [3, 2]}
-                for turn in range(4, 10)
+    def _game(seed: int, totals: list[int]) -> dict:
+        return {
+            "seed": seed,
+            "states": [
+                {
+                    "id": f"{seed}-{index}",
+                    "turnNumber": index + 2,
+                    "stage": "b",
+                    "scores": [total - 1, 1],
+                }
+                for index, total in enumerate(totals)
             ],
-            {"id": "final", "turnNumber": 10, "stage": "b", "scores": [3, 4]},
-        ]
-        return {"seed": seed, "states": states}
+        }
 
-    def test_groups_by_rotation_invariant_vp_and_caps_deterministically(self) -> None:
-        game = self._game()
-        first = _select_state_entries(game, 2)
-        second = _select_state_entries(game, 2)
-        other_seed = _select_state_entries(self._game(seed=43), 2)
+    @staticmethod
+    def _flatten(selected: list[list[dict]]) -> list[dict]:
+        return [state for states in selected for state in states]
+
+    def test_median_cap_plus_ten_percent_uses_all_games_and_retains_tails(self) -> None:
+        games = [self._game(10, [4] * 7 + [5] * 4), self._game(20, [4] * 3 + [9])]
+
+        selected = self._flatten(_select_state_entries(games, "median", 0.10))
+
+        # Bucket sizes are 10, 4, 1: ceil(median 4 * 1.10) = 5.
+        assert sum(sum(state["scores"]) == 4 for state in selected) == 5
+        assert sum(sum(state["scores"]) == 5 for state in selected) == 4
+        assert sum(sum(state["scores"]) == 9 for state in selected) == 1
+
+    def test_average_option_sets_cap_from_mean_bucket_size(self) -> None:
+        games = [self._game(10, [4] * 8), self._game(20, [5] * 2 + [9] * 2)]
+
+        selected = self._flatten(_select_state_entries(games, "average", 0.0))
+
+        # Bucket sizes are 8, 2, 2: mean 4.
+        assert sum(sum(state["scores"]) == 4 for state in selected) == 4
+        assert len(selected) == 8
+
+    def test_oversized_bucket_sampling_is_deterministic_and_preserves_order(self) -> None:
+        games = [self._game(10, [4] * 8 + [5] * 2 + [9] * 2)]
+
+        first = _select_state_entries(games, "median", 0.0)
+        second = _select_state_entries(games, "median", 0.0)
 
         assert first == second
-        assert first != other_seed
-        assert sum(max(state["scores"]) == 2 for state in first) == 2
-        assert sum(max(state["scores"]) == 3 for state in first) == 2
+        ids = [state["id"] for state in first[0]]
+        assert ids == sorted(ids, key=lambda value: int(value.split("-")[1]))
+        assert len(ids) == len(set(ids))
 
-    def test_always_retains_exact_post_placement_and_final_state(self) -> None:
-        selected = _select_state_entries(self._game(), 0)
+    def test_groups_by_total_vp_not_maximum_player_score(self) -> None:
+        game = self._game(10, [4, 4, 4, 5, 6])
+        game["states"][0]["scores"] = [3, 1]
+        game["states"][1]["scores"] = [2, 2]
 
-        assert [state["id"] for state in selected] == ["post-placement", "final"]
+        selected = self._flatten(_select_state_entries([game], "median", 0.0))
 
-    def test_player_rotation_does_not_change_stratum(self) -> None:
-        game = self._game()
-        rotated = self._game()
-        for state in rotated["states"]:
+        assert sum(sum(state["scores"]) == 4 for state in selected) == 1
+
+    def test_always_retains_post_placement_and_final_roots_above_cap(self) -> None:
+        game = self._game(10, [4] * 8 + [5] + [9] + [4])
+        game["states"][0].update(id="post-placement", turnNumber=1, stage="r")
+        game["states"][-1]["id"] = "same-bucket-final"
+
+        selected = self._flatten(_select_state_entries([game], "median", 0.0))
+
+        selected_ids = [state["id"] for state in selected]
+        assert "post-placement" in selected_ids
+        assert "same-bucket-final" in selected_ids
+        assert sum(sum(state["scores"]) == 4 for state in selected) == 2
+
+    def test_player_score_permutation_does_not_change_bucket_or_selection(self) -> None:
+        games = [self._game(10, [4] * 8 + [5] * 2 + [9] * 2)]
+        rotated = [self._game(10, [4] * 8 + [5] * 2 + [9] * 2)]
+        for state in rotated[0]["states"]:
             state["scores"].reverse()
 
-        assert [state["id"] for state in _select_state_entries(game, 2)] == [
-            state["id"] for state in _select_state_entries(rotated, 2)
+        original_ids = [
+            state["id"] for state in self._flatten(_select_state_entries(games, "median", 0.0))
         ]
+        rotated_ids = [
+            state["id"] for state in self._flatten(_select_state_entries(rotated, "median", 0.0))
+        ]
+
+        assert original_ids == rotated_ids
 
 
 # ---------------------------------------------------------------------------

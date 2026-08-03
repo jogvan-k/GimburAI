@@ -62,9 +62,10 @@
     // turnNumber / game.turns. Placement states use the start weight.
     "mctsValueWeightStart": 0.9,
     "mctsValueWeightEnd": 0.1,
-    // Full-state pipelines deterministically cap each max-VP progress stratum.
+    // Full-state datasets adaptively cap total-VP buckets after splitting.
     // Placement datasets are not sampled.
-    "maxStatesPerVictoryPoint": 20,
+    "victoryPointSamplingStatistic": "median",
+    "victoryPointSamplingUpperPercentage": 0.10,
     "valueLossWeight": 1.0,
     "policyLossWeight": 1.0,
     // Enable per-epoch checkpointing for training recovery.
