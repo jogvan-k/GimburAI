@@ -148,6 +148,25 @@ public class CatanStateLeafEvaluatorTests
         Assert.That(evaluator.WaitForResults(25), Is.False);
     }
 
+    [Test]
+    public void WaitForResults_ReturnsImmediatelyWhenResponseArrivedBeforeWait()
+    {
+        using var handler = new RecordingHandler();
+        using var evaluator = CreateEvaluator(handler);
+        Assert.That(evaluator.Enqueue(1, [CreateState()], 1), Is.True);
+        Assert.That(handler.EnqueueReceived.Wait(TimeSpan.FromSeconds(2)), Is.True);
+        handler.CollectResponses.Enqueue(
+            "{\"responses\":[{\"id\":\"1\",\"values\":[[0.5,0.5]]}]}");
+        Assert.That(handler.CollectResponseServed.Wait(TimeSpan.FromSeconds(2)), Is.True);
+        Thread.Sleep(25);
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var woke = evaluator.WaitForResults(1000);
+
+        Assert.That(woke, Is.True);
+        Assert.That(stopwatch.ElapsedMilliseconds, Is.LessThan(100));
+    }
+
     private static Gimbur.CatanState CreateState() =>
         new(GameConfig.Mini, 2, new Random(42));
 

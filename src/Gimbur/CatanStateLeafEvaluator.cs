@@ -216,9 +216,14 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
 
     public bool WaitForResults(int timeoutMs)
     {
-        var observedVersion = Volatile.Read(ref _completionVersion);
         lock (_mailboxLock)
         {
+            // A response may arrive after the caller's Collect and before this
+            // method acquires the lock. In that case do not wait for another
+            // completion that may never come.
+            if (!_mailbox.IsEmpty)
+                return true;
+            var observedVersion = _completionVersion;
             var remainingMs = Math.Max(0, timeoutMs);
             var deadline = Environment.TickCount64 + remainingMs;
             while (_completionVersion == observedVersion)
