@@ -24,12 +24,12 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
     private readonly ConcurrentDictionary<long, long> _submittedAt = new();
     private readonly BlockingCollection<QueuedLeafRequest> _pending;
     private readonly BlockingCollection<long[]> _pendingCancellations = new();
-    private readonly AutoResetEvent _completed = new(false);
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Thread _senderThread;
     private readonly Thread _pollThread;
     private readonly int _batchSize;
     private readonly int _batchWindowMs;
+    private long _completionVersion;
     private int _disposeStarted;
     private volatile bool _disposed;
 
@@ -191,7 +191,7 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
             if (!_submittedAt.TryRemove(requestId, out _))
                 return;
             _mailbox.Enqueue(new LeafEvaluationResponse(requestId, [], 0));
-            _completed.Set();
+            NotifyCompletion();
         }
     }
 
@@ -214,7 +214,22 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
         }
     }
 
-    public bool WaitForResults(int timeoutMs) => _completed.WaitOne(Math.Max(0, timeoutMs));
+    public bool WaitForResults(int timeoutMs)
+    {
+        var observedVersion = Volatile.Read(ref _completionVersion);
+        lock (_mailboxLock)
+        {
+            var remainingMs = Math.Max(0, timeoutMs);
+            var deadline = Environment.TickCount64 + remainingMs;
+            while (_completionVersion == observedVersion)
+            {
+                if (remainingMs == 0 || !Monitor.Wait(_mailboxLock, remainingMs))
+                    return false;
+                remainingMs = (int)Math.Min(int.MaxValue, Math.Max(0, deadline - Environment.TickCount64));
+            }
+            return true;
+        }
+    }
 
     public void Cancel(IReadOnlySet<long> requestIds)
     {
@@ -234,6 +249,7 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
             }
             foreach (var response in keep)
                 _mailbox.Enqueue(response);
+            NotifyCompletion();
         }
 
         try
@@ -257,22 +273,25 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
                 {
                     var payload = response.Content.ReadFromJsonAsync<LeafCollectPayload>(JsonOptions)
                         .GetAwaiter().GetResult();
-                    foreach (var item in payload?.Responses ?? [])
+                    lock (_mailboxLock)
                     {
-                        if (!long.TryParse(item.Id, out var requestId))
-                            continue;
-                        // A cancelled search no longer owns this response. Discard it
-                        // instead of leaving an uncollectable mailbox entry forever.
-                        lock (_mailboxLock)
+                        var addedResponse = false;
+                        foreach (var item in payload?.Responses ?? [])
                         {
+                            if (!long.TryParse(item.Id, out var requestId))
+                                continue;
+                            // A cancelled search no longer owns this response. Discard it
+                            // instead of leaving an uncollectable mailbox entry forever.
                             if (!_submittedAt.TryRemove(requestId, out var submitted))
                                 continue;
                             var values = item.Values.Select(vector =>
                                 Array.ConvertAll(vector, value => (double)value)).ToArray();
                             _mailbox.Enqueue(new LeafEvaluationResponse(
                                 requestId, values, Math.Max(0, Environment.TickCount64 - submitted)));
-                            _completed.Set();
+                            addedResponse = true;
                         }
+                        if (addedResponse)
+                            NotifyCompletion();
                     }
                 }
             }
@@ -294,14 +313,20 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
         _pendingCancellations.CompleteAdding();
         _shutdown.Cancel();
         _http.CancelPendingRequests();
-        _completed.Set();
+        lock (_mailboxLock)
+            NotifyCompletion();
         _senderThread.Join();
         _pollThread.Join();
         _pending.Dispose();
         _pendingCancellations.Dispose();
         _shutdown.Dispose();
-        _completed.Dispose();
         _http.Dispose();
+    }
+
+    private void NotifyCompletion()
+    {
+        _completionVersion++;
+        Monitor.PulseAll(_mailboxLock);
     }
 
     private sealed class QueuedLeafRequest

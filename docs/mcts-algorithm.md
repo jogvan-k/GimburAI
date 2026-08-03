@@ -834,7 +834,8 @@ search deadline, Kjarni stops enqueueing, drains responses for at most
 If every selectable path is reserved, or `MaxPendingEvaluations` is reached, the
 search calls `ILeafEvaluator.WaitForResults` rather than spinning. A shared HTTP
 evaluator can therefore batch work from other concurrent games while each blocked
-search sleeps on the same completion signal.
+search sleeps on the same completion signal. Completion is broadcast so one response
+batch wakes every blocked search, which then collects only its own request IDs.
 
 The HTTP evaluator also coalesces locally queued leaves for 2 ms, sending up to 64
 requests in one `/state/leaf-enqueue` POST. Cancelled requests are omitted before

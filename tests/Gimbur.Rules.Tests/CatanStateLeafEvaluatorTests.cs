@@ -100,6 +100,54 @@ public class CatanStateLeafEvaluatorTests
         Assert.That(responses.Single().Values, Is.Empty);
     }
 
+    [Test]
+    public void CollectResponse_WakesAllWaitersAndRetainsResponsesForEachSearch()
+    {
+        using var handler = new RecordingHandler();
+        using var evaluator = CreateEvaluator(handler);
+        var state = CreateState();
+
+        Assert.That(evaluator.Enqueue(1, [state], 1), Is.True);
+        Assert.That(evaluator.Enqueue(2, [state], 1), Is.True);
+        Assert.That(handler.EnqueueReceived.Wait(TimeSpan.FromSeconds(2)), Is.True);
+
+        using var ready = new CountdownEvent(2);
+        var first = WaitAndCollect(1);
+        var second = WaitAndCollect(2);
+        Assert.That(ready.Wait(TimeSpan.FromSeconds(2)), Is.True);
+        Thread.Sleep(50);
+
+        handler.CollectResponses.Enqueue(
+            "{\"responses\":[{\"id\":\"1\",\"values\":[[0.25,0.75]]}," +
+            "{\"id\":\"2\",\"values\":[[0.6,0.4]]}]}");
+
+        Assert.That(Task.WaitAll([first, second], TimeSpan.FromSeconds(2)), Is.True);
+        Assert.Multiple(() =>
+        {
+            Assert.That(first.Result.Woke, Is.True);
+            Assert.That(first.Result.Responses.Single().RequestId, Is.EqualTo(1));
+            Assert.That(second.Result.Woke, Is.True);
+            Assert.That(second.Result.Responses.Single().RequestId, Is.EqualTo(2));
+        });
+
+        Task<(bool Woke, LeafEvaluationResponse[] Responses)> WaitAndCollect(long requestId) =>
+            Task.Run(() =>
+            {
+                ready.Signal();
+                var woke = evaluator.WaitForResults(2000);
+                return (woke, evaluator.Collect(new HashSet<long> { requestId }));
+            });
+    }
+
+    [Test]
+    public void WaitForResults_TimesOutWithoutCompletion()
+    {
+        using var handler = new RecordingHandler();
+        using var evaluator = CreateEvaluator(handler);
+
+        Assert.That(evaluator.WaitForResults(25), Is.False);
+    }
+
     private static Gimbur.CatanState CreateState() =>
         new(GameConfig.Mini, 2, new Random(42));
 
