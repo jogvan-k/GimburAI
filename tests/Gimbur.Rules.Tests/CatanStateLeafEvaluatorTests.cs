@@ -45,6 +45,33 @@ public class CatanStateLeafEvaluatorTests
     }
 
     [Test]
+    public void Cancel_PostsOnePayloadAndDiscardsLateResponse()
+    {
+        using var handler = new RecordingHandler();
+        using var evaluator = CreateEvaluator(handler);
+        var known = new HashSet<long> { 1, 2 };
+
+        Assert.That(evaluator.Enqueue(1, [CreateState()], 1), Is.True);
+        Assert.That(evaluator.Enqueue(2, [CreateState()], 1), Is.True);
+        Assert.That(handler.EnqueueReceived.Wait(TimeSpan.FromSeconds(2)), Is.True);
+
+        evaluator.Cancel(known);
+
+        Assert.That(handler.CancelReceived.Wait(TimeSpan.FromSeconds(2)), Is.True);
+        Assert.That(handler.CancelBodies, Has.Count.EqualTo(1));
+        using var body = JsonDocument.Parse(handler.CancelBodies.Single());
+        Assert.That(
+            body.RootElement.GetProperty("ids").EnumerateArray().Select(x => x.GetString()),
+            Is.EquivalentTo(new[] { "1", "2" }));
+
+        handler.CollectResponses.Enqueue(
+            "{\"responses\":[{\"id\":\"1\",\"values\":[[0.5,0.5]]}]}");
+        Assert.That(handler.CollectResponseServed.Wait(TimeSpan.FromSeconds(2)), Is.True);
+        Thread.Sleep(50);
+        Assert.That(evaluator.Collect(known), Is.Empty);
+    }
+
+    [Test]
     public void EnqueueFailure_ProducesInvalidResponses()
     {
         using var handler = new RecordingHandler(HttpStatusCode.ServiceUnavailable);
@@ -103,7 +130,11 @@ public class CatanStateLeafEvaluatorTests
         : HttpMessageHandler
     {
         public ConcurrentQueue<string> EnqueueBodies { get; } = new();
+        public ConcurrentQueue<string> CancelBodies { get; } = new();
+        public ConcurrentQueue<string> CollectResponses { get; } = new();
         public ManualResetEventSlim EnqueueReceived { get; } = new();
+        public ManualResetEventSlim CancelReceived { get; } = new();
+        public ManualResetEventSlim CollectResponseServed { get; } = new();
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -115,8 +146,18 @@ public class CatanStateLeafEvaluatorTests
                 EnqueueReceived.Set();
                 return Response(enqueueStatus, acknowledgment);
             }
+            if (request.RequestUri.AbsolutePath.EndsWith("/state/leaf-cancel", StringComparison.Ordinal))
+            {
+                CancelBodies.Enqueue(await request.Content!.ReadAsStringAsync(cancellationToken));
+                CancelReceived.Set();
+                return Response(HttpStatusCode.OK, "{\"removed_queued\":0,\"removed_results\":0}");
+            }
 
-            return Response(HttpStatusCode.OK, "{\"responses\":[]}");
+            if (!CollectResponses.TryDequeue(out var collect))
+                return Response(HttpStatusCode.OK, "{\"responses\":[]}");
+
+            CollectResponseServed.Set();
+            return Response(HttpStatusCode.OK, collect);
         }
 
         private static HttpResponseMessage Response(HttpStatusCode status, string json) =>

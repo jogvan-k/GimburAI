@@ -12,13 +12,16 @@ from test_data_loader import MINI_BOARD, MINI_STATE_ONLY
 
 from gimbur_nn.game_config import MINI_2P
 from gimbur_nn.serve import (
+    LeafCancelRequest,
     LeafEnqueueRequest,
     LeafRequest,
+    LeafResponseItem,
     PlacementPriorRequest,
     PredictPlacementRequest,
     PredictPlacementResponse,
     PredictPlayerRequest,
     PredictResponse,
+    PriorQueue,
     PriorResponseItem,
     _load_checkpoint,
     create_app,
@@ -188,6 +191,56 @@ def test_leaf_enqueue_reports_dropped_request_id() -> None:
         "accepted_ids": [],
         "dropped_ids": ["urgent"],
     }
+
+
+def test_leaf_cancel_endpoint_reports_removed_counts() -> None:
+    app = create_app(
+        state_model=torch.nn.Identity(),
+        state_device=torch.device("cpu"),
+        state_game_cfg=MINI_2P,
+    )
+    enqueue = next(route.endpoint for route in app.routes if route.path == "/state/leaf-enqueue")
+    cancel = next(route.endpoint for route in app.routes if route.path == "/state/leaf-cancel")
+    asyncio.run(
+        enqueue(
+            LeafEnqueueRequest(
+                requests=[LeafRequest(id="cancel", states=["state"], priority=1)]
+            )
+        )
+    )
+
+    response = asyncio.run(cancel(LeafCancelRequest(ids=["cancel", "unknown"])))
+
+    assert response.removed_queued == 1
+    assert response.removed_results == 0
+
+
+def test_leaf_queue_cancellation_removes_queued_request() -> None:
+    queue: PriorQueue[LeafRequest] = PriorQueue()
+    queue.enqueue(LeafRequest(id="keep", states=["state"], priority=2))
+    queue.enqueue(LeafRequest(id="cancel", states=["state"], priority=1))
+
+    assert queue.cancel({"cancel"}) == (1, 0)
+    assert [request.id for request in queue.dequeue_batch(2)] == ["keep"]
+
+
+def test_leaf_queue_cancellation_removes_completed_result() -> None:
+    queue: PriorQueue[LeafRequest] = PriorQueue()
+    queue.add_results([LeafResponseItem(id="cancel", values=[[0.5, 0.5]])])
+
+    assert queue.cancel({"cancel"}) == (0, 1)
+    assert queue.collect_results() == []
+
+
+def test_leaf_queue_cancellation_suppresses_in_flight_result() -> None:
+    queue: PriorQueue[LeafRequest] = PriorQueue()
+    queue.enqueue(LeafRequest(id="cancel", states=["state"], priority=1))
+    assert [request.id for request in queue.dequeue_batch(1)] == ["cancel"]
+
+    assert queue.cancel({"cancel"}) == (0, 0)
+    queue.add_results([LeafResponseItem(id="cancel", values=[[0.5, 0.5]])])
+
+    assert queue.collect_results() == []
 
 
 @pytest.mark.parametrize("architecture", ["state_player_value_v1", "placement_state_v3"])

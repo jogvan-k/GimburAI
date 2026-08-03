@@ -212,6 +212,15 @@ class LeafCollectResponse(BaseModel):
     responses: list[LeafResponseItem]
 
 
+class LeafCancelRequest(BaseModel):
+    ids: list[str]
+
+
+class LeafCancelResponse(BaseModel):
+    removed_queued: int
+    removed_results: int
+
+
 # ── Placement prior queue models ──────────────────────────────────────────────
 
 
@@ -263,6 +272,8 @@ class PriorQueue(Generic[T]):
         self._seq = 0
         # Completed results waiting to be collected.
         self._results: list[PriorResponseItem] = []
+        self._in_flight: set[str] = set()
+        self._cancelled: set[str] = set()
 
     def enqueue(self, req: T) -> bool:
         """Add a request.  Returns True if accepted, False if dropped."""
@@ -318,12 +329,35 @@ class PriorQueue(Generic[T]):
             for _ in range(min(batch_size, len(self._heap))):
                 _, _, req = heapq.heappop(self._heap)
                 batch.append(req)
+                self._in_flight.add(req.id)  # type: ignore[union-attr]
             return batch
 
     def add_results(self, results: list[PriorResponseItem]) -> None:
         """Add completed inference results to the collection buffer."""
         with self._lock:
-            self._results.extend(results)
+            for result in results:
+                self._in_flight.discard(result.id)
+                if result.id in self._cancelled:
+                    self._cancelled.remove(result.id)
+                else:
+                    self._results.append(result)
+
+    def cancel(self, ids: set[str]) -> tuple[int, int]:
+        """Remove queued/completed IDs and suppress results already in flight."""
+        with self._lock:
+            queued_before = len(self._heap)
+            self._heap = [
+                item for item in self._heap if item[2].id not in ids  # type: ignore[union-attr]
+            ]
+            removed_queued = queued_before - len(self._heap)
+            if removed_queued:
+                heapq.heapify(self._heap)
+
+            results_before = len(self._results)
+            self._results = [result for result in self._results if result.id not in ids]
+            removed_results = results_before - len(self._results)
+            self._cancelled.update(ids & self._in_flight)
+            return removed_queued, removed_results
 
     def collect_results(self) -> list[PriorResponseItem]:
         """Drain and return all completed results."""
@@ -337,6 +371,8 @@ class PriorQueue(Generic[T]):
         with self._lock:
             self._heap.clear()
             self._results.clear()
+            self._in_flight.clear()
+            self._cancelled.clear()
             self._seq = 0
 
     def pending_count(self) -> int:
@@ -784,6 +820,14 @@ def create_app(
         @app.post("/state/leaf-collect", response_model=LeafCollectResponse)
         async def leaf_collect() -> LeafCollectResponse:
             return LeafCollectResponse(responses=leaf_queue.collect_results())  # type: ignore[arg-type]
+
+        @app.post("/state/leaf-cancel", response_model=LeafCancelResponse)
+        async def leaf_cancel(request: LeafCancelRequest) -> LeafCancelResponse:
+            removed_queued, removed_results = leaf_queue.cancel(set(request.ids))
+            return LeafCancelResponse(
+                removed_queued=removed_queued,
+                removed_results=removed_results,
+            )
 
         @app.post("/state/prior-flush")
         async def prior_flush() -> dict[str, str]:

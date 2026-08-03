@@ -145,6 +145,9 @@ batches before enqueueing them on the server. The enqueue acknowledgment include
 accepted and dropped request IDs; dropped or failed requests become immediate invalid
 responses, while cancellation removes ownership so late results are discarded. Leaf
 admission does not evict older work because that work may belong to another client.
+`POST /state/leaf-cancel` accepts `{"ids":[...]}`, removes matching queued and
+completed results, and tombstones in-flight IDs until their inference finishes so
+they cannot appear in a later collect response.
 
 In `placement-and-state` simulation, main-game MCTS uses uniform PUCT with the
 state model as its leaf evaluator. It does not also request child-state value
