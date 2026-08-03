@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -129,6 +130,64 @@ def test_leaf_queue_batches_all_outcomes_into_one_model_invocation() -> None:
     assert result.responses[0].id == "chance"
     assert len(result.responses[0].values) == 3
     assert result.responses[0].values[0] == pytest.approx([0.880797, 0.119203])
+
+
+def test_leaf_enqueue_reports_accepted_request_ids() -> None:
+    app = create_app(
+        state_model=torch.nn.Identity(),
+        state_device=torch.device("cpu"),
+        state_game_cfg=MINI_2P,
+    )
+    enqueue = next(route.endpoint for route in app.routes if route.path == "/state/leaf-enqueue")
+
+    response = asyncio.run(
+        enqueue(
+            LeafEnqueueRequest(
+                requests=[
+                    LeafRequest(id="first", states=["state"], priority=1),
+                    LeafRequest(id="second", states=["state"], priority=2),
+                ]
+            )
+        )
+    )
+
+    assert json.loads(response.body) == {
+        "accepted": 2,
+        "dropped": 0,
+        "accepted_ids": ["first", "second"],
+        "dropped_ids": [],
+    }
+
+
+def test_leaf_enqueue_reports_dropped_request_id() -> None:
+    app = create_app(
+        state_model=torch.nn.Identity(),
+        state_device=torch.device("cpu"),
+        state_game_cfg=MINI_2P,
+    )
+    enqueue = next(route.endpoint for route in app.routes if route.path == "/state/leaf-enqueue")
+
+    async def fill_and_drop() -> object:
+        await enqueue(
+            LeafEnqueueRequest(
+                requests=[
+                    LeafRequest(id=f"queued-{i}", states=["state"], priority=10)
+                    for i in range(4096)
+                ]
+            )
+        )
+        return await enqueue(
+            LeafEnqueueRequest(requests=[LeafRequest(id="urgent", states=["state"], priority=0)])
+        )
+
+    response = asyncio.run(fill_and_drop())
+
+    assert json.loads(response.body) == {
+        "accepted": 0,
+        "dropped": 1,
+        "accepted_ids": [],
+        "dropped_ids": ["urgent"],
+    }
 
 
 @pytest.mark.parametrize("architecture", ["state_player_value_v1", "placement_state_v3"])

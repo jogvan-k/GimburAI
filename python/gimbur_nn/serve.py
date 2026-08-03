@@ -266,12 +266,17 @@ class PriorQueue(Generic[T]):
 
     def enqueue(self, req: T) -> bool:
         """Add a request.  Returns True if accepted, False if dropped."""
+        accepted, _ = self.enqueue_with_evicted(req)
+        return accepted
+
+    def enqueue_with_evicted(self, req: T) -> tuple[bool, T | None]:
+        """Add a request and return any lower-priority request it evicted."""
         priority: int = req.priority  # type: ignore[union-attr]
         with self._lock:
             if len(self._heap) < self._capacity:
                 heapq.heappush(self._heap, (priority, self._seq, req))
                 self._seq += 1
-                return True
+                return True, None
             # Queue full — check if the new request is higher priority
             # than the worst (highest priority value) in the heap.
             # Since this is a min-heap, the worst is *not* at index 0.
@@ -286,14 +291,25 @@ class PriorQueue(Generic[T]):
                     range(len(self._heap)),
                     key=lambda i: (self._heap[i][0], self._heap[i][1]),
                 )
+                evicted = self._heap[worst_idx][2]
                 self._heap[worst_idx] = self._heap[-1]
                 self._heap.pop()
                 heapq.heapify(self._heap)
                 heapq.heappush(self._heap, (priority, self._seq, req))
                 self._seq += 1
-                return True
+                return True, evicted
             # New request is lower priority — drop it.
-            return False
+            return False, None
+
+    def enqueue_without_eviction(self, req: T) -> bool:
+        """Add a request only when capacity is available."""
+        priority: int = req.priority  # type: ignore[union-attr]
+        with self._lock:
+            if len(self._heap) >= self._capacity:
+                return False
+            heapq.heappush(self._heap, (priority, self._seq, req))
+            self._seq += 1
+            return True
 
     def dequeue_batch(self, batch_size: int) -> list[T]:
         """Remove and return up to *batch_size* highest-priority requests."""
@@ -750,10 +766,19 @@ def create_app(
 
         @app.post("/state/leaf-enqueue", status_code=202)
         async def leaf_enqueue(request: LeafEnqueueRequest) -> JSONResponse:
-            accepted = sum(1 for item in request.requests if leaf_queue.enqueue(item))
+            accepted_ids: list[str] = []
+            dropped_ids: list[str] = []
+            for item in request.requests:
+                target = accepted_ids if leaf_queue.enqueue_without_eviction(item) else dropped_ids
+                target.append(item.id)
             return JSONResponse(
                 status_code=202,
-                content={"accepted": accepted, "dropped": len(request.requests) - accepted},
+                content={
+                    "accepted": len(accepted_ids),
+                    "dropped": len(dropped_ids),
+                    "accepted_ids": accepted_ids,
+                    "dropped_ids": dropped_ids,
+                },
             )
 
         @app.post("/state/leaf-collect", response_model=LeafCollectResponse)

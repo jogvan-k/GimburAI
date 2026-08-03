@@ -140,6 +140,12 @@ client completion event when the tree is blocked, allowing the shared evaluator 
 spend that time batching other games. Completed evaluations, not submissions, are
 the simulation and visit counts.
 
+The C# transport uses a bounded local queue and coalesces leaves into short-window
+batches before enqueueing them on the server. The enqueue acknowledgment includes
+accepted and dropped request IDs; dropped or failed requests become immediate invalid
+responses, while cancellation removes ownership so late results are discarded. Leaf
+admission does not evict older work because that work may belong to another client.
+
 In `placement-and-state` simulation, main-game MCTS uses uniform PUCT with the
 state model as its leaf evaluator. It does not also request child-state value
 "priors": that would duplicate state-model inference for every expansion and
