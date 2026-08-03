@@ -140,6 +140,12 @@ client completion event when the tree is blocked, allowing the shared evaluator 
 spend that time batching other games. Completed evaluations, not submissions, are
 the simulation and visit counts.
 
+In `placement-and-state` simulation, main-game MCTS uses uniform PUCT with the
+state model as its leaf evaluator. It does not also request child-state value
+"priors": that would duplicate state-model inference for every expansion and
+starve the shared leaf queue. Placement MCTS still uses the placement policy head
+for PUCT and the state value model at the exact `PreRoll` horizon.
+
 Placement prior responses already contain their node's full player distribution.
 Kjarni consumes that value when the prior response is available at expansion, so a
 placement policy/value prediction can serve both purposes without another HTTP

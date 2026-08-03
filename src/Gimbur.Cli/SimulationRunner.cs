@@ -618,7 +618,10 @@ internal class SimulationRunner
             if (isCombinedExport)
             {
                 placementPriorClient = priorClient;
-                priorClient = new PriorClient(_options.NnUrl, PriorMode.State);
+                // The state model is a value-only leaf evaluator. Submitting an
+                // additional child-state prior request duplicates inference and
+                // can starve the shared leaf queue.
+                priorClient = null;
             }
         }
 
@@ -1123,7 +1126,7 @@ internal class SimulationRunner
             _options.MaxRolloutDepth,
             System.Math.Sqrt(2.0),
             _options.ActionRolloutLimit,
-            placement ? placementPriorClient : statePriorClient,
+            placement ? placementPriorClient : combined ? null : statePriorClient,
             _options.Prior && _options.ExportType != ExportType.InitialPlacement
                 ? CatanStateLeafEvaluatorPool.Get(_options.NnUrl)
                 : null,
