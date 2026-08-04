@@ -307,7 +307,7 @@ Root (settlement choices)
 
 Each composite action maps to a specific road grandchild. The `wins` and `rollouts` are read directly from that grandchild MCTS node. This provides per-(vertex, road) granularity, allowing the model to learn directional road preferences.
 
-For unexplored actions, the action remains in the export with `wins: []`, `rollouts: 0`, and `winRate: 0`. Python maps all listed actions to the dense legal mask. In combined training, visit shares from a normal shared-root MCTS search form the policy target and policy loss is masked to these legal indices.
+For unexplored actions, the action remains in the export with `wins: []`, `rollouts: 0`, and `winRate: 0`. Python maps all listed actions to the dense legal mask. In combined training, visit shares from a normal shared-root MCTS search form the policy target and policy loss is masked to these legal indices. Training can apply `policyTargetTemperature` to positive legal shares before loss calculation; this changes only the supervised target, not this export or the MCTS search that generated it. Zero shares and legality are preserved.
 
 `--simulations-per-action` runs separate rollouts from each post-composite state. Those rollout counts measure independent evaluation budgets, not shared-root action preference, and are therefore unsuitable as policy targets. Use standard shared-root placement search when training a combined value/policy model. `valueTarget` remains the rollout-weighted value label.
 

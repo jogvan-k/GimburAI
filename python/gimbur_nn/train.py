@@ -114,6 +114,7 @@ _CONFIG_KEYS: dict[str, str] = {
     "advantage": "advantage",
     "valueLossWeight": "value_loss_weight",
     "policyLossWeight": "policy_loss_weight",
+    "policyTargetTemperature": "policy_target_temperature",
     "mctsValueWeightStart": "mcts_value_weight_start",
     "mctsValueWeightEnd": "mcts_value_weight_end",
     "victoryPointSamplingStatistic": "victory_point_sampling_statistic",
@@ -185,6 +186,7 @@ def _build_dataset(
             target=effective_target,
             advantage=args.advantage,
             mcts_value_weight_start=args.mcts_value_weight_start,
+            policy_target_temperature=args.policy_target_temperature,
         )
     return dataset_class(
         games,
@@ -254,6 +256,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--value-loss-weight", type=float, default=1.0)
     parser.add_argument("--policy-loss-weight", type=float, default=1.0)
+    parser.add_argument(
+        "--policy-target-temperature",
+        type=float,
+        default=1.0,
+        help="Placement policy target temperature; must be greater than zero.",
+    )
     parser.add_argument("--mcts-value-weight-start", type=float, default=0.9)
     parser.add_argument("--mcts-value-weight-end", type=float, default=0.1)
     parser.add_argument(
@@ -349,6 +357,7 @@ _ARG_DEFAULTS: dict[str, object] = {
     "advantage": False,
     "value_loss_weight": 1.0,
     "policy_loss_weight": 1.0,
+    "policy_target_temperature": 1.0,
     "mcts_value_weight_start": 0.9,
     "mcts_value_weight_end": 0.1,
     "victory_point_sampling_statistic": "median",
@@ -561,6 +570,8 @@ def main() -> None:
         )
     if args.model_type == "placement" and args.output_mode == "policy":
         raise SystemExit("Error: placement models support only value or combined output modes.")
+    if args.model_type == "placement" and not args.policy_target_temperature > 0:
+        raise SystemExit("Error: --policy-target-temperature must be greater than zero.")
 
     game_cfg = CONFIGS_BY_NAME[args.game_config]
     model_cfg = MODEL_CONFIGS_BY_NAME[args.model_config]

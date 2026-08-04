@@ -26,6 +26,12 @@ def test_train_config_loads_replay_window() -> None:
     assert config.replay_generations == 5
 
 
+def test_train_config_loads_policy_target_temperature() -> None:
+    config = _load_section(TrainConfig, {"policyTargetTemperature": 0.5})
+
+    assert config.policy_target_temperature == 0.5
+
+
 def test_train_config_loads_value_blending_and_state_sampling() -> None:
     config = _load_section(
         TrainConfig,
@@ -140,6 +146,7 @@ def test_step_train_passes_value_blending_and_state_sampling(tmp_path, monkeypat
     assert config["mctsValueWeightEnd"] == 0.25
     assert config["victoryPointSamplingStatistic"] == "average"
     assert config["victoryPointSamplingUpperPercentage"] == 0.25
+    assert "policyTargetTemperature" not in config
 
 
 def test_placement_and_state_generates_shared_sim_and_separate_train_configs(
@@ -152,7 +159,9 @@ def test_placement_and_state_generates_shared_sim_and_separate_train_configs(
         placement_model_config="placement-small",
         state_model_config="state-small",
         simulate=SimulateConfig(games=1),
-        placement_train=TrainConfig(batch_size=11, mcts_value_weight_start=0.8),
+        placement_train=TrainConfig(
+            batch_size=11, mcts_value_weight_start=0.8, policy_target_temperature=0.5
+        ),
         state_train=TrainConfig(batch_size=22, mcts_value_weight_start=0.7),
     )
     monkeypatch.setattr(
@@ -178,6 +187,7 @@ def test_placement_and_state_generates_shared_sim_and_separate_train_configs(
     assert state["batchSize"] == 22
     assert placement["mctsValueWeightStart"] == 0.8
     assert state["mctsValueWeightStart"] == 0.7
+    assert placement["policyTargetTemperature"] == 0.5
 
 
 def test_placement_and_state_resume_requires_shared_data_and_both_models(tmp_path) -> None:
@@ -238,9 +248,7 @@ def test_progress_chart_accepts_confidence_error_bars(tmp_path) -> None:
     pytest.importorskip("matplotlib")
     cfg = PipelineConfig(
         results_dir=str(tmp_path),
-        benchmarks=[
-            BenchmarkConfig(name="hybrid", ai=["nn-placement-state", "greedy"])
-        ],
+        benchmarks=[BenchmarkConfig(name="hybrid", ai=["nn-placement-state", "greedy"])],
     )
     results = {
         0: {

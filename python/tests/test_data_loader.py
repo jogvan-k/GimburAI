@@ -661,6 +661,87 @@ class TestExpandPlacementGames:
         assert perm_policy[tok.tokenize_action("6N")] == pytest.approx(0.7)
         assert identity_mask.sum() == perm_mask.sum() == 2
 
+    def test_policy_temperature_one_preserves_exact_visit_shares(self) -> None:
+        from gimbur_nn.data_loader import expand_placement_games
+        from gimbur_nn.placement_tokenizer import PlacementTokenizer
+
+        tok = PlacementTokenizer(MINI_2P)
+        default_policy = expand_placement_games(
+            [_placement_game()], MINI_2P, tokenizer=tok, target="combined"
+        )[0][2]
+        temperature_one_policy = expand_placement_games(
+            [_placement_game()],
+            MINI_2P,
+            tokenizer=tok,
+            target="combined",
+            policy_target_temperature=1.0,
+        )[0][2]
+
+        assert torch.equal(temperature_one_policy, default_policy)
+
+    def test_policy_temperature_half_squares_and_normalizes(self) -> None:
+        from gimbur_nn.data_loader import expand_placement_games
+        from gimbur_nn.placement_tokenizer import PlacementTokenizer
+
+        tok = PlacementTokenizer(MINI_2P)
+        policy = expand_placement_games(
+            [_placement_game()],
+            MINI_2P,
+            tokenizer=tok,
+            target="combined",
+            policy_target_temperature=0.5,
+        )[0][2]
+
+        assert policy[tok.tokenize_action("0SE")] == pytest.approx(0.3**2 / (0.3**2 + 0.7**2))
+        assert policy[tok.tokenize_action("5N")] == pytest.approx(0.7**2 / (0.3**2 + 0.7**2))
+
+    def test_policy_temperature_preserves_zero_shares_and_legal_mask(self) -> None:
+        from gimbur_nn.data_loader import expand_placement_games
+        from gimbur_nn.placement_tokenizer import PlacementTokenizer
+
+        tok = PlacementTokenizer(MINI_2P)
+        _, _, policy, legal_mask = expand_placement_games(
+            [_placement_game(rollouts=(0, 70))],
+            MINI_2P,
+            tokenizer=tok,
+            target="combined",
+            policy_target_temperature=0.1,
+        )[0]
+
+        zero_idx = tok.tokenize_action("0SE")
+        assert policy[zero_idx] == 0
+        assert legal_mask[zero_idx]
+        assert legal_mask.sum() == 2
+
+    def test_extremely_small_policy_temperature_is_stable(self) -> None:
+        from gimbur_nn.data_loader import expand_placement_games
+        from gimbur_nn.placement_tokenizer import PlacementTokenizer
+
+        tok = PlacementTokenizer(MINI_2P)
+        policy = expand_placement_games(
+            [_placement_game()],
+            MINI_2P,
+            tokenizer=tok,
+            target="combined",
+            policy_target_temperature=1e-320,
+        )[0][2]
+
+        assert torch.isfinite(policy).all()
+        assert policy.sum() == 1
+        assert policy[tok.tokenize_action("5N")] == 1
+
+    @pytest.mark.parametrize("temperature", [0.0, -0.5, float("nan")])
+    def test_rejects_invalid_policy_temperature(self, temperature: float) -> None:
+        from gimbur_nn.data_loader import expand_placement_games
+
+        with pytest.raises(ValueError, match="temperature must be greater than zero"):
+            expand_placement_games(
+                [_placement_game()],
+                MINI_2P,
+                target="combined",
+                policy_target_temperature=temperature,
+            )
+
     def test_combined_skips_zero_total_rollouts(self) -> None:
         from gimbur_nn.data_loader import expand_placement_games
 

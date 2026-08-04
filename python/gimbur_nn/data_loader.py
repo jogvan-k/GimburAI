@@ -428,6 +428,7 @@ def expand_placement_games(
     target: str = "winrate",
     advantage: bool = False,
     mcts_value_weight_start: float = 0.9,
+    policy_target_temperature: float = 1.0,
 ) -> list:
     """Emit one state sample per exported state and symmetry permutation.
 
@@ -439,10 +440,18 @@ def expand_placement_games(
         tokenizer = PlacementTokenizer(cfg)
     if target not in ("winrate", "combined"):
         raise ValueError("Placement target must be 'winrate' or 'combined'.")
+    if not policy_target_temperature > 0:
+        raise ValueError("Placement policy target temperature must be greater than zero.")
     samples: list = []
     for game in games:
         _process_placement_game(
-            game, cfg.player_count, samples, tokenizer, target, mcts_value_weight_start
+            game,
+            cfg.player_count,
+            samples,
+            tokenizer,
+            target,
+            mcts_value_weight_start,
+            policy_target_temperature,
         )
     return samples
 
@@ -454,6 +463,7 @@ def _process_placement_game(
     tokenizer: PlacementTokenizer,
     target: str = "winrate",
     mcts_value_weight_start: float = 0.9,
+    policy_target_temperature: float = 1.0,
 ) -> None:
     """Expand one placement game into state-level value/policy samples."""
     for state_entry in game.get("placementStates", game.get("states", [])):
@@ -502,6 +512,11 @@ def _process_placement_game(
                 action_idx = tokenizer.tokenize_action(action)
                 policy[action_idx] += rollout / total_rollouts
                 legal_mask[action_idx] = True
+            if policy_target_temperature != 1.0:
+                positive = policy > 0
+                log_weights = policy[positive].double().log()
+                weights = ((log_weights - log_weights.max()) / policy_target_temperature).exp()
+                policy[positive] = (weights / weights.sum()).float()
             samples.append((token_ids, value_target, policy, legal_mask))
 
 
@@ -519,6 +534,7 @@ class PlacementDataset(Dataset[tuple[torch.Tensor, ...]]):
         target: str = "winrate",
         advantage: bool = False,
         mcts_value_weight_start: float = 0.9,
+        policy_target_temperature: float = 1.0,
     ) -> None:
         tok = PlacementTokenizer(cfg)
         raw = expand_placement_games(
@@ -528,6 +544,7 @@ class PlacementDataset(Dataset[tuple[torch.Tensor, ...]]):
             target=target,
             advantage=advantage,
             mcts_value_weight_start=mcts_value_weight_start,
+            policy_target_temperature=policy_target_temperature,
         )
         self._combined = target == "combined"
         self._tokens = [t[0] for t in raw]

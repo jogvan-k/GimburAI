@@ -86,6 +86,7 @@ class TrainConfig:
     advantage: bool = False
     value_loss_weight: float = 1.0
     policy_loss_weight: float = 1.0
+    policy_target_temperature: float = 1.0
     mcts_value_weight_start: float = 0.9
     mcts_value_weight_end: float = 0.1
     victory_point_sampling_statistic: str = "median"
@@ -1060,10 +1061,7 @@ def _discard_stop_reason(directory: Path, sim: SimulateConfig) -> str | None:
         attempts >= sim.minimum_attempts_for_discard_rate
         and len(discarded) / max(1, attempts) > sim.max_discard_rate
     ):
-        return (
-            f"discard rate {len(discarded) / attempts:.2%} exceeded "
-            f"{sim.max_discard_rate:.2%}"
-        )
+        return f"discard rate {len(discarded) / attempts:.2%} exceeded {sim.max_discard_rate:.2%}"
 
     events = sorted(
         [(path.stat().st_mtime_ns, False) for path in accepted]
@@ -1073,10 +1071,7 @@ def _discard_stop_reason(directory: Path, sim: SimulateConfig) -> str | None:
     for _, is_discarded in events:
         consecutive = consecutive + 1 if is_discarded else 0
     if consecutive > sim.max_consecutive_discards:
-        return (
-            f"consecutive discards {consecutive} exceeded "
-            f"{sim.max_consecutive_discards}"
-        )
+        return f"consecutive discards {consecutive} exceeded {sim.max_consecutive_discards}"
     return None
 
 
@@ -1150,6 +1145,8 @@ def _step_train(
         "victoryPointSamplingStatistic": tr.victory_point_sampling_statistic,
         "victoryPointSamplingUpperPercentage": tr.victory_point_sampling_upper_percentage,
     }
+    if effective_type == "placement":
+        train_config["policyTargetTemperature"] = tr.policy_target_temperature
 
     # Enable per-epoch checkpointing if configured.
     if tr.checkpoint_dir:
@@ -1634,7 +1631,6 @@ def _run_combined_generation(
     """
     effective_placement_model_config = cfg.placement_model_config or cfg.model_config
 
-
     # ---------------------------------------------------------------
     # Step 1: Simulate placement states
     # ---------------------------------------------------------------
@@ -2033,7 +2029,12 @@ def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> Non
 
             if is_placement_and_state:
                 _run_placement_and_state_generation(
-                    cfg, gen, project_root, server, nn_url, all_results,
+                    cfg,
+                    gen,
+                    project_root,
+                    server,
+                    nn_url,
+                    all_results,
                     gimbur_server=gimbur_server,
                 )
             elif is_combined:
