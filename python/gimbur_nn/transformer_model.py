@@ -203,7 +203,7 @@ class GimburTransformer(nn.Module):
 
 
 class GimburPlacementTransformer(nn.Module):
-    """State-only placement model with pooled value and dense policy heads."""
+    """Placement model with pooled player-value and stage-policy heads."""
 
     def __init__(self, game_cfg: GameConfig, model_cfg: GimburTransformerConfig) -> None:
         super().__init__()
@@ -225,10 +225,9 @@ class GimburPlacementTransformer(nn.Module):
         self.final_ln = nn.LayerNorm(model_cfg.d_model)
 
         self.value_head = nn.Linear(model_cfg.d_model, game_cfg.player_count, bias=False)
-        if self.output_mode == "combined":
-            self.policy_head = nn.Linear(model_cfg.d_model, tok.action_vocab_size, bias=False)
+        self.policy_head = nn.Linear(model_cfg.d_model, tok.policy_size, bias=False)
 
-    def forward(self, token_ids: torch.Tensor) -> torch.Tensor | dict[str, torch.Tensor]:
+    def forward(self, token_ids: torch.Tensor) -> dict[str, torch.Tensor]:
         batch_size, seq_len = token_ids.shape
         positions = torch.arange(seq_len, device=token_ids.device).unsqueeze(0)
         x = self.tok_embeddings(token_ids) + self.pos_embeddings(positions)
@@ -237,9 +236,7 @@ class GimburPlacementTransformer(nn.Module):
         x = self.final_ln(x)
         pooled = x.mean(dim=1)
 
-        if self.output_mode == "combined":
-            return {
-                "value": self.value_head(pooled),
-                "policy": self.policy_head(pooled),
-            }
-        return self.value_head(pooled)
+        return {
+            "value": self.value_head(pooled),
+            "policy": self.policy_head(pooled),
+        }

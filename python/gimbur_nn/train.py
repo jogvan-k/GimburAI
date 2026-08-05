@@ -390,12 +390,15 @@ def _save_epoch_checkpoint(
     epochs_without_improvement: int,
 ) -> None:
     model_type = "placement" if isinstance(model, GimburPlacementTransformer) else "state"
+    architecture = (
+        "placement_stage_policy" if model_type == "placement" else "state_player_value_v1"
+    )
+    metadata = {"architecture": architecture}
+    if model_type == "state":
+        metadata["checkpoint_version"] = 3
     torch.save(
         {
-            "checkpoint_version": 3,
-            "architecture": (
-                "placement_state_v3" if model_type == "placement" else "state_player_value_v1"
-            ),
+            **metadata,
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
@@ -417,15 +420,17 @@ def _save_final_model(
     metadata fields (``model_type``, ``model_config``, ``game_config``,
     ``target``, ``output_mode``) that downstream consumers (training
     resume, the inference server) need to interpret the model correctly.
-    Existing checkpoints saved as a bare ``state_dict()`` can still be
-    loaded via :func:`_load_model_state` for backward compatibility.
+    Placement checkpoints identify the current-only architecture explicitly.
     """
+    architecture = (
+        "placement_stage_policy" if args.model_type == "placement" else "state_player_value_v1"
+    )
+    metadata = {"architecture": architecture}
+    if args.model_type == "state":
+        metadata["checkpoint_version"] = 3
     torch.save(
         {
-            "checkpoint_version": 3,
-            "architecture": (
-                "placement_state_v3" if args.model_type == "placement" else "state_player_value_v1"
-            ),
+            **metadata,
             "model_state_dict": model.state_dict(),
             "model_type": args.model_type,
             "model_config": args.model_config,
@@ -440,14 +445,16 @@ def _save_final_model(
 def _load_model_state(path: Path, device: torch.device, model_type: str) -> dict:
     """Load a player-value checkpoint and reject incompatible architectures."""
     raw = torch.load(path, map_location=device, weights_only=False)
-    architecture = "placement_state_v3" if model_type == "placement" else "state_player_value_v1"
+    architecture = (
+        "placement_stage_policy" if model_type == "placement" else "state_player_value_v1"
+    )
     if (
         not isinstance(raw, dict)
         or "model_state_dict" not in raw
-        or raw.get("checkpoint_version") != 3
         or raw.get("architecture") != architecture
+        or (model_type == "state" and raw.get("checkpoint_version") != 3)
     ):
-        raise ValueError(f"incompatible checkpoint; expected version 3 {architecture!r}")
+        raise ValueError(f"incompatible checkpoint; expected architecture {architecture!r}")
     return raw
 
 
@@ -523,7 +530,8 @@ def _run_epoch(
                 loss = value_loss_weight * value_loss + policy_loss_weight * policy_loss
             else:
                 targets = batch[1].to(device)
-                loss = soft_target_cross_entropy(output, targets)
+                value_logits = output["value"] if isinstance(output, dict) else output
+                loss = soft_target_cross_entropy(value_logits, targets)
 
             if is_train:
                 assert optimizer is not None
@@ -620,12 +628,16 @@ def main() -> None:
                 )
             ckpt = torch.load(ckpt_file, map_location=device, weights_only=False)
             architecture = (
-                "placement_state_v3" if args.model_type == "placement" else "state_player_value_v1"
+                "placement_stage_policy"
+                if args.model_type == "placement"
+                else "state_player_value_v1"
             )
-            if ckpt.get("checkpoint_version") != 3 or ckpt.get("architecture") != architecture:
+            if ckpt.get("architecture") != architecture:
                 raise SystemExit(
-                    f"Error: incompatible checkpoint; expected version 3 {architecture!r}"
+                    f"Error: incompatible checkpoint; expected architecture {architecture!r}"
                 )
+            if args.model_type == "state" and ckpt.get("checkpoint_version") != 3:
+                raise SystemExit("Error: incompatible state checkpoint; expected version 3")
             model.load_state_dict(ckpt["model_state_dict"])
             resume_optimizer_state = ckpt["optimizer_state_dict"]
             start_epoch = ckpt["epoch"]

@@ -112,7 +112,7 @@ The goal is to train a neural network that evaluates board positions (state to w
 - [x] Transformer architecture: serialized state tokens to win probability (scalar 0-1)
 - [x] Training loop, validation, metrics (MSE, win/loss prediction accuracy)
 - [x] Serve model using python endpoint
-- [x] `placement_state_v3`: state-only placement encoder with per-player value and optional dense policy heads
+- [x] `placement_stage_policy`: five-section placement encoder with player-value and stage-policy heads
 
 #### 3c: Self-Play Loop (AlphaZero-style)
 
@@ -336,9 +336,9 @@ Endpoints:
 | `POST` | `/state/prior-collect`, `/placement/prior-collect` | Collect completed prior results |
 | `POST` | `/state/prior-flush`, `/placement/prior-flush` | Clear the corresponding server queue |
 
-The `placement_state_v3` model accepts placement states only. Its value head emits raw logits `[B,N]`, where `N` is the configured player count; combined models also emit policy logits `[B,A]`, where `A` is 60, 82, or 144 for mini, small, or standard maps. Softmax over the value logits gives one normalized win probability per player. The placement tokenizer's action vocabulary defines policy output indices only; actions are not model inputs. Training uses soft-target cross entropy for value and masks policy loss with the exported legal-action mask. `/placement/predict` returns `player_win_probabilities` plus optional full-vocabulary `policy_probabilities`; C# remains authoritative for legality.
+The `placement_stage_policy` model accepts canonical five-section placement states. It always emits player-value logits `[B,N]` and one fixed-width policy head `[B,max(V,6)]`: settlement stages use the first `V` vertex logits, while road stages use the first six logits in `N, NE, SE, S, SW, NW` order. Masking and interpretation are external to the model. `/placement/predict` softmaxes the fixed-width head and returns it as `policy_probabilities`.
 
-State and placement checkpoints use version 3 architectures `state_player_value_v1` and `placement_state_v3`. Older bucket-value checkpoints are incompatible and must be retrained.
+State checkpoints use version 3 architecture `state_player_value_v1`. Placement checkpoints use the current-only `placement_stage_policy` architecture; old placement checkpoints are incompatible.
 
 ### End-to-End Workflow (Manual)
 

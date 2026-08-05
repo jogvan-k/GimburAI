@@ -1,13 +1,13 @@
 # State & Action Serialization
 
-This document defines two state serialization formats and the canonical placement action indexing used by GimburAI neural network evaluators. The state formats use fixed-length, human-readable token strings with a reversible compact form for transformer ingestion. Counts are given for the **mini map** (radius 1), the **small map** (10 tiles, non-circular), and the **standard map** (radius 2).
+This document defines two state serialization formats and placement stage-policy indexing used by GimburAI neural network evaluators. The state formats use fixed-length, human-readable token strings with a reversible compact form for transformer ingestion.
 
 Two neural network models consume these serializations:
 
 | Model | Input | Output | Used during |
 |-------|-------|--------|-------------|
 | **GimburStateEvaluator** | Game state serialization (full) | Per-player win probability | Normal play (after initial placement) |
-| **Placement model (`placement_state_v3`)** | Placement phase state only | Per-player value logits, optionally dense policy logits | Initial placement phase |
+| **Placement model (`placement_stage_policy`)** | Five-section placement state | Per-player value and stage-policy logits | Initial placement phase |
 
 ## Encoding Overview
 
@@ -17,7 +17,7 @@ Two neural network models consume these serializations:
 
 ### Token Alphabets
 
-These alphabets apply to the **state** tokenizer (Parts I and II). The placement action vocabulary in Part III maps complete action strings to policy output indices; action tokens are never model inputs. Each semantic category uses its own character set so that the state tokenizer can learn category-specific embeddings. Categories that share the same underlying concept reuse the same alphabet — positional embeddings disambiguate context.
+These alphabets apply to the **state** tokenizer (Parts I and II). Placement actions are never model inputs. Each semantic category uses its own character set so that the state tokenizer can learn category-specific embeddings.
 
 | Category | Characters | Notes |
 |----------|-----------|-------|
@@ -375,7 +375,7 @@ The rotation is implemented in `python/gimbur_nn/tokenizer.py` as `rotate_player
 
 # Part II — Placement Phase State Serialization
 
-*Consumed as the complete input to the state-only `placement_state_v3` model during initial placement. Legal actions are not appended to the input.*
+*Consumed as the complete input to `placement_stage_policy` during initial placement. Legal actions are not appended to the input.*
 
 ## Placement Phase Layout
 
@@ -449,23 +449,13 @@ Its compact form has 106 characters. After settlement placement, stage is `e` an
 
 ---
 
-# Part III — Placement Action Indexing
+# Part III — Placement Stage-Policy Indexing
 
-*Defines canonical indices for the dense policy output and exported policy targets. Actions are not tokenized as model inputs.*
+The model always emits one policy tensor of shape `[B,max(V,6)]`. The stage token determines how to interpret it; masking occurs in the dataset or serving consumer.
 
 ## Placement Action Format
 
-A placement action is the combined move of placing a settlement on a vertex and building a road from that vertex in a specific direction. During initial placement, settlement and road are always placed together as a single logical decision.
-
-Each action is serialized as a human-readable string that the placement tokenizer maps to one **output index**:
-
-```
-<vertex_index><road_direction>
-```
-
-For example: `3S`, `12NW`, `53NE`.
-
-The tokenizer maintains a fixed vocabulary of all topology-valid `(vertex, direction)` combinations for a map size. The index selects one element of the dense policy vector; there is no action embedding in `placement_state_v3`.
+At settlement stages `a` and `f`, output index `v` represents vertex `v`; only the first `V` logits are meaningful.
 
 ### Vertex Index
 
@@ -491,29 +481,11 @@ The public clockwise direction-index order is `N, NE, SE, S, SW, NW`. The compas
 | `NW` | Diagonal edge going up-left to peak above-left |
 | `NE` | Diagonal edge going up-right to peak above-right |
 
-Boundary vertices have only 2 of the 3 directions available. This defines topology-valid vocabulary entries; C# game rules determine which entries are legal in a particular state.
+At road stages `e` and `i`, indices 0 through 5 represent `N, NE, SE, S, SW, NW`. Only these six logits are meaningful. C# game rules determine which directions are legal for the pending settlement.
 
-### Action Vocabulary Size
+### Policy Width
 
-The vocabulary is the set of all `(vertex, direction)` pairs corresponding to valid edges. Each edge can be described from either endpoint, so each edge contributes 2 action strings:
-
-| Map | Vertices | Edges | Vocabulary size |
-|-----|----------|-------|-----------------|
-| Mini | 24 | 30 | 60 (30 edges × 2 directions each) |
-| Small | 32 | 41 | 82 |
-| Standard | 54 | 72 | 144 |
-
-Only a subset is legal in any state, but the vocabulary and output width are fixed for a map size. A combined model emits raw policy logits `[B,A]`, with `A` equal to the vocabulary size above. Training masks those logits with the legal mask derived from every exported legal composite action. Serving returns a full-vocabulary softmax; C# applies the authoritative legal mask and renormalizes before use.
-
-### Exported Action List Format
-
-When a textual list is needed for interchange or diagnostics, actions may be separated by `;`:
-
-```
-<action>;<action>;...
-```
-
-Example: `3S;6N;9NW`
+The fixed width is `max(V,6)`: 24 for mini, 32 for small, and 54 for standard. Since every supported map has more than six vertices, this currently equals `V`.
 
 ---
 

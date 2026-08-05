@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import re
 import statistics
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -44,11 +45,20 @@ if TYPE_CHECKING:
     from .game_config import GameConfig
 
 _STRIP = str.maketrans("", "", "|/")
+_COMPOSITE_PLACEMENT_ACTION = re.compile(r"^(\d+)(N|NE|SE|S|SW|NW)$")
 
 
 def _compact(human_readable: str) -> str:
     """Strip ``|`` and ``/`` separators to produce the compact form."""
     return human_readable.translate(_STRIP)
+
+
+def _composite_export_vertex(action: str) -> int:
+    """Extract a settlement vertex from the current composite export format."""
+    match = _COMPOSITE_PLACEMENT_ACTION.fullmatch(action)
+    if match is None:
+        raise ValueError(f"invalid composite placement action: {action}")
+    return int(match.group(1))
 
 
 def _normalize_wins(wins: list[float], player_count: int) -> torch.Tensor | None:
@@ -509,15 +519,15 @@ def _process_placement_game(
                 samples.append((token_ids, value_target))
                 continue
 
-            policy = torch.zeros(tokenizer.action_vocab_size, dtype=torch.float32)
-            legal_mask = torch.zeros(tokenizer.action_vocab_size, dtype=torch.bool)
+            policy = torch.zeros(tokenizer.policy_size, dtype=torch.float32)
+            legal_mask = torch.zeros(tokenizer.policy_size, dtype=torch.bool)
             for action_entry, rollout in zip(actions, rollouts):
                 action = (
                     action_entry["action"]
                     if variant_idx == 0
                     else action_entry["permutations"][variant_idx - 1]
                 )
-                action_idx = tokenizer.tokenize_action(action)
+                action_idx = tokenizer.vertex_action_index(_composite_export_vertex(action))
                 policy[action_idx] += rollout / total_rollouts
                 legal_mask[action_idx] = True
             if policy_target_temperature != 1.0:

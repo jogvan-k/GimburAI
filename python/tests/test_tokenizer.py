@@ -13,7 +13,7 @@ from gimbur_nn.game_config import (
     STANDARD_3P,
     STANDARD_4P,
 )
-from gimbur_nn.placement_tokenizer import PlacementTokenizer
+from gimbur_nn.placement_tokenizer import DIRECTION_ORDER, PlacementTokenizer
 from gimbur_nn.state_tokenizer import StateTokenizer
 
 # ---------------------------------------------------------------------------
@@ -478,7 +478,7 @@ class TestRotatePlayerState:
 
 
 class TestPlacementTokenizer:
-    """Tests for state inputs and canonical action output indices."""
+    """Tests for state inputs and stage-policy output indices."""
 
     # -- Mini empty-board placement state (from spec Part II) --
     MINI_PLACEMENT_STATE = (
@@ -529,57 +529,32 @@ class TestPlacementTokenizer:
         assert cfg.placement_token_size == expected
         assert cfg.placement_token_size == 247
 
-    # -- Action tokenization -----------------------------------------------
+    # -- Policy indexing ---------------------------------------------------
 
-    def test_tokenize_action_mini(self) -> None:
-        """Actions use dense local output indices."""
+    def test_vertex_action_indices(self) -> None:
         tok = PlacementTokenizer(MINI_2P)
-        assert tok.tokenize_action("0SE") == 0
-        assert tok.tokenize_action("23NW") == tok.action_vocab_size - 1
+        assert tok.vertex_action_index(0) == 0
+        assert tok.vertex_action_index(23) == 23
+        with pytest.raises(ValueError, match="vertex"):
+            tok.vertex_action_index(24)
 
-    def test_tokenize_action_standard(self) -> None:
-        tok = PlacementTokenizer(STANDARD_4P)
-        assert tok.tokenize_action("0SE") == 0
-        assert tok.tokenize_action("53NW") == tok.action_vocab_size - 1
-
-    def test_tokenize_action_unknown_raises(self) -> None:
+    def test_direction_order_matches_csharp(self) -> None:
         tok = PlacementTokenizer(MINI_2P)
-        with pytest.raises(KeyError):
-            tok.tokenize_action("99ZZ")
-
-    # -- Decode action -----------------------------------------------------
-
-    def test_decode_action_roundtrip(self) -> None:
-        """tokenize_action -> decode_action is identity."""
-        tok = PlacementTokenizer(MINI_2P)
-        for action in ("0SE", "5N", "23NW"):
-            token_id = tok.tokenize_action(action)
-            assert tok.decode_action(token_id) == action
-
-    def test_decode_action_all_mini(self) -> None:
-        """Every action in mini map round-trips correctly."""
-        tok = PlacementTokenizer(MINI_2P)
-        for action in tok.actions:
-            assert tok.decode_action(tok.tokenize_action(action)) == action
+        assert DIRECTION_ORDER == ("N", "NE", "SE", "S", "SW", "NW")
+        assert [tok.direction_action_index(direction) for direction in DIRECTION_ORDER] == list(
+            range(6)
+        )
+        with pytest.raises(ValueError, match="direction"):
+            tok.direction_action_index("E")
 
     def test_tokenize_batch_is_state_only(self) -> None:
         tok = PlacementTokenizer(MINI_2P)
         batch = tok.tokenize_batch([self.MINI_PLACEMENT_STATE] * 2)
         assert batch.shape == (2, MINI_2P.placement_token_size)
 
-    # -- Action vocab sizes ------------------------------------------------
+    # -- Policy sizes ------------------------------------------------------
 
-    def test_action_vocab_size_mini(self) -> None:
-        assert PlacementTokenizer(MINI_2P).action_vocab_size == 60
-
-    def test_action_vocab_size_small(self) -> None:
-        assert PlacementTokenizer(SMALL_2P).action_vocab_size == 82
-
-    def test_action_vocab_size_standard(self) -> None:
-        assert PlacementTokenizer(STANDARD_2P).action_vocab_size == 144
-
-    def test_action_vocab_matches_config(self) -> None:
-        """action_vocab_size matches GameConfig.action_vocab_size."""
+    def test_policy_size_matches_config(self) -> None:
         for cfg in (MINI_2P, SMALL_2P, SMALL_3P, STANDARD_2P, STANDARD_3P, STANDARD_4P):
             tok = PlacementTokenizer(cfg)
-            assert tok.action_vocab_size == cfg.action_vocab_size
+            assert tok.policy_size == cfg.placement_policy_size == cfg.vertex_count

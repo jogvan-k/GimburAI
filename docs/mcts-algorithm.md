@@ -191,9 +191,9 @@ that action return `Horizon` without recursing into it.
 
 After expansion, if a prior client is configured, the search loop enqueues an
 asynchronous prior request for the newly expanded node. Full-state value models
-evaluate serialized action-result states. The placement client instead sends one
-placement state to the state-only `placement_state_v3` model and receives a dense
-full-vocabulary policy plus an optional value estimate.
+evaluate serialized action-result states. The new `placement_stage_policy` model
+and direct serving endpoint use fixed-width stage policies; placement PriorClient
+integration is intentionally deferred.
 
 - **Win-rate prior** (legacy): each score is the predicted win probability of
   the corresponding result state for the acting player. Scores are independent
@@ -551,9 +551,9 @@ edges from the root to the newly expanded node. This call is **non-blocking** �
 it enqueues the request and returns immediately. The MCTS iteration continues
 with rollout and backpropagation as normal.
 
-For state-model priors, the request contains serialized result states. For
-placement priors, it contains only the parent placement state. The placement
-action vocabulary is output indexing, not request input.
+For state-model priors, the request contains serialized result states. The
+existing placement request contains only the parent placement state, but its C#
+response mapping is not yet compatible with `placement_stage_policy`.
 
 For **deterministic actions**, the resulting state is `action.State()`. For
 **stochastic actions**, each possible outcome is a separate state. A node with
@@ -591,7 +591,8 @@ After each backpropagation and terminal propagation step, the search loop calls
 completed prior responses. For each response:
 
 1. Look up the corresponding parent `MCTSState` by its ID.
-2. For placement, mask the dense policy to C#-legal composites and normalize it.
+2. For placement, apply the configured policy mapping. Stage-policy mapping is
+   pending the follow-up PriorClient change.
 3. Store the prior on the parent node.
 
 If no responses are available, `collectPriors` returns immediately with no
@@ -610,10 +611,10 @@ relevant.
 
 ### Converting Prior Scores to Priors
 
-For state priors, the NN returns one score per action-result state. For placement,
-the server returns a dense policy of width 60, 82, or 144. C# is authoritative
-for legality: it rejects invalid dense vectors, masks illegal composites, and
-normalizes the remaining scores.
+For state priors, the NN returns one score per action-result state. Direct
+placement inference now returns `max(V,6)` scores: settlement stages use vertex
+indices and road stages use `N, NE, SE, S, SW, NW`. The C# MCTS mapping for this
+contract is not part of this architecture change.
 
 For **stochastic actions** with multiple outcomes, the action's score is the
 probability-weighted average across its outcomes:
@@ -636,13 +637,10 @@ back to the uniform distribution `1 / number_of_actions`. The resulting prior
 policy is stored on the parent `MCTSState` node and used by `actionEvaluator`
 (see [Action Evaluation (PUCT)](#action-evaluation-puct)).
 
-#### Placement Composite Priors
+#### Placement Stage Priors
 
-At a settlement node, the settlement prior is the sum of dense probabilities for
-all C#-legal roads paired with that settlement. At the subsequent road node, the
-road prior is conditional within that settlement: each legal composite probability
-is divided by the settlement marginal. Thus the MCTS two-step decision preserves
-the model's composite settlement-road distribution.
+The intended follow-up maps legal vertex logits at settlement nodes and legal
+direction logits at road nodes, masking and normalizing each stage independently.
 
 ### Prior Data Format
 
@@ -679,9 +677,8 @@ the model's composite settlement-road distribution.
 ```
 
 - `id` — matches the request ID.
-- `priors` — dense full-vocabulary placement policy probabilities. C# masks and
-  normalizes them over currently legal composites. The abbreviated example has
-  four entries; actual widths are 60, 82, or 144.
+- `priors` — the direct stage-policy shape is 24, 32, or 54 for mini, small, or
+  standard maps. Placement PriorClient support for this shape is pending.
 - `player_win_probabilities` — normalized per-player values from the value head.
 
 ### Server Endpoints

@@ -67,17 +67,16 @@ logger = logging.getLogger(__name__)
 
 
 def _load_checkpoint(path: Path, device: torch.device, architecture: str) -> dict:
-    """Load a version-3 player-value checkpoint or reject it."""
+    """Load a checkpoint for the current architecture or reject it."""
     raw = torch.load(path, map_location=device, weights_only=False)
     if (
         not isinstance(raw, dict)
         or "model_state_dict" not in raw
-        or raw.get("checkpoint_version") != 3
         or raw.get("architecture") != architecture
+        or (architecture == "state_player_value_v1" and raw.get("checkpoint_version") != 3)
     ):
         raise ValueError(
-            f"incompatible checkpoint; expected checkpoint_version=3 and "
-            f"architecture={architecture!r}"
+            f"incompatible checkpoint; expected architecture={architecture!r}"
         )
     return raw
 
@@ -138,8 +137,8 @@ class PredictPlacementResponse(BaseModel):
     player_win_probabilities: list[list[float]]
     """Per-state player win distributions."""
 
-    policy_probabilities: list[list[float]] | None = None
-    """Full canonical action probabilities for combined models."""
+    policy_probabilities: list[list[float]]
+    """Fixed-width stage-policy probabilities."""
 
 
 # ── Prior queue models ────────────────────────────────────────────────────────
@@ -655,7 +654,7 @@ def create_app(
         def _infer_placement_prior_batch(
             batch: list[PlacementPriorRequest],
         ) -> list[PriorResponseItem]:
-            """Return full-vocabulary priors and state values for placement states."""
+            """Return fixed-width stage priors and state values for placement states."""
             valid: list[tuple[int, PlacementPriorRequest]] = []
             results: list[PriorResponseItem | None] = [None] * len(batch)
             tokens: list[torch.Tensor] = []
@@ -890,11 +889,7 @@ def create_app(
                 output = placement_model(token_batch)
                 value_logits = output["value"] if isinstance(output, dict) else output
                 probs = F.softmax(value_logits, dim=-1)
-                policy_probs = (
-                    F.softmax(output["policy"], dim=-1).cpu().tolist()
-                    if isinstance(output, dict)
-                    else None
-                )
+                policy_probs = F.softmax(output["policy"], dim=-1).cpu().tolist()
 
             return PredictPlacementResponse(
                 player_win_probabilities=probs.cpu().tolist(),
@@ -1033,7 +1028,9 @@ def main() -> None:
         placement_game_cfg = CONFIGS_BY_NAME[args.game_config]
         placement_model_cfg = MODEL_CONFIGS_BY_NAME[args.placement_model_config]
         try:
-            placement_ckpt = _load_checkpoint(args.placement_model, device, "placement_state_v3")
+            placement_ckpt = _load_checkpoint(
+                args.placement_model, device, "placement_stage_policy"
+            )
         except ValueError as exc:
             raise SystemExit(f"Error: {exc}") from exc
         placement_target = str(placement_ckpt.get("target", "winrate"))

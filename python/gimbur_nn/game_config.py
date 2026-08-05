@@ -72,8 +72,8 @@ class GameConfig:
     placement_token_size: int
     """Compact-form token sequence length for placement phase state."""
 
-    action_vocab_size: int
-    """Number of unique placement actions for this map (E * 2)."""
+    placement_policy_size: int
+    """Placement policy width: max(vertex count, six road directions)."""
 
     placement_vocab_size: int
     """Placement state input embedding table size."""
@@ -155,7 +155,7 @@ def _make_config(
     cfg.placement_token_size = _placement_token_size(
         tile_count, vertex_count, edge_count, port_count
     )
-    cfg.action_vocab_size = edge_count * 2
+    cfg.placement_policy_size = max(vertex_count, 6)
     cfg.placement_vocab_size = _placement_state_vocab_size(player_count)
     cfg.victory_points_to_win = victory_points_to_win
     cfg.longest_road_minimum = longest_road_minimum

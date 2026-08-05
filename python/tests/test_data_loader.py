@@ -665,10 +665,10 @@ class TestExpandPlacementGames:
         _, _, identity_policy, identity_mask = samples[0]
         _, _, perm_policy, perm_mask = samples[1]
 
-        assert identity_policy[tok.tokenize_action("0SE")] == pytest.approx(0.3)
-        assert identity_policy[tok.tokenize_action("5N")] == pytest.approx(0.7)
-        assert perm_policy[tok.tokenize_action("1SW")] == pytest.approx(0.3)
-        assert perm_policy[tok.tokenize_action("6N")] == pytest.approx(0.7)
+        assert identity_policy[tok.vertex_action_index(0)] == pytest.approx(0.3)
+        assert identity_policy[tok.vertex_action_index(5)] == pytest.approx(0.7)
+        assert perm_policy[tok.vertex_action_index(1)] == pytest.approx(0.3)
+        assert perm_policy[tok.vertex_action_index(6)] == pytest.approx(0.7)
         assert identity_mask.sum() == perm_mask.sum() == 2
 
     def test_policy_temperature_one_preserves_exact_visit_shares(self) -> None:
@@ -702,8 +702,8 @@ class TestExpandPlacementGames:
             policy_target_temperature=0.5,
         )[0][2]
 
-        assert policy[tok.tokenize_action("0SE")] == pytest.approx(0.3**2 / (0.3**2 + 0.7**2))
-        assert policy[tok.tokenize_action("5N")] == pytest.approx(0.7**2 / (0.3**2 + 0.7**2))
+        assert policy[tok.vertex_action_index(0)] == pytest.approx(0.3**2 / (0.3**2 + 0.7**2))
+        assert policy[tok.vertex_action_index(5)] == pytest.approx(0.7**2 / (0.3**2 + 0.7**2))
 
     def test_policy_temperature_preserves_zero_shares_and_legal_mask(self) -> None:
         from gimbur_nn.data_loader import expand_placement_games
@@ -718,7 +718,7 @@ class TestExpandPlacementGames:
             policy_target_temperature=0.1,
         )[0]
 
-        zero_idx = tok.tokenize_action("0SE")
+        zero_idx = tok.vertex_action_index(0)
         assert policy[zero_idx] == 0
         assert legal_mask[zero_idx]
         assert legal_mask.sum() == 2
@@ -738,7 +738,7 @@ class TestExpandPlacementGames:
 
         assert torch.isfinite(policy).all()
         assert policy.sum() == 1
-        assert policy[tok.tokenize_action("5N")] == 1
+        assert policy[tok.vertex_action_index(5)] == 1
 
     @pytest.mark.parametrize("temperature", [0.0, -0.5, float("nan")])
     def test_rejects_invalid_policy_temperature(self, temperature: float) -> None:
@@ -792,7 +792,7 @@ class TestPlacementDataset:
 
         assert tokens.shape == (2, MINI_2P.placement_token_size)
         assert values.shape == (2, MINI_2P.player_count)
-        assert policies.shape == masks.shape == (2, MINI_2P.action_vocab_size)
+        assert policies.shape == masks.shape == (2, MINI_2P.placement_policy_size)
 
 
 def test_combined_game_feeds_placement_and_state_datasets() -> None:

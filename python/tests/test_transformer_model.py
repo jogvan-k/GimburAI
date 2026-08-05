@@ -37,11 +37,9 @@ def test_state_value_shape_matches_player_count(game_cfg) -> None:
 def test_placement_value_shape_matches_player_count(game_cfg, output_mode: str) -> None:
     model = GimburPlacementTransformer(game_cfg, _config(output_mode))
     output = model(torch.zeros(2, game_cfg.placement_token_size, dtype=torch.long))
-    value = output["value"] if isinstance(output, dict) else output
-
-    assert value.shape == (2, game_cfg.player_count)
-    if isinstance(output, dict):
-        assert output["policy"].shape == (2, game_cfg.action_vocab_size)
+    assert output["value"].shape == (2, game_cfg.player_count)
+    assert output["policy"].shape == (2, game_cfg.placement_policy_size)
+    assert game_cfg.placement_policy_size == game_cfg.vertex_count
 
 
 def test_placement_rejects_policy_only() -> None:

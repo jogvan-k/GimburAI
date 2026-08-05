@@ -46,16 +46,16 @@
   - `game_config.py` — map dimension constants and tensor size formulas for mini/small/standard maps.
   - `tokenizer.py` — legacy game-state tokenizer; parses 10-section serialized strings into PyTorch tensors.
   - `state_tokenizer.py` — game-state tokenizer class (`StateTokenizer`).
-  - `placement_tokenizer.py` — placement-phase tokenizer class (`PlacementTokenizer`); handles 4-section placement state strings. Its action vocabulary is dense policy output indexing only, not model input.
+  - `placement_tokenizer.py` — placement-phase tokenizer class (`PlacementTokenizer`); handles canonical 5-section placement states and exposes vertex/direction policy indices.
   - `data_loader.py` — loads JSONL training data exported by `gimbur simulate --export`, builds `SimulationDataset` for PyTorch `DataLoader`.
   - `model_config.py` — model hyperparameter configuration.
-  - `transformer_model.py` — transformer-based models. Value heads emit per-player `[B,N]` logits. `GimburPlacementTransformer` implements state-only `placement_state_v3` with optional dense policy `[B,A]` logits (`A` = 60/82/144 by map).
+  - `transformer_model.py` — transformer-based models. `GimburPlacementTransformer` always emits player-value `[B,N]` and stage-policy `[B,max(V,6)]` logits for `placement_stage_policy`.
   - `pipeline.py` — training/evaluation pipeline utilities.
   - `train.py` — training loop; reads JSONL data exported by `gimbur simulate --export`.
-  - `serve.py` — HTTP inference server. `/placement/predict` accepts `states` and returns `player_win_probabilities` plus optional full-vocabulary `policy_probabilities`. Placement prior requests contain `id`, `state`, and `priority`; collect responses contain dense `priors` and per-player values. `/state/leaf-*` batches asynchronous MCTS leaf evaluations.
+  - `serve.py` — HTTP inference server. `/placement/predict` accepts `states` and returns `player_win_probabilities` plus fixed-width stage `policy_probabilities`. Placement prior requests contain `id`, `state`, and `priority`; collect responses contain dense `priors` and per-player values. `/state/leaf-*` batches asynchronous MCTS leaf evaluations.
 - Placement models emit raw logits. Combined training masks policy loss using legal actions exported by C#; serving softmaxes the full vocabulary, and C# is authoritative for legality and masks/normalizes before MCTS use.
-- Placement MCTS converts dense composite policy into settlement marginals (sum over legal roads) and conditional road priors. Shared-root visits are policy targets; `simulations-per-action` rollout counts are not.
-- State/placement checkpoints require `checkpoint_version: 3` with `state_player_value_v1` or `placement_state_v3`; older bucket-value checkpoints are incompatible.
+- Placement stage policy uses vertex indices at settlement stages and direction indices in `N, NE, SE, S, SW, NW` order at road stages. Shared-root visits are policy targets; `simulations-per-action` rollout counts are not.
+- State checkpoints require `checkpoint_version: 3` and `state_player_value_v1`; placement checkpoints use current-only architecture `placement_stage_policy`.
 - Tests live under `python/tests/` using pytest:
   - `test_tokenizer.py` — tests for all tokenizer classes (game state, placement state, action vocab).
   - `test_data_loader.py` — tests for data loading, sample expansion, and dataset construction.
@@ -113,7 +113,7 @@ python -m pytest python/tests/test_tokenizer.py -v
 
 # Run a specific test class or test
 python -m pytest python/tests/test_tokenizer.py::TestPlacementTokenizer -v
-python -m pytest python/tests/test_tokenizer.py::TestPlacementTokenizer::test_action_vocab_size_mini -v
+python -m pytest python/tests/test_tokenizer.py::TestPlacementTokenizer::test_policy_size_matches_config -v
 
 # Lint with ruff (from python/ directory)
 python -m ruff check python/
