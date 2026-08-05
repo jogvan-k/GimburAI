@@ -367,19 +367,19 @@ public static class BoardSymmetry
 
     /// <summary>
     /// Applies a symmetry permutation to a serialized placement-phase state string.
-    /// Placement format: tiles|ports|placementVertices|edges (4 sections).
+    /// Placement format: tiles|ports|stage|placementVertices|edges (5 sections).
     /// <para>
     /// Tiles (section 0, 3 chars each), ports (section 1, 1 char each), vertices
-    /// (section 2, 2 chars each: placementNumber + player), and edges (section 3,
-    /// 1 char each) are all position-dependent and need permutation.
+    /// (section 3, 2 chars each: placementNumber + player), and edges (section 4,
+    /// 1 char each) are position-dependent. Stage (section 2) is unchanged.
     /// </para>
     /// </summary>
     public static string PermutePlacementState(string placementSerialized, SymmetryPermutation perm)
     {
         var sections = placementSerialized.Split('|');
-        if (sections.Length != 4)
+        if (sections.Length != 5)
             throw new ArgumentException(
-                $"Placement string has {sections.Length} sections, expected 4.",
+                $"Placement string has {sections.Length} sections, expected 5.",
                 nameof(placementSerialized));
 
         var tileCount = perm.Tiles.Length;
@@ -393,12 +393,15 @@ public static class BoardSymmetry
         if (sections[1].Length != portCount)
             throw new ArgumentException(
                 $"Port section has {sections[1].Length} chars, expected {portCount}.");
-        if (sections[2].Length != vertexCount * 2)
+        if (sections[2].Length != 1)
             throw new ArgumentException(
-                $"Vertex section has {sections[2].Length} chars, expected {vertexCount * 2}.");
-        if (sections[3].Length != edgeCount)
+                $"Stage section has {sections[2].Length} chars, expected 1.");
+        if (sections[3].Length != vertexCount * 2)
             throw new ArgumentException(
-                $"Edge section has {sections[3].Length} chars, expected {edgeCount}.");
+                $"Vertex section has {sections[3].Length} chars, expected {vertexCount * 2}.");
+        if (sections[4].Length != edgeCount)
+            throw new ArgumentException(
+                $"Edge section has {sections[4].Length} chars, expected {edgeCount}.");
 
         var tileInv = InvertPermutation(perm.Tiles);
         var portInv = InvertPermutation(perm.Ports);
@@ -426,20 +429,24 @@ public static class BoardSymmetry
 
         sb.Append('|');
 
-        // Section 2: Placement vertices (2 chars each: placementNumber + player)
+        // Section 2: Stage (unchanged)
+        sb.Append(sections[2]);
+        sb.Append('|');
+
+        // Section 3: Placement vertices (2 chars each: placementNumber + player)
         for (var vi = 0; vi < vertexCount; vi++)
         {
             var src = vertexInv[vi];
-            sb.Append(sections[2][src * 2]);
-            sb.Append(sections[2][src * 2 + 1]);
+            sb.Append(sections[3][src * 2]);
+            sb.Append(sections[3][src * 2 + 1]);
         }
 
         sb.Append('|');
 
-        // Section 3: Edges (1 char each: player ID)
+        // Section 4: Edges (1 char each: player ID)
         for (var ei = 0; ei < edgeCount; ei++)
         {
-            sb.Append(sections[3][edgeInv[ei]]);
+            sb.Append(sections[4][edgeInv[ei]]);
         }
 
         return sb.ToString();

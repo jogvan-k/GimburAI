@@ -26,7 +26,7 @@ These alphabets apply to the **state** tokenizer (Parts I and II). The placement
 | Pip count | `0 1 2 3 4 5` | 0 = desert, 1–5 = pip count. Shares digit chars with count alphabet. |
 | Side | `l h n` | Low (below 7), high (above 7), none (desert) |
 | Building type | `. v c` | Empty, village (settlement), city. [Game state vertices](#6-vertices) only. |
-| Placement number | `. a b` | Empty, 1st settlement, 2nd settlement. [Placement phase vertices](#section-3-placement-vertices) only. |
+| Placement number | `. a b p` | Empty, 1st settlement, 2nd settlement, pending settlement awaiting its road. Placement vertices only. |
 | Player ID | `- + * ^` | Player 1–4. `_` denotes “none” in vertex/edge/award contexts. |
 | Turn stage | `a e f i r x y t` | See [current turn](#4-current-turn) for mapping. |
 | Count | `0 1 2 3 4 5 6 7 8 9 A B C D E F G H J K` | Crockford base-32 values 0–19 |
@@ -379,20 +379,29 @@ The rotation is implemented in `python/gimbur_nn/tokenizer.py` as `rotate_player
 
 ## Placement Phase Layout
 
-The placement phase serialization contains 4 sections (a strict subset of the game state serialization). Sections that are irrelevant during placement (robber, current turn, awards, resources, knights, dev cards) are omitted.
+The placement serialization has five sections in fixed order: `tiles|ports|stage|vertices|edges`. There is no explicit current-player token.
 
 | # | Section | Tokens per unit | Description |
 |---|---------|----------------|-------------|
 | 1 | [Tiles](#1-tiles) | 3 per tile | Identical to game state tiles |
 | 2 | [Ports](#2-ports--harbors) | 1 per port | Identical to game state ports |
-| 3 | [Placement Vertices](#section-3-placement-vertices) | 2 per vertex | Placement number instead of building type |
-| 4 | [Edges](#7-edges) | 1 per edge | Identical to game state edges |
+| 3 | Stage | 1 | `a`, `e`, `f`, or `i` |
+| 4 | Placement Vertices | 2 per vertex | Placement marker and canonical owner |
+| 5 | Edges | 1 per edge | Canonical owner |
 
 ### Sections 1–2: Tiles and Ports
 
 Identical encoding to game state [tiles](#1-tiles) and [ports](#2-ports--harbors). See Part I for details.
 
-### Section 3: Placement Vertices
+### Canonical Acting Player
+
+C# cyclically rotates every nonempty vertex and edge owner so the acting player is player 1 (`-`). For `N` players, original owner `p` becomes `((p - playerTurn + N) mod N) + 1`. Python consumes these owner IDs directly and rotates exported value targets by the same offset, using the retained `playerTurn`, so target slot 0 is the acting player.
+
+### Section 3: Stage
+
+The stage token is `a` (first settlement), `e` (first road), `f` (second settlement), or `i` (second road).
+
+### Section 4: Placement Vertices
 
 During initial placement, cities are impossible. Instead the model needs to know *which* placement round produced each settlement (1st or 2nd), since 2nd-placement settlements grant starting resources and players choose them with different strategies.
 
@@ -401,6 +410,7 @@ For each vertex index `v`, two tokens:
   - `.` = empty
   - `a` = 1st settlement (placed in round 1)
   - `b` = 2nd settlement (placed in round 2)
+  - `p` = pending settlement during a road stage
 - `vertex[v].owner` — **player id**:
   - `_` = none (must pair with `.`)
   - `-` `+` `*` `^` = player 1..4
@@ -414,72 +424,28 @@ Valid combinations:
 | `a+` | Player 2's 1st settlement |
 | `b-` | Player 1's 2nd settlement |
 | `b+` | Player 2's 2nd settlement |
+| `p-` | Acting player's settlement awaiting its road |
 | `a*` `b*` `a^` `b^` | Players 3–4 (standard map) |
+
+Exactly one `p` occurs in stage `e` or `i`; no `p` occurs in stage `a` or `f`. Symmetry moves the complete vertex pair and leaves stage unchanged.
 
 **Tokens**: `V * 2` — mini: 48, small: 64, standard: 108.
 
-### Section 4: Edges
+### Section 5: Edges
 
 Identical encoding to game state [edges](#7-edges). See Part I for details.
 
 **Tokens**: `E` — mini: 30, small: 41, standard: 72.
 
-## Placement Phase Examples
+## Placement Phase Example
 
-### Mini Map (2 players, 1st settlement — empty board)
+An empty mini board at first-settlement stage is:
 
-Player 1 is about to place their 1st settlement. The board is empty.
-
-Board state:
-- **Tiles** (7 tiles): wood/6, brick/4, sheep/5, wheat/10, desert/0, wheat/9, ore/3
-- **Ports**: generic, sheep, generic, brick, generic, wood
-- **Vertices**: all empty
-- **Edges**: all empty
-
-Full serialized (sections separated by `|`):
 ```
-w5lb3ls4lW3hd0nW4ho2l|gsgbgw|._._._._._._._._._._._._._._._._._._._._._._._._|______________________________|
+w5lb3ls4lW3hd0nW4ho2l|gsgbgw|a|._._._._._._._._._._._._._._._._._._._._._._._._|______________________________
 ```
 
-Compact form (105 characters):
-```
-w5lb3ls4lW3hd0nW4ho2lgsgbgw._._._._._._._._._._._._._._._._._._._._._._._._______________________________
-```
-
-### Mini Map (2 players, 2nd settlement — mid-placement)
-
-Player 2 is about to place their 2nd settlement. Player 1 has placed both settlements and roads. Player 2 has placed their 1st settlement and road.
-
-Board state:
-- **Tiles** (7 tiles): wood/6, brick/4, sheep/5, wheat/10, desert/0, wheat/9, ore/3
-- **Ports**: generic, sheep, generic, brick, generic, wood
-- **Vertices**: player 1's 1st settlement on v6, player 1's 2nd settlement on v17, player 2's 1st settlement on v10
-- **Edges**: player 1 roads on e5 and e23, player 2 road on e14
-
-Full serialized (sections separated by `|`):
-```
-w5lb3ls4lW3hd0nW4ho2l|gsgbgw|._._._._._._a-._._._a+._._._._._._._._._b-._._._._._._._._._._._._._._._._|_____-________+________-______|
-```
-
-Compact form (105 characters):
-```
-w5lb3ls4lW3hd0nW4ho2lgsgbgw._._._._._._a-._._._a+._._._._._._._._._b-._._._._._._._._._._._._._._._._____-________+________-______
-```
-
-### Standard Map (3 players, 2nd settlement phase)
-
-Player 3 (last in round 1, first in round 2 due to snake draft) is about to place their 2nd settlement. All players have placed their 1st settlements and roads.
-
-Board state:
-- **Tiles** (19 tiles): wood/5, ore/2, brick/6, wheat/3, wood/8, sheep/10, wheat/9, ore/12, sheep/11, wood/4, brick/8, sheep/10, wheat/9, ore/4, sheep/5, brick/6, wood/3, wheat/11, desert/0
-- **Ports**: generic, generic, wood, generic, brick, sheep, wheat, ore, generic
-- **Vertices**: player 1's 1st on v12, player 2's 1st on v23, player 3's 1st on v35
-- **Edges**: player 1 road on e17, player 2 road on e33, player 3 road on e49
-
-Full serialized (sections separated by `|`):
-```
-w4lo1lb5lW2lw5hs3hW4ho1hs2hw3lb5hs3hW4ho3ls4lb5lw2lW2hd0n|ggwgbsWog|._._._._._._._._._._._._a-._._._._._._._._._._a+._._._._._._._._._._._a*._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._._|_________________-_______________+_________________*_____________________|
-```
+Its compact form has 106 characters. After settlement placement, stage is `e` and the new vertex is `p-` until its road is placed.
 
 ---
 
@@ -507,7 +473,7 @@ The decimal index (0-based) of the vertex where the settlement is placed. Range:
 
 ### Road Direction
 
-The compass direction from the settlement vertex to the adjacent vertex that forms the road edge. The hex grid uses pointy-top hexagons, and every vertex is either a **peak** (top of hex) or **valley** (bottom of hex) vertex. Each type has exactly 3 possible edge directions (2 on boundary vertices):
+The public clockwise direction-index order is `N, NE, SE, S, SW, NW`. The compass direction from the settlement vertex to the adjacent vertex identifies the road edge. Every vertex is either a **peak** or **valley** and has up to three directions:
 
 **Peak vertices** (edges go up and down-left/down-right):
 
@@ -567,7 +533,7 @@ The constant 5 = robber(1) + current-turn(2) + awards(2). The trailing 7 = new d
 ## Placement Phase State
 
 ```
-(3*T) + P + (2*V) + E
+(3*T) + P + 1 + (2*V) + E
 ```
 
 Player-count-independent: player information is embedded in vertex/edge tokens, and per-player sections are omitted.
@@ -576,9 +542,9 @@ Player-count-independent: player information is embedded in vertex/edge tokens, 
 
 | Map | Players | Placement Phase State | Game State |
 |-----|---------|----------------------|------------|
-| Mini (T=7, V=24, E=30, P=6) | 2 | 105 | 138 |
-| Small (T=10, V=32, E=41, P=6) | 2 | 141 | 174 |
-| Small (T=10, V=32, E=41, P=6) | 3 | 141 | 185 |
-| Standard (T=19, V=54, E=72, P=9) | 2 | 246 | 279 |
-| Standard (T=19, V=54, E=72, P=9) | 3 | 246 | 290 |
-| Standard (T=19, V=54, E=72, P=9) | 4 | 246 | 301 |
+| Mini (T=7, V=24, E=30, P=6) | 2 | 106 | 138 |
+| Small (T=10, V=32, E=41, P=6) | 2 | 142 | 174 |
+| Small (T=10, V=32, E=41, P=6) | 3 | 142 | 185 |
+| Standard (T=19, V=54, E=72, P=9) | 2 | 247 | 279 |
+| Standard (T=19, V=54, E=72, P=9) | 3 | 247 | 290 |
+| Standard (T=19, V=54, E=72, P=9) | 4 | 247 | 301 |

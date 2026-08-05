@@ -647,18 +647,19 @@ internal static class CatanStateSerializer
 
     /// <summary>
     /// Serializes the placement phase state in human-readable form.
-    /// Format: tiles|ports|placementVertices|edges
+    /// Format: tiles|ports|stage|placementVertices|edges
     /// <para>
-    /// Placement vertices use the placement number alphabet (./a/b + player)
+    /// Placement vertices use the placement number alphabet (./a/b/p + player)
     /// instead of the building type alphabet (./v/c + player). The robber,
-    /// current turn, awards, resources, knights, and dev cards sections are omitted.
+    /// awards, resources, knights, and dev cards sections are omitted. Owner IDs
+    /// are rotated so the acting player is always player 1.
     /// </para>
     /// </summary>
     public static string SerializePlacementPhase(CatanState state)
     {
         var topology = state.Board.Topology;
         var sb = new StringBuilder((topology.TileCount * 3) + topology.PortCount
-            + (topology.VertexCount * 2) + topology.EdgeCount + 3);
+            + (topology.VertexCount * 2) + topology.EdgeCount + 5);
 
         // Section 1: Tiles — identical to game state
         for (var ti = 0; ti < topology.TileCount; ti++)
@@ -675,8 +676,16 @@ internal static class CatanStateSerializer
             sb.Append(StateToken.EncodePort(state.Board.PortType(pi)));
         }
 
-        // Section 3: Placement Vertices — 2 tokens each: placementNumber + player
+        // Section 3: Stage
         sb.Append('|');
+        sb.Append(StateToken.EncodeTurnStage(state.Stage));
+
+        // Section 4: Placement Vertices — 2 tokens each: placementNumber + player
+        sb.Append('|');
+        var roadStage = state.Stage is TurnStage.PlaceFirstRoad or TurnStage.PlaceSecondRoad;
+        if (roadStage && state.PendingSettlementVertex is null)
+            throw new InvalidOperationException("Placement road stage has no pending settlement vertex.");
+
         for (var vi = 0; vi < topology.VertexCount; vi++)
         {
             var occ = state.Board.VertexOccupancy[vi];
@@ -686,20 +695,29 @@ internal static class CatanStateSerializer
             }
             else
             {
-                sb.Append(StateToken.EncodePlacementNumber(state._vertexPlacementRound[vi]));
-                sb.Append(StateToken.EncodePlayer(occ.Player));
+                sb.Append(roadStage && state.PendingSettlementVertex == vi
+                    ? 'p'
+                    : StateToken.EncodePlacementNumber(state._vertexPlacementRound[vi]));
+                sb.Append(StateToken.EncodePlayer(CanonicalPlacementPlayer(
+                    occ.Player, state.CurrentPlayer, state.PlayerCount)));
             }
         }
 
-        // Section 4: Edges — identical to game state
+        // Section 5: Edges
         sb.Append('|');
         for (var ei = 0; ei < topology.EdgeCount; ei++)
         {
-            sb.Append(StateToken.EncodePlayer(state.Board.EdgeOccupancy[ei].Player));
+            var owner = state.Board.EdgeOccupancy[ei].Player;
+            sb.Append(StateToken.EncodePlayer(owner == 0
+                ? 0
+                : CanonicalPlacementPlayer(owner, state.CurrentPlayer, state.PlayerCount)));
         }
 
         return sb.ToString();
     }
+
+    private static int CanonicalPlacementPlayer(int player, int currentPlayer, int playerCount) =>
+        ((player - currentPlayer + playerCount) % playerCount) + 1;
 
     /// <summary>
     /// Produces the compact form of the placement phase state: strips all '|'

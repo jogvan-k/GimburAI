@@ -14,6 +14,9 @@ namespace Gimbur;
 /// </remarks>
 public sealed class PlacementActionSerializer
 {
+    /// <summary>Compass directions in public clockwise index order.</summary>
+    public static ImmutableArray<string> Directions { get; } = ["N", "NE", "SE", "S", "SW", "NW"];
+
     /// <summary>
     /// Describes a single entry in the action vocabulary: a settlement vertex
     /// plus the compass direction of the road built from that vertex.
@@ -28,6 +31,7 @@ public sealed class PlacementActionSerializer
 
     /// <summary>Maps (vertex, edge) pair to vocabulary index.</summary>
     private readonly Dictionary<(int Vertex, int Edge), int> _vertexEdgeToIndex;
+    private readonly Dictionary<(int Vertex, int Direction), int> _vertexDirectionToEdge;
 
     public int VocabularySize => Vocabulary.Length;
 
@@ -43,11 +47,13 @@ public sealed class PlacementActionSerializer
         Vocabulary = vocabulary;
         _actionToIndex = new Dictionary<string, int>(vocabulary.Length);
         _vertexEdgeToIndex = new Dictionary<(int, int), int>(vocabulary.Length);
+        _vertexDirectionToEdge = new Dictionary<(int, int), int>(vocabulary.Length);
         for (var i = 0; i < vocabulary.Length; i++)
         {
             var entry = vocabulary[i];
             _actionToIndex[$"{entry.Vertex}{entry.Direction}"] = i;
             _vertexEdgeToIndex[(entry.Vertex, entry.Edge)] = i;
+            _vertexDirectionToEdge[(entry.Vertex, Directions.IndexOf(entry.Direction))] = entry.Edge;
         }
     }
 
@@ -69,6 +75,20 @@ public sealed class PlacementActionSerializer
     /// Returns the vocabulary index for a given (vertex, edge) pair.
     /// </summary>
     public int IndexOf(int vertex, int edge) => _vertexEdgeToIndex[(vertex, edge)];
+
+    /// <summary>Returns the clockwise direction index for an adjacent vertex/edge pair.</summary>
+    public int DirectionIndexOf(int vertex, int edge) =>
+        Directions.IndexOf(Vocabulary[_vertexEdgeToIndex[(vertex, edge)]].Direction);
+
+    /// <summary>Maps a legal direction index at a vertex back to its edge.</summary>
+    public bool TryGetEdge(int vertex, int directionIndex, out int edge) =>
+        _vertexDirectionToEdge.TryGetValue((vertex, directionIndex), out edge);
+
+    /// <summary>
+    /// Returns the direction index after applying a board symmetry to a vertex/edge pair.
+    /// </summary>
+    public int TransformDirectionIndex(int vertex, int edge, SymmetryPermutation permutation) =>
+        DirectionIndexOf(permutation.Vertices[vertex], permutation.Edges[edge]);
 
     /// <summary>Validates that a dense policy exactly matches this vocabulary.</summary>
     public bool IsValidDensePolicy(IReadOnlyList<double> policy) =>

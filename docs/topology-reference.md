@@ -527,7 +527,9 @@ Each tile has exactly 6 boundary edges.
 
 Each action represents a settlement vertex + road direction pair for the
 [placement action tokenizer](state-action-serialization.md#part-iii-placement-action-serialization).
-Sorted by vertex index, then direction.
+The public clockwise direction-index order is `N, NE, SE, S, SW, NW`.
+Tables are sorted by vertex index, then direction string. Symmetry transforms a
+direction by permuting its vertex and edge and resolving the transformed pair.
 
 | Token | Action | Vertex | Direction | Edge |
 | --- | --- | --- | --- | --- |

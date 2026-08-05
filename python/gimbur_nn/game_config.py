@@ -112,14 +112,14 @@ def _state_token_size(t: int, v: int, e: int, p: int, n: int) -> int:
 
 def _placement_token_size(t: int, v: int, e: int, p: int) -> int:
     """Compute compact-form placement phase state token sequence length."""
-    return 3 * t + p + 2 * v + e
+    return 3 * t + p + 1 + 2 * v + e
 
 
 def _placement_state_vocab_size(player_count: int) -> int:
     """Number of unique state characters in placement phase vocabulary."""
-    # 18 base chars (resource, port, pip, side, placement number minus overlap)
+    # 22 base chars (resource, port, pip, side, placement/stage minus overlap)
     # plus (player_count + 1) player-id characters (_-+*^).
-    return player_count + 19
+    return player_count + 23
 
 
 def _make_config(

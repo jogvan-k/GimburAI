@@ -142,6 +142,48 @@ public class PlacementSerializationTests
     }
 
     [Test]
+    public void DirectionIndices_RoundTripEveryVocabularyEntry()
+    {
+        Assert.That(PlacementActionSerializer.Directions,
+            Is.EqualTo(new[] { "N", "NE", "SE", "S", "SW", "NW" }));
+
+        foreach (var mapName in new[] { "Mini", "Small", "Standard" })
+        {
+            var serializer = GetSerializer(mapName);
+            foreach (var entry in serializer.Vocabulary)
+            {
+                var direction = serializer.DirectionIndexOf(entry.Vertex, entry.Edge);
+                Assert.That(PlacementActionSerializer.Directions[direction], Is.EqualTo(entry.Direction));
+                Assert.That(serializer.TryGetEdge(entry.Vertex, direction, out var edge), Is.True);
+                Assert.That(edge, Is.EqualTo(entry.Edge));
+            }
+        }
+    }
+
+    [Test]
+    public void DirectionIndices_TransformThroughEverySymmetry()
+    {
+        foreach (var mapName in new[] { "Mini", "Small", "Standard" })
+        {
+            var topology = GetTopology(mapName);
+            var serializer = GetSerializer(mapName);
+            foreach (var permutation in BoardSymmetry.GetPermutations(topology))
+            foreach (var entry in serializer.Vocabulary)
+            {
+                var transformedVertex = permutation.Vertices[entry.Vertex];
+                var transformedEdge = permutation.Edges[entry.Edge];
+                var transformedDirection = serializer.TransformDirectionIndex(
+                    entry.Vertex, entry.Edge, permutation);
+
+                Assert.That(serializer.TryGetEdge(
+                    transformedVertex, transformedDirection, out var roundTripEdge), Is.True);
+                Assert.That(roundTripEdge, Is.EqualTo(transformedEdge),
+                    $"{mapName} {permutation.Label}: {entry.Vertex}{entry.Direction}");
+            }
+        }
+    }
+
+    [Test]
     public void DensePolicy_MarginalizesAndConditionsOnlyLegalComposites()
     {
         var serializer = PlacementActionSerializer.Mini;
@@ -258,12 +300,13 @@ public class PlacementSerializationTests
     // == SerializePlacementPhase ====================================
 
     [Test]
-    public void PlacementPhase_HasFourSections()
+    public void PlacementPhase_HasFiveSectionsInDocumentedOrder()
     {
         var state = new CatanState(GameConfig.Mini, 2, new Random(42));
         var serialized = state.SerializePlacementPhase();
         var sections = serialized.Split('|');
-        Assert.That(sections.Length, Is.EqualTo(4));
+        Assert.That(sections.Length, Is.EqualTo(5));
+        Assert.That(sections[2], Is.EqualTo("a"));
     }
 
     [Test]
@@ -287,7 +330,7 @@ public class PlacementSerializationTests
         var state = new CatanState(GameConfig.Mini, 2, new Random(42));
         var serialized = state.SerializePlacementPhase();
         var sections = serialized.Split('|');
-        var vertexSection = sections[2];
+        var vertexSection = sections[3];
 
         for (var i = 0; i < vertexSection.Length; i += 2)
         {
@@ -302,7 +345,7 @@ public class PlacementSerializationTests
         var state = new CatanState(GameConfig.Mini, 2, new Random(42));
         var serialized = state.SerializePlacementPhase();
         var sections = serialized.Split('|');
-        var edgeSection = sections[3];
+        var edgeSection = sections[4];
 
         for (var i = 0; i < edgeSection.Length; i++)
         {
@@ -316,7 +359,7 @@ public class PlacementSerializationTests
         var state = PlayThroughPlacement(GameConfig.Mini, 2, seed: 42);
         var serialized = state.SerializePlacementPhase();
         var sections = serialized.Split('|');
-        var vertexSection = sections[2];
+        var vertexSection = sections[3];
 
         var aCount = 0;
         var bCount = 0;
@@ -338,12 +381,12 @@ public class PlacementSerializationTests
         var compact = state.SerializePlacementPhaseCompact();
 
         Assert.That(compact, Does.Not.Contain("|"));
-        Assert.That(compact.Length, Is.EqualTo(human.Length - 3));
+        Assert.That(compact.Length, Is.EqualTo(human.Length - 4));
     }
 
-    [TestCase("Mini", 2, 105)]
-    [TestCase("Small", 2, 141)]
-    [TestCase("Standard", 3, 246)]
+    [TestCase("Mini", 2, 106)]
+    [TestCase("Small", 2, 142)]
+    [TestCase("Standard", 3, 247)]
     public void PlacementPhaseCompact_HasExpectedLength(string mapName, int players, int expectedLength)
     {
         var config = GetConfig(mapName);
@@ -358,7 +401,7 @@ public class PlacementSerializationTests
         var state = PlayThroughPlacement(GameConfig.Standard, 3, seed: 99);
         var serialized = state.SerializePlacementPhase();
         var sections = serialized.Split('|');
-        var vertexSection = sections[2];
+        var vertexSection = sections[3];
 
         var aCount = 0;
         var bCount = 0;
@@ -382,7 +425,69 @@ public class PlacementSerializationTests
         var fullSections = fullState.Split('|');
         var placeSections = placement.Split('|');
 
-        Assert.That(placeSections[3], Is.EqualTo(fullSections[6]));
+        Assert.That(placeSections[4], Is.EqualTo(fullSections[6]));
+    }
+
+    [Test]
+    public void PlacementPhase_StageTokensCoverAllPlacementStages()
+    {
+        var state = new CatanState(GameConfig.Standard, 3, new Random(42));
+        var stages = new HashSet<char>();
+        while (state.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceFirstRoad
+                              or TurnStage.PlaceSecondSettlement or TurnStage.PlaceSecondRoad)
+        {
+            stages.Add(state.SerializePlacementPhase().Split('|')[2][0]);
+            state = (CatanState)GetCatanActions(state).First().DoCoreAction();
+        }
+
+        Assert.That(stages, Is.EquivalentTo(new[] { 'a', 'e', 'f', 'i' }));
+    }
+
+    [TestCase(2)]
+    [TestCase(3)]
+    [TestCase(4)]
+    public void PlacementPhase_CanonicalizesActingPlayerAndMarksPendingSettlement(int actingPlayer)
+    {
+        var state = new CatanState(GameConfig.Standard, 4, new Random(42));
+        while (state.CurrentPlayer != actingPlayer || state.Stage != TurnStage.PlaceFirstSettlement)
+            state = (CatanState)GetCatanActions(state).First().DoCoreAction();
+
+        state = (CatanState)GetCatanActions(state).First().DoCoreAction();
+        var sections = state.SerializePlacementPhase().Split('|');
+        var vertices = sections[3];
+        var edges = sections[4];
+
+        Assert.That(sections[2], Is.EqualTo("e"));
+        Assert.That(vertices.Where((c, i) => i % 2 == 0).Count(c => c == 'p'), Is.EqualTo(1));
+        Assert.That(vertices[state.PendingSettlementVertex!.Value * 2 + 1], Is.EqualTo('-'));
+
+        for (var vi = 0; vi < state.Board.Topology.VertexCount; vi++)
+        {
+            var owner = state.Board.VertexOccupancy[vi].Player;
+            if (owner == 0)
+                continue;
+            var canonicalOwner = ((owner - actingPlayer + state.PlayerCount) % state.PlayerCount) + 1;
+            Assert.That(vertices[vi * 2 + 1], Is.EqualTo(StateToken.EncodePlayer(canonicalOwner)));
+        }
+
+        for (var ei = 0; ei < state.Board.Topology.EdgeCount; ei++)
+        {
+            var owner = state.Board.EdgeOccupancy[ei].Player;
+            if (owner == 0)
+            {
+                Assert.That(edges[ei], Is.EqualTo('_'));
+                continue;
+            }
+            var canonicalOwner = ((owner - actingPlayer + state.PlayerCount) % state.PlayerCount) + 1;
+            Assert.That(edges[ei], Is.EqualTo(StateToken.EncodePlayer(canonicalOwner)));
+        }
+    }
+
+    [Test]
+    public void PlacementPhase_SettlementStageHasNoPendingMarker()
+    {
+        var state = new CatanState(GameConfig.Mini, 2, new Random(42));
+        Assert.That(state.SerializePlacementPhase().Split('|')[3], Does.Not.Contain('p'));
     }
 
     // == Helpers =======================================================

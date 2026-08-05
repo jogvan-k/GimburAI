@@ -131,17 +131,17 @@ class TestVocab:
         assert StateTokenizer(STANDARD_4P).vocab_size == 57
 
     def test_placement_state_vocab_sizes(self) -> None:
-        """Placement state vocab (chars only): 2p=21, 3p=22, 4p=23."""
-        assert PlacementTokenizer(MINI_2P).state_vocab_size == 21
-        assert PlacementTokenizer(SMALL_2P).state_vocab_size == 21
-        assert PlacementTokenizer(SMALL_3P).state_vocab_size == 22
-        assert PlacementTokenizer(STANDARD_2P).state_vocab_size == 21
-        assert PlacementTokenizer(STANDARD_3P).state_vocab_size == 22
-        assert PlacementTokenizer(STANDARD_4P).state_vocab_size == 23
+        """Placement state vocab includes stage and pending-settlement tokens."""
+        assert PlacementTokenizer(MINI_2P).state_vocab_size == 25
+        assert PlacementTokenizer(SMALL_2P).state_vocab_size == 25
+        assert PlacementTokenizer(SMALL_3P).state_vocab_size == 26
+        assert PlacementTokenizer(STANDARD_2P).state_vocab_size == 25
+        assert PlacementTokenizer(STANDARD_3P).state_vocab_size == 26
+        assert PlacementTokenizer(STANDARD_4P).state_vocab_size == 27
 
     def test_placement_input_vocab_is_state_only(self) -> None:
-        assert PlacementTokenizer(MINI_2P).vocab_size == 21
-        assert PlacementTokenizer(STANDARD_4P).vocab_size == 23
+        assert PlacementTokenizer(MINI_2P).vocab_size == 25
+        assert PlacementTokenizer(STANDARD_4P).vocab_size == 27
 
     def test_no_duplicate_chars(self) -> None:
         tok = StateTokenizer(MINI_2P)
@@ -482,7 +482,7 @@ class TestPlacementTokenizer:
 
     # -- Mini empty-board placement state (from spec Part II) --
     MINI_PLACEMENT_STATE = (
-        "w5lb3ls4lW3hd0nW4ho2l|gsgbgw"
+        "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|a"
         "|._._._._._._._._._._._._._._._._._._._._._._._._"
         "|______________________________"
     )
@@ -513,21 +513,21 @@ class TestPlacementTokenizer:
 
     def test_placement_token_size_mini(self) -> None:
         cfg = MINI_2P
-        expected = 3 * cfg.tile_count + cfg.port_count + 2 * cfg.vertex_count + cfg.edge_count
+        expected = 3 * cfg.tile_count + cfg.port_count + 1 + 2 * cfg.vertex_count + cfg.edge_count
         assert cfg.placement_token_size == expected
-        assert cfg.placement_token_size == 105
+        assert cfg.placement_token_size == 106
 
     def test_placement_token_size_small(self) -> None:
         cfg = SMALL_2P
-        expected = 3 * cfg.tile_count + cfg.port_count + 2 * cfg.vertex_count + cfg.edge_count
+        expected = 3 * cfg.tile_count + cfg.port_count + 1 + 2 * cfg.vertex_count + cfg.edge_count
         assert cfg.placement_token_size == expected
-        assert cfg.placement_token_size == 141
+        assert cfg.placement_token_size == 142
 
     def test_placement_token_size_standard(self) -> None:
         cfg = STANDARD_3P
-        expected = 3 * cfg.tile_count + cfg.port_count + 2 * cfg.vertex_count + cfg.edge_count
+        expected = 3 * cfg.tile_count + cfg.port_count + 1 + 2 * cfg.vertex_count + cfg.edge_count
         assert cfg.placement_token_size == expected
-        assert cfg.placement_token_size == 246
+        assert cfg.placement_token_size == 247
 
     # -- Action tokenization -----------------------------------------------
 

@@ -23,7 +23,8 @@ _RESOURCE_TYPE = "dwbsWo"
 _PORT_GENERIC = "g"
 _PIP_COUNT = "012345"
 _PIP_SIDE = "lhn"
-_PLACEMENT_NUMBER = ".ab"
+_PLACEMENT_NUMBER = ".abp"
+_PLACEMENT_STAGE = "aefi"
 _PLAYER_ID_ALL = "_-+*^"
 
 _STRIP = str.maketrans("", "", "|/")
@@ -38,8 +39,8 @@ def _build_placement_state_vocab(player_count: int) -> str:
     """Build the state vocabulary string for the placement phase.
 
     Order: resource type, port generic, pip count, side, placement number,
-    player id (sized for player_count).
-    No turn stage, no count-rest chars, no building type ``v``/``c``.
+    placement stage, player id (sized for player_count). Serialized owner IDs
+    are already canonicalized by C# so the acting player uses player 1.
     """
     chars: list[str] = []
     seen: set[str] = set()
@@ -50,6 +51,7 @@ def _build_placement_state_vocab(player_count: int) -> str:
         _PIP_COUNT,
         _PIP_SIDE,
         _PLACEMENT_NUMBER,
+        _PLACEMENT_STAGE,
         _player_id_chars(player_count),
     ):
         for ch in group:

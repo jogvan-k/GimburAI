@@ -85,6 +85,13 @@ def _value_target(
     return mcts_value_weight * mcts_target + (1.0 - mcts_value_weight) * terminal_target
 
 
+def rotate_player_target(target: torch.Tensor, player_turn: int) -> torch.Tensor:
+    """Rotate an original-player target so the acting player's slot is first."""
+    if not 1 <= player_turn <= target.numel():
+        raise ValueError("playerTurn must identify a target player slot")
+    return torch.roll(target, shifts=-(player_turn - 1))
+
+
 def _scheduled_mcts_value_weight(
     turn_number: int,
     total_turns: int,
@@ -494,6 +501,7 @@ def _process_placement_game(
         )
         if value_target is None:
             continue
+        value_target = rotate_player_target(value_target, state_entry["playerTurn"])
 
         for variant_idx, state_str in enumerate(all_variants):
             token_ids = tokenizer.tokenize_state(_compact(state_str))

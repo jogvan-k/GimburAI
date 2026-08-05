@@ -16,8 +16,8 @@ public partial class BoardSymmetryTests
         {
             var permuted = BoardSymmetry.PermutePlacementState(placementStr, perm);
             var sections = permuted.Split('|');
-            Assert.That(sections.Length, Is.EqualTo(4),
-                $"Expected 4 sections for {perm.Label}");
+            Assert.That(sections.Length, Is.EqualTo(5),
+                $"Expected 5 sections for {perm.Label}");
         }
     }
 
@@ -30,8 +30,8 @@ public partial class BoardSymmetryTests
         foreach (var perm in perms)
         {
             var permuted = BoardSymmetry.PermutePlacementState(placementStr, perm);
-            Assert.That(permuted.Split('|').Length, Is.EqualTo(4),
-                $"Expected 4 sections for {perm.Label}");
+            Assert.That(permuted.Split('|').Length, Is.EqualTo(5),
+                $"Expected 5 sections for {perm.Label}");
         }
     }
 
@@ -44,8 +44,8 @@ public partial class BoardSymmetryTests
         foreach (var perm in perms)
         {
             var permuted = BoardSymmetry.PermutePlacementState(placementStr, perm);
-            Assert.That(permuted.Split('|').Length, Is.EqualTo(4),
-                $"Expected 4 sections for {perm.Label}");
+            Assert.That(permuted.Split('|').Length, Is.EqualTo(5),
+                $"Expected 5 sections for {perm.Label}");
         }
     }
 
@@ -59,7 +59,7 @@ public partial class BoardSymmetryTests
         foreach (var perm in perms)
         {
             var s = BoardSymmetry.PermutePlacementState(ps, perm).Split('|');
-            for (var i = 0; i < 4; i++)
+            for (var i = 0; i < 5; i++)
                 Assert.That(s[i].Length, Is.EqualTo(orig[i].Length),
                     $"Section {i} length mismatch for {perm.Label}");
         }
@@ -119,9 +119,31 @@ public partial class BoardSymmetryTests
         foreach (var perm in perms)
         {
             var s = BoardSymmetry.PermutePlacementState(ps, perm).Split('|');
-            for (var i = 0; i < 4; i++)
+            for (var i = 0; i < 5; i++)
                 Assert.That(s[i].Length, Is.EqualTo(orig[i].Length),
                     $"Section {i} length mismatch for {perm.Label}");
+        }
+    }
+
+    [Test]
+    public void Mini_PermutePlacementStateKeepsStageAndMovesPendingMarker()
+    {
+        var state = new Gimbur.CatanState(GameConfig.Mini, 2, new Random(42));
+        var action = state.Actions().First();
+        var catanAction = action.IsDeterministic
+            ? (Gimbur.CatanAction)(Gimbur.CatanDeterministicAction)((Kjarni.CoreAction.Deterministic)action).Item
+            : (Gimbur.CatanAction)(Gimbur.CatanStochasticAction)((Kjarni.CoreAction.Stochastic)action).Item;
+        state = (Gimbur.CatanState)catanAction.DoCoreAction();
+        var original = state.SerializePlacementPhase().Split('|');
+        var pending = state.PendingSettlementVertex!.Value;
+
+        foreach (var perm in BoardSymmetry.GetPermutations(BoardTopology.Mini))
+        {
+            var transformed = BoardSymmetry.PermutePlacementState(
+                string.Join('|', original), perm).Split('|');
+            Assert.That(transformed[2], Is.EqualTo(original[2]));
+            Assert.That(transformed[3][perm.Vertices[pending] * 2], Is.EqualTo('p'));
+            Assert.That(transformed[3].Where((c, i) => i % 2 == 0).Count(c => c == 'p'), Is.EqualTo(1));
         }
     }
 }

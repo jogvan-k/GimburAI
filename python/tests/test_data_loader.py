@@ -591,7 +591,7 @@ class TestSimulationDataset:
 # ---------------------------------------------------------------------------
 
 MINI_PLACEMENT_STATE = (
-    "w5lb3ls4lW3hd0nW4ho2l|gsgbgw"
+    "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|a"
     "|._._._._._._._._._._._._._._._._._._._._._._._._"
     "|______________________________"
 )
@@ -603,6 +603,7 @@ def _placement_game(*, rollouts: tuple[int, int] = (30, 70)) -> dict:
         "winner": 1,
         "states": [
             {
+                "playerTurn": 1,
                 "serializedState": MINI_PLACEMENT_STATE,
                 "permutations": [MINI_PLACEMENT_STATE_PERM],
                 "actions": [
@@ -627,6 +628,15 @@ def _placement_game(*, rollouts: tuple[int, int] = (30, 70)) -> dict:
 
 
 class TestExpandPlacementGames:
+    def test_value_target_rotates_acting_player_first(self) -> None:
+        from gimbur_nn.data_loader import expand_placement_games
+
+        game = _placement_game()
+        game["states"][0]["playerTurn"] = 2
+        samples = expand_placement_games([game], MINI_2P, mcts_value_weight_start=1.0)
+
+        torch.testing.assert_close(samples[0][1], torch.tensor([0.59, 0.41]))
+
     def test_placement_value_uses_start_weight(self) -> None:
         from gimbur_nn.data_loader import expand_placement_games
 

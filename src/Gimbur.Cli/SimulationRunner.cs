@@ -345,7 +345,7 @@ internal record PlacementStateRecord
     public required string Stage { get; init; }
 
     /// <summary>
-    /// 4-section placement phase state: tiles|ports|placementVertices|edges.
+    /// 5-section placement phase state: tiles|ports|stage|placementVertices|edges.
     /// </summary>
     public required string SerializedState { get; init; }
 

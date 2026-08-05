@@ -258,7 +258,7 @@ The `turns` field is omitted. After recording placement decisions, simulation co
 |-------|------|-------------|
 | `playerTurn` | int | 1-based player index of the acting player. |
 | `stage` | string | Turn stage character: `a` (place 1st settlement) or `f` (place 2nd settlement). See [state-action-serialization.md](state-action-serialization.md) Part I section 4. |
-| `serializedState` | string | 4-section placement phase state: `tiles\|ports\|placementVertices\|edges`. See [state-action-serialization.md](state-action-serialization.md) Part II. |
+| `serializedState` | string | Canonical 5-section placement state: `tiles\|ports\|stage\|placementVertices\|edges`. Owner IDs put the acting player first. |
 | `simulations` | int | Total MCTS rollouts performed for this decision. |
 | `elapsedMs` | int | Wall-clock time spent on MCTS search (milliseconds). |
 | `modelValue` | float? | Placement model's scalar value estimate when a combined prior response was applied; otherwise `null`. |
@@ -315,7 +315,7 @@ For unexplored actions, the action remains in the export with `wins: []`, `rollo
 
 Board symmetry permutations transform vertex and edge indices. For placement data, both the state and the actions must be permuted:
 
-1. **State permutation**: The 4-section placement state is permuted via `BoardSymmetry.PermutePlacementState`, which rearranges tiles, ports, vertices, and edges according to the symmetry.
+1. **State permutation**: The 5-section placement state is permuted via `BoardSymmetry.PermutePlacementState`, which rearranges tiles, ports, vertex pairs (including `p`), and edges while retaining stage.
 2. **Action permutation**: Each `(vertex, edge)` pair is mapped through the symmetry's vertex and edge permutation arrays to produce a new `(vertex', edge')`, which is then re-serialized as a new action string via `PlacementActionSerializer`.
 
 The `wins`, `rollouts`, and `winRate` for a permuted action are identical to the original — only the action identity changes. This avoids redundant data in the export.

@@ -493,7 +493,7 @@ public sealed class CatanState : ICoreState
 
     /// <summary>
     /// Serializes the placement phase state in human-readable form.
-    /// Format: tiles|ports|placementVertices|edges
+    /// Format: tiles|ports|stage|placementVertices|edges
     /// </summary>
     public string SerializePlacementPhase() => CatanStateSerializer.SerializePlacementPhase(this);
 
