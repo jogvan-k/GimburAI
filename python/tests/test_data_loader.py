@@ -596,30 +596,36 @@ MINI_PLACEMENT_STATE = (
     "|______________________________"
 )
 MINI_PLACEMENT_STATE_PERM = MINI_PLACEMENT_STATE
+MINI_ROAD_STATE = MINI_PLACEMENT_STATE.replace("|a|._", "|e|p_", 1)
+MINI_ROAD_STATE_PERM = MINI_ROAD_STATE
 
 
-def _placement_game(*, rollouts: tuple[int, int] = (30, 70)) -> dict:
+def _placement_game(
+    *, visits: tuple[int, int] = (30, 70), stage: str = "a"
+) -> dict:
+    road = stage in ("e", "i")
     return {
         "winner": 1,
         "states": [
             {
                 "playerTurn": 1,
-                "serializedState": MINI_PLACEMENT_STATE,
-                "permutations": [MINI_PLACEMENT_STATE_PERM],
+                "stage": stage,
+                "serializedState": MINI_ROAD_STATE if road else MINI_PLACEMENT_STATE,
+                "permutations": [MINI_ROAD_STATE_PERM if road else MINI_PLACEMENT_STATE_PERM],
                 "actions": [
                     {
-                        "action": "0SE",
+                        "policyIndex": 0,
                         "winRate": 0.2,
                         "wins": [18.0, 2.0],
-                        "rollouts": rollouts[0],
-                        "permutations": ["1SW"],
+                        "visits": visits[0],
+                        "permutations": [1],
                     },
                     {
-                        "action": "5N",
+                        "policyIndex": 5,
                         "winRate": 0.8,
                         "wins": [14.0, 56.0],
-                        "rollouts": rollouts[1],
-                        "permutations": ["6N"],
+                        "visits": visits[1],
+                        "permutations": [2 if road else 6],
                     },
                 ],
             }
@@ -671,6 +677,18 @@ class TestExpandPlacementGames:
         assert perm_policy[tok.vertex_action_index(6)] == pytest.approx(0.7)
         assert identity_mask.sum() == perm_mask.sum() == 2
 
+    def test_road_targets_use_direction_indices(self) -> None:
+        from gimbur_nn.data_loader import expand_placement_games
+
+        samples = expand_placement_games([_placement_game(stage="e")], MINI_2P, target="combined")
+        identity_policy = samples[0][2]
+        perm_policy = samples[1][2]
+
+        assert identity_policy[0] == pytest.approx(0.3)
+        assert identity_policy[5] == pytest.approx(0.7)
+        assert perm_policy[1] == pytest.approx(0.3)
+        assert perm_policy[2] == pytest.approx(0.7)
+
     def test_policy_temperature_one_preserves_exact_visit_shares(self) -> None:
         from gimbur_nn.data_loader import expand_placement_games
         from gimbur_nn.placement_tokenizer import PlacementTokenizer
@@ -711,7 +729,7 @@ class TestExpandPlacementGames:
 
         tok = PlacementTokenizer(MINI_2P)
         _, _, policy, legal_mask = expand_placement_games(
-            [_placement_game(rollouts=(0, 70))],
+            [_placement_game(visits=(0, 70))],
             MINI_2P,
             tokenizer=tok,
             target="combined",
@@ -756,7 +774,7 @@ class TestExpandPlacementGames:
         from gimbur_nn.data_loader import expand_placement_games
 
         assert (
-            expand_placement_games([_placement_game(rollouts=(0, 0))], MINI_2P, target="combined")
+            expand_placement_games([_placement_game(visits=(0, 0))], MINI_2P, target="combined")
             == []
         )
 
@@ -779,6 +797,36 @@ class TestExpandPlacementGames:
             action.pop("wins")
 
         assert expand_placement_games([game], MINI_2P) == []
+
+    @pytest.mark.parametrize(
+        ("stage", "state", "message"),
+        [
+            ("x", MINI_PLACEMENT_STATE, "invalid placement stage"),
+            ("e", MINI_PLACEMENT_STATE.replace("|a|", "|e|"), "exactly one pending"),
+            ("a", MINI_ROAD_STATE.replace("|e|", "|a|"), "must not contain a pending"),
+        ],
+    )
+    def test_rejects_malformed_stage_pending_marker(
+        self, stage: str, state: str, message: str
+    ) -> None:
+        from gimbur_nn.data_loader import expand_placement_games
+
+        game = _placement_game()
+        game["states"][0]["stage"] = stage
+        game["states"][0]["serializedState"] = state
+        with pytest.raises(ValueError, match=message):
+            expand_placement_games([game], MINI_2P, target="combined")
+
+    @pytest.mark.parametrize(("stage", "policy_index"), [("a", 24), ("e", 6)])
+    def test_rejects_policy_index_outside_stage_vocabulary(
+        self, stage: str, policy_index: int
+    ) -> None:
+        from gimbur_nn.data_loader import expand_placement_games
+
+        game = _placement_game(stage=stage)
+        game["states"][0]["actions"][0]["policyIndex"] = policy_index
+        with pytest.raises(ValueError, match="policy index"):
+            expand_placement_games([game], MINI_2P, target="combined")
 
 
 class TestPlacementDataset:

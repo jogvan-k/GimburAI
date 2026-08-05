@@ -50,7 +50,6 @@ class SimulateConfig:
     max_rollout_depth: int = 500
     action_rollout_limit: int | None = None
     max_prior_depth: int | None = None
-    simulations_per_action: int | None = None
     symmetries: bool = True
     verbosity: str = "quiet"
     oversample: float = 1.0
@@ -921,8 +920,6 @@ def _step_simulate(
         sim_config["actionRolloutLimit"] = sim.action_rollout_limit
     if sim.max_prior_depth is not None:
         sim_config["maxPriorDepth"] = sim.max_prior_depth
-    if sim.simulations_per_action is not None:
-        sim_config["simulationsPerAction"] = sim.simulations_per_action
     if sim.parallelism is not None:
         sim_config["parallelism"] = sim.parallelism
     sim_config["maxPendingEvaluations"] = sim.max_pending_evaluations

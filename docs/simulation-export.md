@@ -173,9 +173,9 @@ Board symmetry permutations rearrange position-dependent data (tile indices, ver
 
 ## InitialPlacement Export Schema
 
-*Produces placement training data. The current export still records every legal composite settlement-road action; the Python loader temporarily aggregates these to settlement-vertex targets for `placement_stage_policy`.*
+*Produces tree-level settlement and road training data for `placement_stage_policy`.*
 
-When `--export-type InitialPlacement` is specified, the game loop runs in placement-only mode. MCTS search is performed at settlement placement steps (`PlaceFirstSettlement` and `PlaceSecondSettlement`). Each MCTS root action is a `PlaceSettlementAction`, and its child state has `PlaceRoadAction` choices. The export combines these into composite actions serialized as `<vertex><direction>` strings (see [state-action-serialization.md](state-action-serialization.md) Part III). The MCTS leaf boundary is the exact deterministic result of the final placement road (`turnNumber: 1`, `stage: "r"`/`PreRoll`); it does not block or sample the subsequent stochastic `RollDiceAction`.
+When `--export-type InitialPlacement` is specified, the game loop runs in placement-only mode. Each non-forced settlement and road decision is searched and exported as its own MCTS root. Forced roots are applied without search or export. The MCTS leaf boundary is the exact deterministic result of the final placement road (`turnNumber: 1`, `stage: "r"`/`PreRoll`).
 
 Player 1 is always the player that placed the first settlement. No player rotation is applied.
 
@@ -215,7 +215,7 @@ Player 1 is always the player that placed the first settlement. No player rotati
 | `constraints` | object | MCTS search parameters (same structure as GameState). |
 | `board.serialized` | string | Board serialization (tiles and ports): `tiles\|ports`. |
 | `board.permutations` | string[] | Board string under each symmetry permutation. |
-| `states` | PlacementState[] | Array of placement state records, one per settlement decision. |
+| `states` | PlacementState[] | One record per non-forced settlement or road MCTS root. |
 
 The `turns` field is omitted. After recording placement decisions, simulation continues with seeded random legal play solely to obtain `winner`; no post-placement states are exported. If that continuation cannot finish within the action safety limit, `winner` is 0 and training uses only the MCTS target.
 
@@ -225,26 +225,26 @@ The `turns` field is omitted. After recording placement decisions, simulation co
 {
   "playerTurn": 1,
   "stage": "a",
-  "serializedState": "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|._._._._._._._._._._._._._._._._._._._._._._._._|______________________________|",
+  "serializedState": "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|a|._._._._._._._._._._._._._._._._._._._._._._._._|______________________________",
   "simulations": 5000,
   "elapsedMs": 1000,
-  "modelValue": 0.61,
-  "valueTarget": 0.62,
+  "modelValue": [0.61, 0.39],
+  "valueTarget": [0.62, 0.38],
   "actions": [
     {
-      "action": "6N",
+      "policyIndex": 6,
       "wins": [320.0, 180.0],
-      "rollouts": 500,
+      "visits": 500,
       "winRate": 0.64,
       "modelPrior": 0.18,
-      "permutations": ["8SE", "10SW", "14N", "16SE"]
+      "permutations": [8, 10, 14, 16]
     },
     {
-      "action": "6SW",
+      "policyIndex": 12,
       "wins": [280.0, 220.0],
-      "rollouts": 480,
+      "visits": 480,
       "winRate": 0.583,
-      "permutations": ["8N", "10SE", "14SW", "16N"]
+      "permutations": [4, 18, 20, 22]
     }
   ],
   "permutations": [
@@ -257,78 +257,58 @@ The `turns` field is omitted. After recording placement decisions, simulation co
 | Field | Type | Description |
 |-------|------|-------------|
 | `playerTurn` | int | 1-based player index of the acting player. |
-| `stage` | string | Turn stage character: `a` (place 1st settlement) or `f` (place 2nd settlement). See [state-action-serialization.md](state-action-serialization.md) Part I section 4. |
+| `stage` | string | `a`/`f` for settlement or `e`/`i` for road. It matches the serialized stage marker. |
 | `serializedState` | string | Canonical 5-section placement state: `tiles\|ports\|stage\|placementVertices\|edges`. Owner IDs put the acting player first. |
 | `simulations` | int | Total MCTS rollouts performed for this decision. |
 | `elapsedMs` | int | Wall-clock time spent on MCTS search (milliseconds). |
-| `modelValue` | float? | Placement model's scalar value estimate when a combined prior response was applied; otherwise `null`. |
-| `valueTarget` | float? | Rollout-weighted acting-player value target across legal composites; `null` if no rollouts are available. |
-| `actions` | Action[] | Every C#-legal composite action with per-action MCTS statistics, including zero-rollout actions. This list also defines the exported legal mask. |
+| `modelValue` | float[]? | Placement model's per-player value estimate when a prior response was applied; otherwise `null`. |
+| `valueTarget` | float[]? | Visit-weighted per-player root value target; `null` if no action visits are available. |
+| `actions` | Action[] | Every legal root action, including actions with zero visits. This list defines the legal mask. |
 | `permutations` | string[] | `serializedState` under each non-trivial symmetry permutation. Same order as `board.permutations`. |
 
 ### Action Object
 
-Each action represents a composite settlement + road placement. The action string encodes the settlement vertex and road direction as defined in [state-action-serialization.md](state-action-serialization.md) Part III.
+`policyIndex` is the settlement vertex at stages `a`/`f`, and the road direction index `0..5` from the pending settlement at stages `e`/`i`. Direction order is `N, NE, SE, S, SW, NW`.
 
 ```json
 {
-  "action": "6N",
+  "policyIndex": 6,
   "wins": [320.0, 180.0],
-  "rollouts": 500,
+  "visits": 500,
   "winRate": 0.64,
-  "permutations": ["8SE", "10SW", "14N", "16SE"]
+  "permutations": [8, 10, 14, 16]
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `action` | string | Composite action string: `<vertex_index><road_direction>` (e.g. `6N`, `12NW`, `53NE`). |
-| `wins` | float[] | MCTS win counts at the road grandchild node, 0-indexed (index 0 = player 1). See [Composite Action Stats](#composite-action-stats). |
-| `rollouts` | int | Total rollouts at the road grandchild node. |
-| `winRate` | float | Acting player's win rate (wins[playerIndex] / rollouts). |
-| `modelPrior` | float? | Masked, globally normalized NN probability for this legal composite. The root inference retains the complete legal dense policy, so unexpanded actions receive priors too. `null` only when no valid root model response was applied. |
-| `permutations` | string[] | Action string under each symmetry permutation. Same order as `board.permutations`. The wins, rollouts, and winRate are identical under permutation and are not repeated. |
+| `policyIndex` | int | Vertex index for settlement or direction index `0..5` for road. |
+| `wins` | float[] | Per-player value sums from `root.ActionStats[actionIndex]`; empty when unvisited. |
+| `visits` | int | Completed visits from the same root action edge. |
+| `winRate` | float | Acting player's value sum divided by visits, or zero when unvisited. |
+| `modelPrior` | float? | `root.Priors[actionIndex]`, or `null` when the root has no model prior. |
+| `permutations` | int[] | Transformed policy index under each state symmetry. |
 
-### Composite Action Stats
-
-During initial placement, the MCTS tree has this structure at each settlement decision:
-
-```
-Root (settlement choices)
- +-- PlaceSettlement(v=6)
- |    +-- PlaceRoad(e=5)   -> road grandchild: wins, rollouts
- |    +-- PlaceRoad(e=7)   -> road grandchild: wins, rollouts
- |    +-- PlaceRoad(e=8)   -> road grandchild: wins, rollouts
- +-- PlaceSettlement(v=10)
- |    +-- PlaceRoad(e=12)  -> road grandchild: wins, rollouts
- |    +-- PlaceRoad(e=14)  -> road grandchild: wins, rollouts
- ...etc
-```
-
-Each composite action maps to a specific road grandchild. The `wins` and `rollouts` are read directly from that grandchild MCTS node. This provides per-(vertex, road) granularity, allowing the model to learn directional road preferences.
-
-For unexplored actions, the action remains in the export with `wins: []`, `rollouts: 0`, and `winRate: 0`. Python maps all listed actions to the dense legal mask. In combined training, visit shares from a normal shared-root MCTS search form the policy target and policy loss is masked to these legal indices. Training can apply `policyTargetTemperature` to positive legal shares before loss calculation; this changes only the supervised target, not this export or the MCTS search that generated it. Zero shares and legality are preserved.
-
-`--simulations-per-action` runs separate rollouts from each post-composite state. Those rollout counts measure independent evaluation budgets, not shared-root action preference, and are therefore unsuitable as policy targets. Use standard shared-root placement search when training a combined value/policy model. `valueTarget` remains the rollout-weighted value label.
+For unexplored actions, the action remains in the export with `wins: []`, `visits: 0`, and `winRate: 0`. Visit shares form the policy target; `policyTargetTemperature` transforms only positive shares and preserves the legal mask.
 
 ### Symmetry Permutations (InitialPlacement)
 
 Board symmetry permutations transform vertex and edge indices. For placement data, both the state and the actions must be permuted:
 
 1. **State permutation**: The 5-section placement state is permuted via `BoardSymmetry.PermutePlacementState`, which rearranges tiles, ports, vertex pairs (including `p`), and edges while retaining stage.
-2. **Action permutation**: Each `(vertex, edge)` pair is mapped through the symmetry's vertex and edge permutation arrays to produce a new `(vertex', edge')`, which is then re-serialized as a new action string via `PlacementActionSerializer`.
+2. **Action permutation**: Settlement indices use `permutation.Vertices`. Road indices use `TransformDirectionIndex(pendingVertex, edge, permutation)`.
 
-The `wins`, `rollouts`, and `winRate` for a permuted action are identical to the original — only the action identity changes. This avoids redundant data in the export.
+The `wins`, `visits`, and `winRate` are unchanged; only `policyIndex` is transformed.
 
 Example with mini map (5 symmetry permutations):
 
 ```json
 {
-  "action": "6N",
+  "policyIndex": 6,
   "wins": [320.0, 180.0],
-  "rollouts": 500,
+  "visits": 500,
   "winRate": 0.64,
-  "permutations": ["8SE", "10SW", "14N", "16SE"]
+  "permutations": [8, 10, 14, 16]
 }
 ```
 

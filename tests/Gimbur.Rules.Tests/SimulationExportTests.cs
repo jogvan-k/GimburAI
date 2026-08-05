@@ -210,6 +210,94 @@ public class SimulationExportTests
     }
 
     [Test]
+    public void PlacementExport_SerializesSettlementAndRoadStagePolicyIndices()
+    {
+        var state = new CatanState(GameConfig.Mini, 2, new Random(42));
+        var settlementState = state.SerializePlacementPhase();
+        var settlementAction = Unwrap(state.Actions()[0]);
+        state = (CatanState)settlementAction.DoCoreAction();
+        var road = (PlaceRoadAction)Unwrap(state.Actions()[0]);
+        var serializer = PlacementActionSerializer.Mini;
+        var roadDirection = serializer.DirectionIndexOf(state.PendingSettlementVertex!.Value, road.EdgeIndex);
+        var permutation = BoardSymmetry.GetPermutations(BoardTopology.Mini)[0];
+        var game = new PlacementGameResult
+        {
+            Seed = 42,
+            Map = "mini",
+            Players = 2,
+            Winner = 1,
+            SearchTimeMs = 1,
+            MaxSimulations = 1,
+            MaxRolloutDepth = 1,
+            ActionRolloutLimit = 1,
+            BoardSerialized = state.SerializeBoard(),
+            States =
+            [
+                new PlacementStateRecord
+                {
+                    PlayerTurn = 1,
+                    Stage = "a",
+                    SerializedState = settlementState,
+                    Actions =
+                    [
+                        new PlacementActionRecord
+                        {
+                            PolicyIndex = ((PlaceSettlementAction)settlementAction).VertexIndex,
+                            Visits = 4,
+                            Wins = [3.0, 1.0],
+                            WinRate = 0.75,
+                        },
+                    ],
+                },
+                new PlacementStateRecord
+                {
+                    PlayerTurn = 1,
+                    PendingVertex = state.PendingSettlementVertex,
+                    Stage = "e",
+                    SerializedState = state.SerializePlacementPhase(),
+                    Actions =
+                    [
+                        new PlacementActionRecord
+                        {
+                            PolicyIndex = roadDirection,
+                            RoadEdge = road.EdgeIndex,
+                            Visits = 2,
+                            Wins = [1.0, 1.0],
+                            WinRate = 0.5,
+                        },
+                    ],
+                },
+            ],
+        };
+
+        var json = JsonSerializer.Serialize(
+            SimulationRunner.BuildPlacementGameJsonObject(game, [permutation]),
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        using var document = JsonDocument.Parse(json);
+        var settlement = document.RootElement.GetProperty("states")[0];
+        var exportedRoad = document.RootElement.GetProperty("states")[1];
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(settlement.GetProperty("stage").GetString(), Is.EqualTo("a"));
+            Assert.That(settlement.GetProperty("actions")[0].GetProperty("visits").GetInt32(), Is.EqualTo(4));
+            Assert.That(settlement.GetProperty("actions")[0].TryGetProperty("action", out _), Is.False);
+            Assert.That(
+                settlement.GetProperty("actions")[0].GetProperty("permutations")[0].GetInt32(),
+                Is.EqualTo(permutation.Vertices[((PlaceSettlementAction)settlementAction).VertexIndex]));
+            Assert.That(exportedRoad.GetProperty("stage").GetString(), Is.EqualTo("e"));
+            Assert.That(
+                exportedRoad.GetProperty("actions")[0].GetProperty("permutations")[0].GetInt32(),
+                Is.EqualTo(serializer.TransformDirectionIndex(
+                    state.PendingSettlementVertex.Value, road.EdgeIndex, permutation)));
+        });
+    }
+
+    private static CatanAction Unwrap(Kjarni.CoreAction action) => action.IsDeterministic
+        ? (CatanDeterministicAction)((Kjarni.CoreAction.Deterministic)action).Item
+        : (CatanStochasticAction)((Kjarni.CoreAction.Stochastic)action).Item;
+
+    [Test]
     public void EvaluationDiagnostics_AggregatesLogInfoAndSerializes()
     {
         var diagnostics = new EvaluationDiagnostics();

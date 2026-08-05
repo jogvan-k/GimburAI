@@ -41,8 +41,8 @@ internal enum ExportType
     /// </summary>
     GameState,
     /// <summary>
-    /// Export initial placement data for the GimburPlacementActionEvaluator model.
-    /// Records placement phase states and all candidate composite actions with per-action stats.
+    /// Export initial placement data for the stage-policy placement model.
+    /// Records every non-forced settlement and road root with per-action edge statistics.
     /// Implies placement-only mode.
     /// </summary>
     InitialPlacement,
@@ -130,16 +130,6 @@ internal record SimulationOptions
     /// Defaults to int.MaxValue (no limit).
     /// </summary>
     public int MaxPriorDepth { get; init; } = int.MaxValue;
-
-    /// <summary>
-    /// When set to a positive value, placement simulation enumerates every composite
-    /// (settlement + road) action and runs a fresh MCTS search with this many simulations
-    /// from each resulting post-placement state. This ensures uniform evaluation coverage
-    /// across all actions, including poor ones, producing more balanced training data.
-    /// Defaults to 0 (disabled — uses standard MCTS with UCB allocation).
-    /// Only applies when <see cref="ExportType"/> is <see cref="ExportType.InitialPlacement"/>.
-    /// </summary>
-    public int SimulationsPerAction { get; init; }
 
     /// <summary>
     /// Maximum games simulated concurrently. Zero selects the existing default:
@@ -291,56 +281,48 @@ internal record StateRecord
 }
 
 /// <summary>
-/// Per-action record for a composite placement action (settlement + road).
+/// Per-action statistics at a placement-stage MCTS root.
 /// </summary>
 internal record PlacementActionRecord
 {
-    /// <summary>
-    /// Composite action string: vertex index + road direction (e.g. "6N", "12NW").
-    /// </summary>
-    public required string Action { get; init; }
+    public required int PolicyIndex { get; init; }
+
+    /// <summary>Road edge used only to transform direction indices under symmetry.</summary>
+    public int? RoadEdge { get; init; }
 
     /// <summary>
-    /// Settlement vertex index.
-    /// </summary>
-    public required int Vertex { get; init; }
-
-    /// <summary>
-    /// Road edge index.
-    /// </summary>
-    public required int Edge { get; init; }
-
-    /// <summary>
-    /// MCTS win counts at the road grandchild node, 0-indexed. Empty if unexplored.
+    /// Per-player value sums on the root action edge. Empty if unexplored.
     /// </summary>
     public required double[] Wins { get; init; }
 
     /// <summary>
-    /// Total rollouts at the road grandchild node.
+    /// Completed visits on the root action edge.
     /// </summary>
-    public int Rollouts { get; init; }
+    public int Visits { get; init; }
 
     /// <summary>
-    /// Acting player's win rate at the road grandchild.
+    /// Acting player's root-edge value average.
     /// </summary>
     public double WinRate { get; init; }
 
     /// <summary>
-    /// NN probability for this settlement-road composite. Null unless both the
-    /// settlement marginal and conditional road policy were applied.
+    /// NN probability aligned with this root action.
     /// </summary>
     public double? ModelPrior { get; init; }
 }
 
 /// <summary>
-/// Per-state record for a placement decision, capturing all candidate composite actions.
+/// Per-state record for a settlement or road placement decision.
 /// </summary>
 internal record PlacementStateRecord
 {
     public required int PlayerTurn { get; init; }
 
+    /// <summary>Pending settlement vertex for road-stage symmetry transforms.</summary>
+    public int? PendingVertex { get; init; }
+
     /// <summary>
-    /// Turn stage character: 'a' (1st settlement) or 'f' (2nd settlement).
+    /// Turn stage character: settlement 'a'/'f' or road 'e'/'i'.
     /// </summary>
     public required string Stage { get; init; }
 
@@ -390,7 +372,7 @@ internal record PlacementStateRecord
     public int PriorNodesSkipped { get; init; }
 
     /// <summary>
-    /// All candidate composite actions with per-action MCTS statistics.
+    /// All legal root actions with per-edge MCTS statistics.
     /// </summary>
     public required List<PlacementActionRecord> Actions { get; init; }
 
@@ -454,7 +436,6 @@ internal record PlacementGameResult
     public required int MaxSimulations { get; init; }
     public required int MaxRolloutDepth { get; init; }
     public required int ActionRolloutLimit { get; init; }
-    public int SimulationsPerAction { get; init; }
     public required string BoardSerialized { get; init; }
     public required List<PlacementStateRecord> States { get; init; }
 
@@ -940,8 +921,8 @@ internal class SimulationRunner
 
     private static double[]? ComputePlacementValueTarget(IReadOnlyList<PlacementActionRecord> actions)
     {
-        var totalRollouts = actions.Sum(action => action.Rollouts);
-        if (totalRollouts == 0)
+        var totalVisits = actions.Sum(action => action.Visits);
+        if (totalVisits == 0)
             return null;
 
         var playerCount = actions.Max(action => action.Wins.Length);
@@ -956,7 +937,7 @@ internal class SimulationRunner
         }
 
         for (var player = 0; player < target.Length; player++)
-            target[player] /= totalRollouts;
+            target[player] /= totalVisits;
         return target;
     }
 
@@ -968,48 +949,41 @@ internal class SimulationRunner
         PlacementActionSerializer actionSerializer)
     {
         var playerIndex = (int)state.PlayerTurn;
-        var compositeActions = new List<PlacementActionRecord>();
-        var densePriors = mctsRoot.DensePriors;
-        for (var settlementIndex = 0; settlementIndex < actions.Length; settlementIndex++)
-        {
-            if (UnwrapCoreAction(actions[settlementIndex]) is not PlaceSettlementAction settlement)
-                continue;
-            Kjarni.MCTS.Types.MCTSState? settlementNode = null;
-            var treeAction = mctsRoot.Actions[settlementIndex];
-            if (treeAction.IsDeterministicAction)
-                settlementNode = ((Kjarni.MCTS.Types.Action.DeterministicAction)treeAction).Item;
-            else if (treeAction.IsHorizonAction)
-                settlementNode = ((Kjarni.MCTS.Types.Action.HorizonAction)treeAction).Item;
+        var stageActions = new List<PlacementActionRecord>(actions.Length);
+        var settlementStage = state.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement;
+        var roadStage = state.Stage is TurnStage.PlaceFirstRoad or TurnStage.PlaceSecondRoad;
+        if (!settlementStage && !roadStage)
+            throw new InvalidOperationException($"Stage {state.Stage} is not an initial placement decision.");
 
-            var roadState = (CatanState)settlement.DoCoreAction();
-            var roadActions = roadState.Actions();
-            for (var roadIndex = 0; roadIndex < roadActions.Length; roadIndex++)
+        for (var actionIndex = 0; actionIndex < actions.Length; actionIndex++)
+        {
+            var coreAction = UnwrapCoreAction(actions[actionIndex]);
+            var (policyIndex, roadEdge) = coreAction switch
             {
-                if (UnwrapCoreAction(roadActions[roadIndex]) is not PlaceRoadAction road)
-                    continue;
-                var (wins, winRate, rollouts) = settlementNode is not null
-                    && roadIndex < settlementNode.Actions.Length
-                    ? GetActionWinData(settlementNode, roadIndex, playerIndex)
-                    : (Array.Empty<double>(), 0.0, 0);
-                var denseIndex = actionSerializer.IndexOf(settlement.VertexIndex, road.EdgeIndex);
-                compositeActions.Add(new PlacementActionRecord
-                {
-                    Action = actionSerializer.Serialize(settlement.VertexIndex, road.EdgeIndex),
-                    Vertex = settlement.VertexIndex,
-                    Edge = road.EdgeIndex,
-                    Wins = wins,
-                    Rollouts = rollouts,
-                    WinRate = winRate,
-                    ModelPrior = densePriors is { } policy && denseIndex < policy.Value.Length
-                        ? policy.Value[denseIndex]
-                        : null,
-                });
-            }
+                PlaceSettlementAction settlement when settlementStage => (settlement.VertexIndex, (int?)null),
+                PlaceRoadAction road when roadStage && state.PendingSettlementVertex is { } pending =>
+                    (actionSerializer.DirectionIndexOf(pending, road.EdgeIndex), road.EdgeIndex),
+                _ => throw new InvalidOperationException(
+                    $"Action {coreAction.GetType().Name} does not match placement stage {state.Stage}."),
+            };
+            var (wins, winRate, visits) = GetActionWinData(mctsRoot, actionIndex, playerIndex);
+            stageActions.Add(new PlacementActionRecord
+            {
+                PolicyIndex = policyIndex,
+                RoadEdge = roadEdge,
+                Wins = wins,
+                Visits = visits,
+                WinRate = winRate,
+                ModelPrior = mctsRoot.Priors is { } priors && actionIndex < priors.Value.Length
+                    ? priors.Value[actionIndex]
+                    : null,
+            });
         }
 
         return new PlacementStateRecord
         {
             PlayerTurn = state.CurrentPlayer,
+            PendingVertex = state.PendingSettlementVertex,
             Stage = StateToken.EncodeTurnStage(state.Stage).ToString(),
             SerializedState = state.SerializePlacementPhase(),
             Simulations = logInfo.simulations,
@@ -1024,9 +998,9 @@ internal class SimulationRunner
             PriorInferencesPerDepth = logInfo.priorInferencesPerDepth is { Count: > 0 }
                 ? new Dictionary<int, int>(logInfo.priorInferencesPerDepth) : null,
             PriorNodesSkipped = logInfo.priorNodesSkipped,
-            Actions = compositeActions,
+            Actions = stageActions,
             ModelValue = mctsRoot.ValueEstimates is { } values ? (double[])values.Value.Clone() : null,
-            ValueTarget = ComputePlacementValueTarget(compositeActions),
+            ValueTarget = ComputePlacementValueTarget(stageActions),
         };
     }
 
@@ -1200,7 +1174,8 @@ internal class SimulationRunner
                 states.Add(CreateStateRecord(state, serialized, mctsRoot, logInfo));
 
                 if (isPlacementPhase
-                    && state.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement)
+                    && state.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceFirstRoad
+                        or TurnStage.PlaceSecondSettlement or TurnStage.PlaceSecondRoad)
                 {
                     placementStates!.Add(CreatePlacementStateRecord(
                         state, actions, mctsRoot, logInfo, placementActionSerializer!));
@@ -1321,254 +1296,27 @@ internal class SimulationRunner
             var actions = state.Actions();
             if (actions.Length == 0) break;
 
-            var isSettlementStage = state.Stage is TurnStage.PlaceFirstSettlement
-                                                 or TurnStage.PlaceSecondSettlement;
+            var isPlacementStage = state.Stage is TurnStage.PlaceFirstSettlement
+                or TurnStage.PlaceFirstRoad or TurnStage.PlaceSecondSettlement or TurnStage.PlaceSecondRoad;
 
             if (actions.Length == 1)
             {
                 state = (CatanState)UnwrapCoreAction(actions[0]).DoCoreAction();
                 mctsRoot = AdvanceMctsRoot(mctsRoot, 0, (ICoreState)state);
             }
-            else if (isSettlementStage && _options.SimulationsPerAction > 0)
+            else if (isPlacementStage)
             {
-                // Per-action MCTS mode: enumerate every composite (settlement + road)
-                // action and run a fresh MCTS search from each post-placement state.
-                // This ensures uniform evaluation coverage across all actions.
-                var timer = Stopwatch.StartNew();
-                var playerIndex = (int)state.PlayerTurn;
-                var stageChar = StateToken.EncodeTurnStage(state.Stage).ToString();
-                var serializedState = state.SerializePlacementPhase();
-
-                var compositeActions = new List<PlacementActionRecord>();
-                var totalSimulations = 0;
-                var totalPriorNodesRequested = 0;
-                var totalPriorActionsApplied = 0;
-                var totalPriorActionsRequested = 0;
-                var totalPriorInferencesRequested = 0;
-                var totalPriorNodesSkipped = 0;
-                var totalPriorResponsesOrphaned = 0;
-                Dictionary<int, int>? totalPriorActionsPerDepth = null;
-                Dictionary<int, int>? totalPriorInferencesPerDepth = null;
-
-                // Create a per-action MCTS config: simulation-limited, no time limit.
-                var perActionMctsConfig = new Kjarni.MCTSConfig(
-                    searchTime.Unlimited,
-                    _options.SimulationsPerAction,
-                    _options.MaxRolloutDepth,
-                    System.Math.Sqrt(2.0),
-                    _options.ActionRolloutLimit,
-                    priorClient,
-                    null,
-                    leafBoundary,
-                    _options.MaxPriorDepth,
-                    _options.MaxPendingEvaluations,
-                    _options.LeafEvaluationTimeoutMs,
-                    _options.DrainTimeoutMs);
-                var perActionMcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(perActionMctsConfig);
-
-                int bestSettlementIdx = 0;
-                double bestWinRate = double.NegativeInfinity;
-
-                for (var si = 0; si < actions.Length; si++)
-                {
-                    var coreSettlement = UnwrapCoreAction(actions[si]);
-                    if (coreSettlement is not PlaceSettlementAction psa) continue;
-                    var vertex = psa.VertexIndex;
-
-                    // Apply settlement to get road-stage state.
-                    var roadState = (CatanState)coreSettlement.DoCoreAction();
-                    var roadActions = roadState.Actions();
-
-                    for (var ri = 0; ri < roadActions.Length; ri++)
-                    {
-                        var coreRoad = UnwrapCoreAction(roadActions[ri]);
-                        if (coreRoad is not PlaceRoadAction pra) continue;
-                        var edge = pra.EdgeIndex;
-
-                        // Apply road to get post-placement state.
-                        var postPlacementState = (ICoreState)coreRoad.DoCoreAction();
-
-                        // Run fresh MCTS from the post-placement state.
-                        var actionRoot = new Kjarni.MCTS.Types.MCTSState(postPlacementState);
-                        perActionMcts.RunSimulation(actionRoot);
-
-                        // Accumulate prior stats from this per-action MCTS run.
-                        var actionLogInfo = perActionMcts.LatestLogInfo();
-                        evaluationDiagnostics.Add(actionLogInfo);
-                        totalPriorNodesRequested += actionLogInfo.priorNodesRequested;
-                        totalPriorActionsApplied += actionLogInfo.priorActionsApplied;
-                        totalPriorActionsRequested += actionLogInfo.priorActionsRequested;
-                        totalPriorInferencesRequested += actionLogInfo.priorInferencesRequested;
-                        totalPriorNodesSkipped += actionLogInfo.priorNodesSkipped;
-                        totalPriorResponsesOrphaned += actionLogInfo.priorResponsesOrphaned;
-                        if (actionLogInfo.priorActionsPerDepth is { Count: > 0 })
-                        {
-                            totalPriorActionsPerDepth ??= new Dictionary<int, int>();
-                            foreach (var (depth, count) in actionLogInfo.priorActionsPerDepth)
-                            {
-                                totalPriorActionsPerDepth.TryGetValue(depth, out var existing);
-                                totalPriorActionsPerDepth[depth] = existing + count;
-                            }
-                        }
-                        if (actionLogInfo.priorInferencesPerDepth is { Count: > 0 })
-                        {
-                            totalPriorInferencesPerDepth ??= new Dictionary<int, int>();
-                            foreach (var (depth, count) in actionLogInfo.priorInferencesPerDepth)
-                            {
-                                totalPriorInferencesPerDepth.TryGetValue(depth, out var existing);
-                                totalPriorInferencesPerDepth[depth] = existing + count;
-                            }
-                        }
-
-                        var wins = actionRoot.WinCounts is { Length: > 0 }
-                            ? (double[])actionRoot.WinCounts.Clone()
-                            : Array.Empty<double>();
-                        var rollouts = actionRoot.Rollouts;
-                        var winRate = rollouts > 0 && playerIndex < wins.Length
-                            ? wins[playerIndex] / rollouts
-                            : 0.0;
-                        totalSimulations += rollouts;
-
-                        var actionString = actionSerializer.Serialize(vertex, edge);
-                        compositeActions.Add(new PlacementActionRecord
-                        {
-                            Action = actionString,
-                            Vertex = vertex,
-                            Edge = edge,
-                            Wins = wins,
-                            Rollouts = rollouts,
-                            WinRate = winRate,
-                            ModelPrior = null,
-                        });
-
-                        if (winRate > bestWinRate)
-                        {
-                            bestWinRate = winRate;
-                            bestSettlementIdx = si;
-                        }
-                    }
-                }
-
-                placementStates.Add(new PlacementStateRecord
-                {
-                    PlayerTurn = state.CurrentPlayer,
-                    Stage = stageChar,
-                    SerializedState = serializedState,
-                    Simulations = totalSimulations,
-                    ElapsedMs = (int)timer.Elapsed.TotalMilliseconds,
-                    PriorNodesRequested = totalPriorNodesRequested,
-                    PriorActionsApplied = totalPriorActionsApplied,
-                    PriorActionsRequested = totalPriorActionsRequested,
-                    PriorInferencesRequested = totalPriorInferencesRequested,
-                    PriorResponsesOrphaned = totalPriorResponsesOrphaned,
-                    PriorActionsPerDepth = totalPriorActionsPerDepth,
-                    PriorInferencesPerDepth = totalPriorInferencesPerDepth,
-                    PriorNodesSkipped = totalPriorNodesSkipped,
-                    Actions = compositeActions,
-                    ModelValue = null,
-                    ValueTarget = ComputePlacementValueTarget(compositeActions),
-                });
-
-                // Apply the best settlement action and advance.
-                state = (CatanState)UnwrapCoreAction(actions[bestSettlementIdx]).DoCoreAction();
-                mctsRoot = null; // Tree not reusable in per-action mode.
-            }
-            else if (isSettlementStage)
-            {
-                // Standard MCTS mode: run a single search from the settlement root.
                 mctsRoot ??= new Kjarni.MCTS.Types.MCTSState((ICoreState)state);
                 mcts.RunSimulation(mctsRoot);
                 var bestPath = extractBestPath(mctsRoot);
                 var logInfo = mcts.LatestLogInfo();
                 evaluationDiagnostics.Add(logInfo);
-
-                var playerIndex = (int)state.PlayerTurn;
-                var stageChar = StateToken.EncodeTurnStage(state.Stage).ToString();
-                var serializedState = state.SerializePlacementPhase();
-
-                // Build composite actions by iterating settlement children and their road grandchildren.
-                var compositeActions = new List<PlacementActionRecord>();
-                var densePriors = mctsRoot.DensePriors;
-                for (var si = 0; si < mctsRoot.Actions.Length; si++)
-                {
-                    var settlementAction = mctsRoot.Actions[si];
-                    // Extract the vertex index from the underlying PlaceSettlementAction.
-                    var coreSettlement = UnwrapCoreAction(actions[si]);
-                    if (coreSettlement is not PlaceSettlementAction psa) continue;
-                    var vertex = psa.VertexIndex;
-
-                    // Get the child MCTSState for this settlement action.
-                    Kjarni.MCTS.Types.MCTSState? childMctsState = null;
-                    if (settlementAction.IsDeterministicAction)
-                        childMctsState = ((Kjarni.MCTS.Types.Action.DeterministicAction)settlementAction).Item;
-                    else if (settlementAction.IsHorizonAction)
-                        childMctsState = ((Kjarni.MCTS.Types.Action.HorizonAction)settlementAction).Item;
-
-                    // C# legality is authoritative even when this settlement is unexplored.
-                    var roadState = (CatanState)coreSettlement.DoCoreAction();
-                    var roadCoreActions = roadState.Actions();
-
-                    for (var ri = 0; ri < roadCoreActions.Length; ri++)
-                    {
-                        var coreRoad = UnwrapCoreAction(roadCoreActions[ri]);
-                        if (coreRoad is not PlaceRoadAction pra) continue;
-                        var edge = pra.EdgeIndex;
-
-                        var (wins, winRate, rollouts) = childMctsState is not null
-                            && ri < childMctsState.Actions.Length
-                            ? GetActionWinData(childMctsState, ri, playerIndex)
-                            : (Array.Empty<double>(), 0.0, 0);
-                        var denseIndex = actionSerializer.IndexOf(vertex, edge);
-                        double? modelPrior = densePriors is { } modelPolicy
-                            && denseIndex < modelPolicy.Value.Length
-                            ? modelPolicy.Value[denseIndex]
-                            : null;
-                        var actionString = actionSerializer.Serialize(vertex, edge);
-
-                        compositeActions.Add(new PlacementActionRecord
-                        {
-                            Action = actionString,
-                            Vertex = vertex,
-                            Edge = edge,
-                            Wins = wins,
-                            Rollouts = rollouts,
-                            WinRate = winRate,
-                            ModelPrior = modelPrior,
-                        });
-                    }
-                }
-
-                placementStates.Add(new PlacementStateRecord
-                {
-                    PlayerTurn = state.CurrentPlayer,
-                    Stage = stageChar,
-                    SerializedState = serializedState,
-                    Simulations = logInfo.simulations,
-                    ElapsedMs = (int)logInfo.elapsedTime.TotalMilliseconds,
-                    PriorNodesRequested = logInfo.priorNodesRequested,
-                    PriorActionsApplied = logInfo.priorActionsApplied,
-                    PriorActionsRequested = logInfo.priorActionsRequested,
-                    PriorInferencesRequested = logInfo.priorInferencesRequested,
-                    PriorResponsesOrphaned = logInfo.priorResponsesOrphaned,
-                    PriorActionsPerDepth = logInfo.priorActionsPerDepth is { Count: > 0 }
-                        ? new Dictionary<int, int>(logInfo.priorActionsPerDepth)
-                        : null,
-                    PriorInferencesPerDepth = logInfo.priorInferencesPerDepth is { Count: > 0 }
-                        ? new Dictionary<int, int>(logInfo.priorInferencesPerDepth)
-                        : null,
-                    PriorNodesSkipped = logInfo.priorNodesSkipped,
-                    Actions = compositeActions,
-                    ModelValue = mctsRoot.ValueEstimates is { } modelValues
-                        ? (double[])modelValues.Value.Clone()
-                        : null,
-                    ValueTarget = ComputePlacementValueTarget(compositeActions),
-                });
+                placementStates.Add(CreatePlacementStateRecord(
+                    state, actions, mctsRoot, logInfo, actionSerializer));
 
                 // Apply the best action and advance.
                 if (!bestPath.IsEmpty && bestPath.Head < actions.Length)
                 {
-                    if (mctsRoot.Actions[bestPath.Head].IsHorizonAction)
-                        break;
                     state = (CatanState)UnwrapCoreAction(actions[bestPath.Head]).DoCoreAction();
                     mctsRoot = AdvanceMctsRoot(mctsRoot, bestPath.Head, (ICoreState)state);
                 }
@@ -1650,7 +1398,6 @@ internal class SimulationRunner
             MaxSimulations = _options.MaxSimulations,
             MaxRolloutDepth = _options.MaxRolloutDepth,
             ActionRolloutLimit = _options.ActionRolloutLimit,
-            SimulationsPerAction = _options.SimulationsPerAction,
             BoardSerialized = boardSerialized,
             States = placementStates,
             PriorActionsPerDepth = priorActionsPerDepth,
@@ -1938,7 +1685,6 @@ internal class SimulationRunner
                 game.MaxSimulations,
                 game.MaxRolloutDepth,
                 game.ActionRolloutLimit,
-                game.SimulationsPerAction,
             },
             board = new
             {
@@ -1961,16 +1707,14 @@ internal class SimulationRunner
                 s.ValueTarget,
                 actions = s.Actions.Select(a => new
                 {
-                    a.Action,
+                    a.PolicyIndex,
                     a.Wins,
-                    a.Rollouts,
+                    a.Visits,
                     a.WinRate,
                     a.ModelPrior,
                     permutations = symmetryPerms.Length > 0
-                        ? symmetryPerms.Select(p =>
-                            actionSerializer.Serialize(p.Vertices[a.Vertex], p.Edges[a.Edge]))
-                            .ToArray()
-                        : Array.Empty<string>(),
+                        ? symmetryPerms.Select(p => TransformPlacementPolicyIndex(s, a, p, actionSerializer)).ToArray()
+                        : Array.Empty<int>(),
                 }).ToArray(),
                 permutations = symmetryPerms.Length > 0
                     ? symmetryPerms.Select(p => BoardSymmetry.PermutePlacementState(s.SerializedState, p)).ToArray()
@@ -2036,13 +1780,13 @@ internal class SimulationRunner
                 s.ValueTarget,
                 actions = s.Actions.Select(a => new
                 {
-                    a.Action,
+                    a.PolicyIndex,
                     a.Wins,
-                    a.Rollouts,
+                    a.Visits,
                     a.WinRate,
                     a.ModelPrior,
                     permutations = symmetryPerms.Select(p =>
-                        actionSerializer.Serialize(p.Vertices[a.Vertex], p.Edges[a.Edge])).ToArray(),
+                        TransformPlacementPolicyIndex(s, a, p, actionSerializer)).ToArray(),
                 }).ToArray(),
                 permutations = symmetryPerms.Select(p =>
                     BoardSymmetry.PermutePlacementState(s.SerializedState, p)).ToArray(),
@@ -2069,5 +1813,18 @@ internal class SimulationRunner
             }).ToArray(),
             evaluationDiagnostics = game.EvaluationDiagnostics,
         };
+    }
+
+    private static int TransformPlacementPolicyIndex(
+        PlacementStateRecord state,
+        PlacementActionRecord action,
+        SymmetryPermutation permutation,
+        PlacementActionSerializer serializer)
+    {
+        if (state.Stage is "a" or "f")
+            return permutation.Vertices[action.PolicyIndex];
+        if (state.Stage is "e" or "i" && state.PendingVertex is { } vertex && action.RoadEdge is { } edge)
+            return serializer.TransformDirectionIndex(vertex, edge, permutation);
+        throw new InvalidOperationException($"Invalid placement export stage/action data for stage {state.Stage}.");
     }
 }

@@ -457,6 +457,8 @@ The model always emits one policy tensor of shape `[B,max(V,6)]`. The stage toke
 
 At settlement stages `a` and `f`, output index `v` represents vertex `v`; only the first `V` logits are meaningful.
 
+Placement exports use this representation directly: each non-forced MCTS root stores all legal actions as integer `policyIndex` values. At settlement stages the index is transformed under symmetry through `perm.Vertices`; at road stages it is transformed from the pending vertex and road edge with `TransformDirectionIndex`. No composite action string is part of the current export schema.
+
 ### Vertex Index
 
 The decimal index (0-based) of the vertex where the settlement is placed. Range: 0–23 (mini), 0–31 (small), 0–53 (standard).

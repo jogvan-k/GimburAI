@@ -207,13 +207,6 @@ internal static class RootCommandFactory
             DefaultValueFactory = _ => int.MaxValue,
         };
 
-        var simulationsPerActionOption = new Option<int>("--simulations-per-action")
-        {
-            Description = "Run a fixed number of MCTS simulations per composite placement action. " +
-                          "Ensures uniform evaluation coverage for all actions (placement export only, default: 0 = disabled).",
-            DefaultValueFactory = _ => 0,
-        };
-
         var parallelismOption = new Option<int>("--parallelism")
         {
             Description = "Maximum games simulated concurrently (default: 4 with NN priors, otherwise all processors)",
@@ -253,7 +246,6 @@ internal static class RootCommandFactory
           nnUrlOption,
           placementOnlyOption,
           maxPriorDepthOption,
-          simulationsPerActionOption,
           parallelismOption,
           maxPendingEvaluationsOption,
           leafEvaluationTimeoutOption,
@@ -290,7 +282,6 @@ internal static class RootCommandFactory
             int? serverMaxPriorDepth = parseResult.GetValue(serverMaxPriorDepthOption);
             bool placementOnly = parseResult.GetValue(placementOnlyOption);
             int maxPriorDepth = parseResult.GetValue(maxPriorDepthOption);
-            int simulationsPerAction = parseResult.GetValue(simulationsPerActionOption);
             int parallelism = parseResult.GetValue(parallelismOption);
             int maxPendingEvaluations = parseResult.GetValue(maxPendingEvaluationsOption);
             int leafEvaluationTimeoutMs = parseResult.GetValue(leafEvaluationTimeoutOption);
@@ -361,8 +352,6 @@ internal static class RootCommandFactory
                     placementOnly = ConfigLoader.GetBool(cfg, "placementOnly") ?? placementOnly;
                 if (!WasProvided(parseResult, "--max-prior-depth"))
                     maxPriorDepth = ConfigLoader.GetInt(cfg, "maxPriorDepth") ?? maxPriorDepth;
-                if (!WasProvided(parseResult, "--simulations-per-action"))
-                    simulationsPerAction = ConfigLoader.GetInt(cfg, "simulationsPerAction") ?? simulationsPerAction;
                 if (!WasProvided(parseResult, "--parallelism"))
                     parallelism = ConfigLoader.GetInt(cfg, "parallelism") ?? parallelism;
                 if (!WasProvided(parseResult, "--max-pending-evaluations"))
@@ -412,7 +401,6 @@ internal static class RootCommandFactory
                 NnUrl = nnUrl,
                 PlacementOnly = placementOnly,
                 MaxPriorDepth = maxPriorDepth,
-                SimulationsPerAction = simulationsPerAction,
                 Parallelism = parallelism,
                 MaxPendingEvaluations = maxPendingEvaluations,
                 LeafEvaluationTimeoutMs = leafEvaluationTimeoutMs,

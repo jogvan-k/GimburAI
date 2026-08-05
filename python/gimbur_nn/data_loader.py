@@ -30,7 +30,6 @@ from __future__ import annotations
 import json
 import math
 import random
-import re
 import statistics
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -45,20 +44,11 @@ if TYPE_CHECKING:
     from .game_config import GameConfig
 
 _STRIP = str.maketrans("", "", "|/")
-_COMPOSITE_PLACEMENT_ACTION = re.compile(r"^(\d+)(N|NE|SE|S|SW|NW)$")
 
 
 def _compact(human_readable: str) -> str:
     """Strip ``|`` and ``/`` separators to produce the compact form."""
     return human_readable.translate(_STRIP)
-
-
-def _composite_export_vertex(action: str) -> int:
-    """Extract a settlement vertex from the current composite export format."""
-    match = _COMPOSITE_PLACEMENT_ACTION.fullmatch(action)
-    if match is None:
-        raise ValueError(f"invalid composite placement action: {action}")
-    return int(match.group(1))
 
 
 def _normalize_wins(wins: list[float], player_count: int) -> torch.Tensor | None:
@@ -486,25 +476,36 @@ def _process_placement_game(
     for state_entry in game.get("placementStates", game.get("states", [])):
         state_serialized: str = state_entry["serializedState"]
         state_permutations: list[str] = state_entry["permutations"]
-
+        stage = state_entry.get("stage")
+        if stage not in ("a", "e", "f", "i"):
+            raise ValueError(f"invalid placement stage: {stage}")
         all_variants = [state_serialized, *state_permutations]
+        for variant in all_variants:
+            sections = variant.split("|")
+            if len(sections) != 5 or sections[2] != stage:
+                raise ValueError("placement state stage does not match serialized state")
+            pending_count = sections[3][::2].count("p")
+            if stage in ("e", "i") and pending_count != 1:
+                raise ValueError("road placement state must contain exactly one pending marker")
+            if stage in ("a", "f") and pending_count != 0:
+                raise ValueError("settlement placement state must not contain a pending marker")
         actions = state_entry["actions"]
         if not actions:
             continue
-        rollouts = [max(0, int(action.get("rollouts", 0))) for action in actions]
-        total_rollouts = sum(rollouts)
-        if target == "combined" and total_rollouts == 0:
+        visits = [max(0, int(action.get("visits", 0))) for action in actions]
+        total_visits = sum(visits)
+        if target == "combined" and total_visits == 0:
             continue
         weighted_value = torch.zeros(player_count, dtype=torch.float32)
         value_weight = 0
-        for action, rollout in zip(actions, rollouts):
-            if rollout <= 0:
+        for action, visit_count in zip(actions, visits):
+            if visit_count <= 0:
                 continue
             wins = action.get("wins", action.get("Wins", []))
             action_value = _normalize_wins(wins, player_count)
             if action_value is not None:
-                weighted_value += action_value * rollout
-                value_weight += rollout
+                weighted_value += action_value * visit_count
+                value_weight += visit_count
         mcts_wins = (weighted_value / value_weight).tolist() if value_weight > 0 else []
         value_target = _value_target(
             mcts_wins, game.get("winner"), player_count, mcts_value_weight_start
@@ -521,14 +522,22 @@ def _process_placement_game(
 
             policy = torch.zeros(tokenizer.policy_size, dtype=torch.float32)
             legal_mask = torch.zeros(tokenizer.policy_size, dtype=torch.bool)
-            for action_entry, rollout in zip(actions, rollouts):
-                action = (
-                    action_entry["action"]
+            for action_entry, visit_count in zip(actions, visits):
+                action_idx = int(
+                    action_entry["policyIndex"]
                     if variant_idx == 0
                     else action_entry["permutations"][variant_idx - 1]
                 )
-                action_idx = tokenizer.vertex_action_index(_composite_export_vertex(action))
-                policy[action_idx] += rollout / total_rollouts
+                if stage in ("a", "f"):
+                    try:
+                        tokenizer.vertex_action_index(action_idx)
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"policy index {action_idx} is invalid for stage {stage}"
+                        ) from exc
+                elif not 0 <= action_idx < 6:
+                    raise ValueError(f"policy index {action_idx} is invalid for stage {stage}")
+                policy[action_idx] += visit_count / total_visits
                 legal_mask[action_idx] = True
             if policy_target_temperature != 1.0:
                 positive = policy > 0
