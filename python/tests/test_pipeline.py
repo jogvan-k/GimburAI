@@ -12,7 +12,9 @@ from gimbur_nn.pipeline import (
     _count_json_files,
     _discard_stop_reason,
     _generation_complete,
+    _load_config,
     _load_section,
+    _run_placement_and_state_generation,
     _save_progress_chart,
     _save_summary,
     _step_simulate,
@@ -24,6 +26,32 @@ def test_train_config_loads_replay_window() -> None:
     config = _load_section(TrainConfig, {"replayGenerations": 5})
 
     assert config.replay_generations == 5
+
+
+def test_train_config_loads_enabled() -> None:
+    config = _load_section(TrainConfig, {"enabled": False})
+
+    assert not config.enabled
+
+
+def test_pipeline_config_loads_per_model_training_enabled(tmp_path) -> None:
+    path = tmp_path / "pipeline.json"
+    path.write_text(
+        json.dumps(
+            {
+                "trainingMode": "placement-and-state",
+                "placementTrain": {"enabled": False},
+                "stateTrain": {"enabled": True},
+            }
+        )
+    )
+
+    config = _load_config(path)
+
+    assert config.placement_train is not None
+    assert not config.placement_train.enabled
+    assert config.state_train is not None
+    assert config.state_train.enabled
 
 
 def test_train_config_loads_policy_target_temperature() -> None:
@@ -209,6 +237,92 @@ def test_placement_and_state_resume_requires_shared_data_and_both_models(tmp_pat
     assert not _generation_complete(cfg, 0)
     (tmp_path / "models/state/gen0.pt").write_text("")
     assert _generation_complete(cfg, 0)
+
+
+class _UnusedServer:
+    def start(self, **kwargs) -> None:
+        raise AssertionError("server should not start")
+
+    def stop(self) -> None:
+        raise AssertionError("server should not stop")
+
+
+def test_placement_and_state_disabled_model_copies_previous_checkpoint(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = PipelineConfig(
+        training_mode="placement-and-state",
+        data_dir=str(tmp_path / "data"),
+        model_dir=str(tmp_path / "models"),
+        benchmarks=[],
+        simulate=SimulateConfig(games=1),
+        placement_train=TrainConfig(enabled=False),
+        state_train=TrainConfig(),
+    )
+    data = tmp_path / "data/gen1"
+    data.mkdir(parents=True)
+    (data / "game.json").write_text("{}")
+    previous = tmp_path / "models/placement/gen0.pt"
+    previous.parent.mkdir(parents=True)
+    previous.write_bytes(b"frozen placement")
+    trained: list[str] = []
+
+    def fake_train(cfg, gen, project_root, model_type=None, sim_override=None) -> None:
+        trained.append(model_type)
+        destination = tmp_path / f"models/{model_type}/gen{gen}.pt"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"trained")
+
+    monkeypatch.setattr("gimbur_nn.pipeline._step_train", fake_train)
+
+    _run_placement_and_state_generation(cfg, 1, tmp_path, _UnusedServer(), "unused", {})
+
+    assert (tmp_path / "models/placement/gen1.pt").read_bytes() == b"frozen placement"
+    assert trained == ["state"]
+    assert not (tmp_path / "models/.configs").exists()
+    assert not (tmp_path / "models/placement/gen1_checkpoints").exists()
+
+
+def test_placement_and_state_disabled_gen0_without_checkpoint_errors(tmp_path, monkeypatch) -> None:
+    cfg = PipelineConfig(
+        training_mode="placement-and-state",
+        model_dir=str(tmp_path / "models"),
+        placement_train=TrainConfig(enabled=False),
+        benchmarks=[],
+    )
+    monkeypatch.setattr(
+        "gimbur_nn.pipeline._step_simulate",
+        lambda *args, **kwargs: pytest.fail("simulation should not run"),
+    )
+
+    with pytest.raises(FileNotFoundError, match="generation 0.*Seed that path"):
+        _run_placement_and_state_generation(cfg, 0, tmp_path, _UnusedServer(), "unused", {})
+
+
+def test_placement_and_state_enabled_models_still_train(tmp_path, monkeypatch) -> None:
+    cfg = PipelineConfig(
+        training_mode="placement-and-state",
+        data_dir=str(tmp_path / "data"),
+        model_dir=str(tmp_path / "models"),
+        benchmarks=[],
+        simulate=SimulateConfig(games=1),
+    )
+    data = tmp_path / "data/gen0"
+    data.mkdir(parents=True)
+    (data / "game.json").write_text("{}")
+    trained: list[str] = []
+
+    def fake_train(cfg, gen, project_root, model_type=None, sim_override=None) -> None:
+        trained.append(model_type)
+        destination = tmp_path / f"models/{model_type}/gen{gen}.pt"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"trained")
+
+    monkeypatch.setattr("gimbur_nn.pipeline._step_train", fake_train)
+
+    _run_placement_and_state_generation(cfg, 0, tmp_path, _UnusedServer(), "unused", {})
+
+    assert trained == ["placement", "state"]
 
 
 def test_summary_preserves_confidence_metadata(tmp_path) -> None:

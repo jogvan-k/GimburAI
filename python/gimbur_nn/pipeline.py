@@ -22,6 +22,7 @@ import argparse
 import json
 import math
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -71,6 +72,7 @@ class SimulateConfig:
 class TrainConfig:
     """Parameters for ``python -m gimbur_nn.train``."""
 
+    enabled: bool = True
     epochs: int = 0
     patience: int = 5
     batch_size: int = 64
@@ -1174,6 +1176,43 @@ def _step_train(
     _run(args, label=f"Gen {gen}: Train{type_label}", cwd=project_root)
 
 
+def _step_train_or_freeze(
+    cfg: PipelineConfig,
+    gen: int,
+    project_root: Path,
+    model_type: str,
+) -> None:
+    """Train an enabled model or carry its frozen checkpoint forward."""
+    tr = (
+        cfg.placement_train or cfg.train
+        if model_type == "placement"
+        else cfg.state_train or cfg.train
+    )
+    if tr.enabled:
+        _step_train(cfg, gen, project_root, model_type=model_type)
+        return
+
+    destination = _model_path(cfg, gen, model_type)
+    if destination.exists():
+        print(f"  Train ({model_type}): Frozen model already exists at {destination}, skipping.")
+        return
+    if gen == 0:
+        raise FileNotFoundError(
+            f"Cannot freeze {model_type} training at generation 0: no checkpoint exists at "
+            f"{destination}. Seed that path with the frozen model before running the pipeline."
+        )
+
+    source = _model_path(cfg, gen - 1, model_type)
+    if not source.is_file():
+        raise FileNotFoundError(
+            f"Cannot freeze {model_type} training for generation {gen}: previous checkpoint "
+            f"not found at {source}."
+        )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    print(f"  Train ({model_type}): Copied frozen model {source} -> {destination}.")
+
+
 def _step_benchmark(
     cfg: PipelineConfig,
     gen: int,
@@ -1802,6 +1841,16 @@ def _run_placement_and_state_generation(
     gimbur_server: _GimburServerProcess | None = None,
 ) -> None:
     """Simulate one shared game corpus, then train both generation checkpoints."""
+    # Materialize disabled checkpoints first so gen 0 fails before doing expensive simulation.
+    for model_type in ("placement", "state"):
+        tr = (
+            cfg.placement_train or cfg.train
+            if model_type == "placement"
+            else cfg.state_train or cfg.train
+        )
+        if not tr.enabled:
+            _step_train_or_freeze(cfg, gen, project_root, model_type)
+
     simulation_done = _simulation_complete(cfg, gen)
     simulation_url: str | None = None
     if gen > 0 and not simulation_done:
@@ -1830,8 +1879,14 @@ def _run_placement_and_state_generation(
     if gen > 0 and not simulation_done:
         server.stop()
 
-    _step_train(cfg, gen, project_root, model_type="placement")
-    _step_train(cfg, gen, project_root, model_type="state")
+    for model_type in ("placement", "state"):
+        tr = (
+            cfg.placement_train or cfg.train
+            if model_type == "placement"
+            else cfg.state_train or cfg.train
+        )
+        if tr.enabled:
+            _step_train_or_freeze(cfg, gen, project_root, model_type)
 
     benchmark_done = _benchmark_complete(cfg, gen)
     if not benchmark_done:

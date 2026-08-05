@@ -101,6 +101,7 @@ so `oversample` remains useful only for terminating long-tail in-flight work ear
 
 | Key           | Type  | Default | Description |
 |---------------|-------|---------|-------------|
+| `enabled`     | bool  | `true`  | Train this model. In `placement-and-state` mode, `false` freezes the corresponding model. |
 | `epochs`      | int   | `0`     | Max epochs (`0` = unlimited, uses patience). |
 | `patience`    | int   | `5`     | Early-stop after N epochs without improvement. |
 | `batchSize`   | int   | `64`    | Training batch size. |
@@ -222,6 +223,13 @@ This mode writes one `data/genN/` directory. Generation N simulation serves both
 generation N-1 checkpoints; generation 0 uses rollout fallback. Training reads the same
 files twice and writes `models/placement/genN.pt` and `models/state/genN.pt`. Resume treats
 simulation and each checkpoint as separate DAG completion markers.
+
+Set `enabled` to `false` in `placementTrain` or `stateTrain` to freeze that model while the
+other continues training. For generation N > 0, the pipeline copies the disabled model's
+`genN-1.pt` to `genN.pt` when the destination is absent; it does not invoke the trainer or
+create training/checkpoint directories. To freeze a model from generation 0, seed its
+`models/placement/gen0.pt` or `models/state/gen0.pt` destination before starting. Both model
+files remain required for generation completion, serving, and resume.
 
 See [`pipeline.example.json`](../pipeline.example.json) in the project
 root for a fully commented example.

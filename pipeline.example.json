@@ -47,6 +47,9 @@
 
   // Model training parameters (python -m gimbur_nn.train).
   "train": {
+    // In placement-and-state mode, override this in placementTrain or stateTrain
+    // with "enabled": false to carry that model's previous checkpoint forward.
+    "enabled": true,
     "epochs": 0,
     "patience": 5,
     "batchSize": 64,
