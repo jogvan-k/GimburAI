@@ -147,7 +147,7 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
 | `wins` | float[] | Raw MCTS win counts at the root, 0-indexed (index 0 = player 1). |
 | `valueTarget` | float[]? | Exact resolved value distribution when available. Training prefers this over accumulated `wins`. |
 | `scores` | float[] | Authoritative victory-point scores from `CatanState.Scores()`, indexed by player. |
-| `actions` | Action[] | Every legal action at the root with MCTS edge diagnostics. Forced states contain their sole selected action with zero visits; terminal states are empty. |
+| `actions` | Action[] | Every legal action at the root with MCTS edge diagnostics. Forced normal-play states are searched and contain their sole selected action; terminal states are empty. |
 | `reachedTerminal` | bool | Whether MCTS fully resolved the tree (all root actions are Terminal). |
 | `priorsRequested` | int | Number of NN prior requests sent during this search. |
 | `priorsApplied` | int | Number of NN prior responses applied to tree nodes. |
@@ -160,6 +160,10 @@ Each `actions` entry contains a descriptive domain action such as `Roll`,
 an `outcomes` array with outcome-level statistics and the concrete sampled outcome marked
 `selected`. Roll outcomes use `2` through `12`; development-card purchases use card names;
 robber steals use resource names when a resource was transferred.
+
+Outcome `visits` count evaluations of that outcome state. For stochastic actions MCTS may
+evaluate every weighted outcome during one parent-edge simulation, so outcome visits do not
+form a partition of the aggregate action visits and may sum to more than the parent count.
 
 State-value training blends each root's normalized per-player MCTS wins with the
 one-hot final game winner. The MCTS weight decreases linearly from
@@ -175,10 +179,11 @@ its cap independently. Placement datasets are unaffected.
 Candidate result states are not exported or trained unless they naturally become a
 later searched root.
 
-States with exactly one legal action are exported for value-model coverage and advanced
-without MCTS. Their sole action is included for diagnostics with zero visits. Terminal
-states are also exported with an exact one-hot `valueTarget`; forced stochastic roots whose
-outcomes are all terminal carry the probability-weighted resolved distribution.
+Normal-play states with exactly one legal action still run MCTS so value training and
+stochastic outcome diagnostics receive rollouts and priors. Initial-placement forced actions
+remain fast-forwarded because placement policy training records only genuine decisions.
+Terminal states are exported with an exact one-hot `valueTarget`; forced stochastic roots
+whose outcomes are all terminal carry the probability-weighted resolved distribution.
 
 The iterative pipeline replays the current and recent generations (three by default)
 when training a state model. Configure `train.replayGenerations` to bound this window;

@@ -966,7 +966,7 @@ internal class SimulationRunner
         int actionIndex,
         int playerIndex,
         bool selected,
-        CatanState? selectedResult,
+        string? selectedOutcome,
         int flattenedPriorOffset)
     {
         var (wins, winRate, visits) = GetActionWinData(mctsRoot, actionIndex, playerIndex);
@@ -1000,7 +1000,7 @@ internal class SimulationRunner
                         && flattenedPriorOffset + outcomeIndex < flattened.Value.Length
                             ? flattened.Value[flattenedPriorOffset + outcomeIndex]
                             : null,
-                    Selected = selected && selectedResult is not null && outcomeState.Equals(selectedResult),
+                    Selected = selected && selectedOutcome == DescribeOutcome(stochastic, outcomeState, outcomeIndex),
                 });
             }
         }
@@ -1165,7 +1165,7 @@ internal class SimulationRunner
         Kjarni.MCTS.Types.MCTSState mctsRoot,
         Kjarni.MCTS.Types.LogInfo logInfo,
         int selectedActionIndex,
-        CatanState? selectedResult)
+        string? selectedOutcome)
     {
         var winCounts = mctsRoot.WinCounts is { Length: > 0 }
             ? (double[])mctsRoot.WinCounts.Clone()
@@ -1191,7 +1191,7 @@ internal class SimulationRunner
             Wins = winCounts,
             ValueTarget = resolvedTarget,
             Actions = CreateStateActionRecords(
-                state.Actions(), mctsRoot, playerIndex, selectedActionIndex, selectedResult),
+                state.Actions(), mctsRoot, playerIndex, selectedActionIndex, selectedOutcome),
             ReachedTerminal = logInfo.reachedTerminal,
             PriorNodesRequested = logInfo.priorNodesRequested,
             PriorResponsesOrphaned = logInfo.priorResponsesOrphaned,
@@ -1213,7 +1213,7 @@ internal class SimulationRunner
         Kjarni.MCTS.Types.MCTSState mctsRoot,
         int playerIndex,
         int selectedActionIndex,
-        CatanState? selectedResult)
+        string? selectedOutcome)
     {
         var result = new List<StateActionRecord>(actions.Length);
         var flattenedPriorOffset = 0;
@@ -1225,7 +1225,7 @@ internal class SimulationRunner
                 actionIndex,
                 playerIndex,
                 actionIndex == selectedActionIndex,
-                selectedResult,
+                selectedOutcome,
                 flattenedPriorOffset));
             var action = UnwrapCoreAction(actions[actionIndex]);
             flattenedPriorOffset += action is CatanStochasticAction stochastic
@@ -1238,7 +1238,7 @@ internal class SimulationRunner
     private static StateRecord CreateUnsearchedStateRecord(
         CatanState state,
         CoreAction? forcedAction = null,
-        CatanState? selectedResult = null)
+        string? selectedOutcome = null)
     {
         var wins = new double[state.PlayerCount];
         if (state.WinnerPlayer > 0)
@@ -1279,7 +1279,7 @@ internal class SimulationRunner
                         Visits = 0,
                         WinRate = outcomeWins[state.CurrentPlayer - 1],
                         ModelPrior = null,
-                        Selected = selectedResult is not null && outcomeState.Equals(selectedResult),
+                        Selected = selectedOutcome == DescribeOutcome(stochastic, outcomeState, outcomeIndex),
                     });
                 }
             }
@@ -1409,20 +1409,16 @@ internal class SimulationRunner
             var actions = state.Actions();
             if (actions.Length == 0) break;
 
-            if (actions.Length == 1)
+            if (actions.Length == 1 && isPlacementPhase)
             {
-                // A forced transition cannot benefit from search and used to consume
-                // the full per-decision MCTS budget. It is also not a useful policy
-                // training root because no action choice exists.
-                var selectedResult = (CatanState)UnwrapCoreAction(actions[0]).DoCoreAction();
-                if (!isPlacementPhase)
-                    states.Add(CreateUnsearchedStateRecord(state, actions[0], selectedResult));
-                state = selectedResult;
+                // Placement policy training only records genuine decisions.
+                state = (CatanState)UnwrapCoreAction(actions[0]).DoCoreAction();
                 mctsRoot = AdvanceMctsRoot(mctsRoot, 0, (ICoreState)state);
             }
             else
             {
-                // Multiple actions available — run MCTS to decide.
+                // Run MCTS for both decisions and forced normal-play states so every
+                // exported state has value and stochastic-outcome diagnostics.
                 // Progress reporting: log on turn 1 and then every 10 turns.
                 if (!_quiet && state.Stage == TurnStage.BuildTrade
                     && (lastReportedTurn < 0 || state.TurnNumber / 10 > lastReportedTurn / 10))
@@ -1443,8 +1439,13 @@ internal class SimulationRunner
                 evaluationDiagnostics.Add(logInfo);
 
                 CatanState? selectedResult = null;
+                string? selectedOutcome = null;
                 if (!bestPath.IsEmpty && bestPath.Head < actions.Length)
+                {
                     selectedResult = (CatanState)UnwrapCoreAction(actions[bestPath.Head]).DoCoreAction();
+                    if (UnwrapCoreAction(actions[bestPath.Head]) is CatanStochasticAction stochastic)
+                        selectedOutcome = DescribeOutcome(stochastic, selectedResult, outcomeIndex: 0);
+                }
 
                 states.Add(CreateStateRecord(
                     state,
@@ -1452,7 +1453,7 @@ internal class SimulationRunner
                     mctsRoot,
                     logInfo,
                     bestPath.IsEmpty ? -1 : bestPath.Head,
-                    selectedResult));
+                    selectedOutcome));
 
                 if (isPlacementPhase
                     && state.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceFirstRoad
