@@ -120,7 +120,7 @@ internal static class CatanStateSerializer
         }
 
 
-        // Section 12: Dev Card Resolution State (2 chars)
+        // Section 12: Pending staged-action state (5 chars)
         // Char 1: pending road building placements for current player (0-2, CrockfordBase32)
         // Char 2: post-dev-card return stage, or '_' for null
         sb.Append('|');
@@ -128,6 +128,13 @@ internal static class CatanStateSerializer
         sb.Append(state._postDevCardStage.HasValue
             ? StateToken.EncodeTurnStage(state._postDevCardStage.Value)
             : '_');
+        sb.Append(state._pendingBankTradeGive.HasValue
+            ? StateToken.EncodeResource(state._pendingBankTradeGive.Value)
+            : '_');
+        sb.Append(state._pendingYearOfPlentyFirst.HasValue
+            ? StateToken.EncodeResource(state._pendingYearOfPlentyFirst.Value)
+            : '_');
+        sb.Append(state._devCardPlayedThisTurn ? '1' : '0');
 
         // Section 13: Remaining development card deck (5 chars)
         sb.Append('|');
@@ -313,7 +320,8 @@ internal static class CatanStateSerializer
         board.RobberTile = robberTile;
 
         var pendingSettlement = InferPendingSettlementVertex(board, currentPlayer, stage);
-        var turnNumber = stage is TurnStage.PreRoll or TurnStage.ChooseRobberLocation or TurnStage.ChooseRobberVictim or TurnStage.BuildTrade ? 1 : 0;
+        var turnNumber = stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceFirstRoad
+            or TurnStage.PlaceSecondSettlement or TurnStage.PlaceSecondRoad ? 0 : 1;
 
         var deck = new int[CatanState.DevCardCount];
         if (sections[12].Length != CatanState.DevCardCount)
@@ -329,6 +337,16 @@ internal static class CatanStateSerializer
         var roadBuildingSection = sections[11];
         pendingRoadBuildingPlacements[currentPlayer] = CrockfordBase32.Decode(roadBuildingSection[0]);
         postDevCardStage = roadBuildingSection[1] == '_' ? null : StateToken.DecodeTurnStage(roadBuildingSection[1]);
+        ResourceType? pendingBankTradeGive = roadBuildingSection[2] == '_'
+            ? null : StateToken.DecodeResource(roadBuildingSection[2]);
+        ResourceType? pendingYearOfPlentyFirst = roadBuildingSection[3] == '_'
+            ? null : StateToken.DecodeResource(roadBuildingSection[3]);
+        var devCardPlayedThisTurn = roadBuildingSection[4] switch
+        {
+            '0' => false,
+            '1' => true,
+            _ => throw new InvalidOperationException("Invalid development-card-played flag."),
+        };
 
         var state = new CatanState(
             config,
@@ -348,6 +366,9 @@ internal static class CatanStateSerializer
             newDevCardsThisTurn,
             pendingRoadBuildingPlacements,
             postDevCardStage,
+            pendingBankTradeGive,
+            pendingYearOfPlentyFirst,
+            devCardPlayedThisTurn,
             vertexPlacementRound: InferPlacementRounds(topology.VertexCount, vertices, stage));
 
         return state;
@@ -481,8 +502,11 @@ internal static class CatanStateSerializer
             sb.Append(compact[pos++]);
         }
 
-        // Section 12: Dev Card Resolution State — 2 chars
+        // Section 12: Pending staged-action state — 5 chars
         sb.Append('|');
+        sb.Append(compact[pos++]);
+        sb.Append(compact[pos++]);
+        sb.Append(compact[pos++]);
         sb.Append(compact[pos++]);
         sb.Append(compact[pos++]);
 
@@ -540,7 +564,7 @@ internal static class CatanStateSerializer
         // Capacity: tokens + 8 section '|' separators + player '/' separators
         var capacity = 1 + 2 + 2 + (topology.VertexCount * 2) + topology.EdgeCount
                        + (5 * playerCount) + playerCount + (5 * playerCount)
-                       + CatanState.NewDevCardSerializedCount + 2 + CatanState.DevCardCount + 1
+                       + CatanState.NewDevCardSerializedCount + 5 + CatanState.DevCardCount + 1
                        + 11 + (3 * (playerCount - 1));
         var sb = new StringBuilder(capacity);
 
@@ -633,12 +657,19 @@ internal static class CatanStateSerializer
         }
 
 
-        // Section 12: Dev Card Resolution State (2 chars)
+        // Section 12: Pending staged-action state (5 chars)
         sb.Append('|');
         sb.Append(CrockfordBase32.Encode(state._pendingRoadBuildingPlacements[state.CurrentPlayer]));
         sb.Append(state._postDevCardStage.HasValue
             ? StateToken.EncodeTurnStage(state._postDevCardStage.Value)
             : '_');
+        sb.Append(state._pendingBankTradeGive.HasValue
+            ? StateToken.EncodeResource(state._pendingBankTradeGive.Value)
+            : '_');
+        sb.Append(state._pendingYearOfPlentyFirst.HasValue
+            ? StateToken.EncodeResource(state._pendingYearOfPlentyFirst.Value)
+            : '_');
+        sb.Append(state._devCardPlayedThisTurn ? '1' : '0');
 
         // Section 13: Remaining development card deck
         sb.Append('|');

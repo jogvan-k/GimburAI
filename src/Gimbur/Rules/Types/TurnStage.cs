@@ -29,4 +29,31 @@ public enum TurnStage : byte
 
     /// <summary>Build and trade phase.</summary>
     BuildTrade = 7,
+
+    /// <summary>Place the first free Road Building road.</summary>
+    PlaceRoadBuildingFirst = 8,
+
+    /// <summary>Place a paid or second free committed road.</summary>
+    PlaceRoadCommitted = 9,
+
+    /// <summary>Place a paid committed settlement.</summary>
+    PlaceSettlementCommitted = 10,
+
+    /// <summary>Place a committed city upgrade.</summary>
+    PlaceCityCommitted = 11,
+
+    /// <summary>Choose the resource given to the bank.</summary>
+    ChooseBankTradeGive = 12,
+
+    /// <summary>Choose the resource received from the bank.</summary>
+    ChooseBankTradeReceive = 13,
+
+    /// <summary>Choose the resource monopolized from opponents.</summary>
+    ChooseMonopolyResource = 14,
+
+    /// <summary>Choose the first Year of Plenty resource.</summary>
+    ChooseYearOfPlentyFirst = 15,
+
+    /// <summary>Choose the second Year of Plenty resource.</summary>
+    ChooseYearOfPlentySecond = 16,
 }

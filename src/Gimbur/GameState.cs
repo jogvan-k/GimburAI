@@ -19,6 +19,9 @@ public sealed class CatanState : ICoreState
     internal readonly int[] _newDevCardsThisTurn;
     internal readonly int[] _pendingRoadBuildingPlacements;
     internal TurnStage? _postDevCardStage;
+    internal ResourceType? _pendingBankTradeGive;
+    internal ResourceType? _pendingYearOfPlentyFirst;
+    internal bool _devCardPlayedThisTurn;
     /// <summary>
     /// Per-vertex placement round: 0 = empty, 1 = placed during first round,
     /// 2 = placed during second round. Used by placement phase serialization.
@@ -73,6 +76,9 @@ public sealed class CatanState : ICoreState
         _newDevCardsThisTurn = new int[DevCardCount];
         _pendingRoadBuildingPlacements = new int[playerCount + 1];
         _postDevCardStage = null;
+        _pendingBankTradeGive = null;
+        _pendingYearOfPlentyFirst = null;
+        _devCardPlayedThisTurn = false;
         _vertexPlacementRound = new byte[config.Map.Topology.VertexCount];
         foreach (var pair in config.DevCardCounts)
         {
@@ -98,6 +104,9 @@ public sealed class CatanState : ICoreState
         int[] newDevCardsThisTurn,
         int[] pendingRoadBuildingPlacements,
         TurnStage? postDevCardStage,
+        ResourceType? pendingBankTradeGive,
+        ResourceType? pendingYearOfPlentyFirst,
+        bool devCardPlayedThisTurn,
         byte[] vertexPlacementRound)
     {
         Config = config;
@@ -117,6 +126,9 @@ public sealed class CatanState : ICoreState
         _newDevCardsThisTurn = newDevCardsThisTurn;
         _pendingRoadBuildingPlacements = pendingRoadBuildingPlacements;
         _postDevCardStage = postDevCardStage;
+        _pendingBankTradeGive = pendingBankTradeGive;
+        _pendingYearOfPlentyFirst = pendingYearOfPlentyFirst;
+        _devCardPlayedThisTurn = devCardPlayedThisTurn;
         _vertexPlacementRound = vertexPlacementRound;
     }
 
@@ -379,34 +391,24 @@ public sealed class CatanState : ICoreState
                 break;
 
             case TurnStage.BuildTrade:
-                if (_pendingRoadBuildingPlacements[CurrentPlayer] > 0)
+                if (LegalBuildRoadEdges(requireCost: true).Count > 0)
                 {
-                    foreach (var edgeIndex in LegalBuildRoadEdges(requireCost: false))
-                    {
-                        actions.Add(new PlaceRoadAction(this, edgeIndex));
-                    }
-
-                    break;
+                    actions.Add(new BuyRoadAction(this));
                 }
 
-                foreach (var edgeIndex in LegalBuildRoadEdges(requireCost: true))
+                if (LegalSettlementVertices(initialPlacement: false).Count > 0)
                 {
-                    actions.Add(new PlaceRoadAction(this, edgeIndex));
+                    actions.Add(new BuySettlementAction(this));
                 }
 
-                foreach (var vertexIndex in LegalSettlementVertices(initialPlacement: false))
+                if (LegalCityVertices().Count > 0)
                 {
-                    actions.Add(new PlaceSettlementAction(this, vertexIndex));
+                    actions.Add(new UpgradeCityAction(this));
                 }
 
-                foreach (var vertexIndex in LegalCityVertices())
+                if (LegalBankTradeGives().Count > 0)
                 {
-                    actions.Add(new BuildCityAction(this, vertexIndex));
-                }
-
-                foreach (var trade in LegalBankTrades())
-                {
-                    actions.Add(new BankTradeAction(this, trade.Give, trade.Receive));
+                    actions.Add(new TradeWithBankAction(this));
                 }
 
                 if (LegalDevCardPurchases().Count > 0)
@@ -420,6 +422,50 @@ public sealed class CatanState : ICoreState
                 }
 
                 actions.Add(new EndTurnAction(this));
+                break;
+            case TurnStage.PlaceRoadBuildingFirst:
+            case TurnStage.PlaceRoadCommitted:
+                foreach (var edgeIndex in LegalBuildRoadEdges(requireCost: false))
+                {
+                    actions.Add(new PlaceRoadAction(this, edgeIndex));
+                }
+                break;
+            case TurnStage.PlaceSettlementCommitted:
+                foreach (var vertexIndex in LegalSettlementVertices(initialPlacement: false, requireCost: false))
+                {
+                    actions.Add(new PlaceSettlementAction(this, vertexIndex));
+                }
+                break;
+            case TurnStage.PlaceCityCommitted:
+                foreach (var vertexIndex in LegalCityVertices(requireCost: false))
+                {
+                    actions.Add(new PlaceCityAction(this, vertexIndex));
+                }
+                break;
+            case TurnStage.ChooseBankTradeGive:
+                foreach (var resource in LegalBankTradeGives())
+                {
+                    actions.Add(new ChooseBankTradeGiveAction(this, resource));
+                }
+                break;
+            case TurnStage.ChooseBankTradeReceive:
+                foreach (var resource in CollectableResources().Where(r => r != _pendingBankTradeGive))
+                {
+                    actions.Add(new ChooseBankTradeReceiveAction(this, resource));
+                }
+                break;
+            case TurnStage.ChooseMonopolyResource:
+                foreach (var resource in CollectableResources())
+                {
+                    actions.Add(new ChooseMonopolyResourceAction(this, resource));
+                }
+                break;
+            case TurnStage.ChooseYearOfPlentyFirst:
+            case TurnStage.ChooseYearOfPlentySecond:
+                foreach (var resource in CollectableResources())
+                {
+                    actions.Add(new ChooseYearOfPlentyResourceAction(this, resource));
+                }
                 break;
         }
 
@@ -446,13 +492,20 @@ public sealed class CatanState : ICoreState
             RollDiceAction => ApplyRollDice(),
             ChooseRobberTileAction a => ApplyChooseRobberTile(a.TileIndex),
             ChooseRobberVictimAction a => ApplyChooseRobberVictim(a.VictimPlayer),
-            BuildCityAction a => ApplyBuildCity(a.VertexIndex),
-            BankTradeAction a => ApplyBankTrade(a.Give, a.Receive),
+            PlaceCityAction a => ApplyPlaceCity(a.VertexIndex),
+            BuyRoadAction => ApplyBuyRoad(),
+            BuySettlementAction => ApplyBuySettlement(),
+            UpgradeCityAction => ApplyUpgradeCity(),
+            TradeWithBankAction => ApplyTradeWithBank(),
+            ChooseBankTradeGiveAction a => ApplyChooseBankTradeGive(a.Resource),
+            ChooseBankTradeReceiveAction a => ApplyChooseBankTradeReceive(a.Resource),
             BuyDevCardAction => ApplyBuyDevCard(),
             PlayKnightAction => ApplyPlayKnight(),
             PlayRoadBuildingAction => ApplyPlayRoadBuilding(),
-            PlayMonopolyAction a => ApplyPlayMonopoly(a.Resource),
-            PlayYearOfPlentyAction a => ApplyPlayYearOfPlenty(a.First, a.Second),
+            PlayMonopolyAction => ApplyPlayMonopoly(),
+            ChooseMonopolyResourceAction a => ApplyChooseMonopolyResource(a.Resource),
+            PlayYearOfPlentyAction => ApplyPlayYearOfPlenty(),
+            ChooseYearOfPlentyResourceAction a => ApplyChooseYearOfPlentyResource(a.Resource),
             EndTurnAction => ApplyEndTurn(),
             _ => throw new InvalidOperationException($"Unsupported action type: {action.GetType().Name}"),
         };
@@ -539,6 +592,11 @@ public sealed class CatanState : ICoreState
             return false;
         }
 
+        if (_pendingBankTradeGive != other._pendingBankTradeGive
+            || _pendingYearOfPlentyFirst != other._pendingYearOfPlentyFirst
+            || _devCardPlayedThisTurn != other._devCardPlayedThisTurn)
+            return false;
+
         return true;
     }
 
@@ -603,6 +661,9 @@ public sealed class CatanState : ICoreState
         }
 
         hash.Add(_postDevCardStage.HasValue ? (int)_postDevCardStage.Value : -1);
+        hash.Add(_pendingBankTradeGive.HasValue ? (int)_pendingBankTradeGive.Value : -1);
+        hash.Add(_pendingYearOfPlentyFirst.HasValue ? (int)_pendingYearOfPlentyFirst.Value : -1);
+        hash.Add(_devCardPlayedThisTurn);
 
         return hash.ToHashCode();
     }
@@ -614,20 +675,20 @@ public sealed class CatanState : ICoreState
             return ApplyInitialSettlement(vertexIndex);
         }
 
-        if (Stage != TurnStage.BuildTrade)
+        if (Stage != TurnStage.PlaceSettlementCommitted)
         {
             throw new InvalidOperationException($"Settlement placement is not allowed during stage {Stage}.");
         }
 
-        if (!LegalSettlementVertices(initialPlacement: false).Contains(vertexIndex))
+        if (!LegalSettlementVertices(initialPlacement: false, requireCost: false).Contains(vertexIndex))
         {
             throw new InvalidOperationException(
                 $"Vertex {vertexIndex} is not a legal settlement location for player {CurrentPlayer}.");
         }
 
         var next = Clone();
-        next.PayCost(next.Config.SettlementCost);
         next.Board.VertexOccupancy[vertexIndex] = new VertexOccupancy(BuildingType.Settlement, CurrentPlayer);
+        next.Stage = TurnStage.BuildTrade;
         next.RefreshVictory();
         return next;
     }
@@ -639,14 +700,12 @@ public sealed class CatanState : ICoreState
             return ApplyInitialRoad(edgeIndex);
         }
 
-        if (Stage != TurnStage.BuildTrade)
+        if (Stage is not (TurnStage.PlaceRoadBuildingFirst or TurnStage.PlaceRoadCommitted))
         {
             throw new InvalidOperationException($"Road placement is not allowed during stage {Stage}.");
         }
 
-        var legalRoads = _pendingRoadBuildingPlacements[CurrentPlayer] > 0
-            ? LegalBuildRoadEdges(requireCost: false)
-            : LegalBuildRoadEdges(requireCost: true);
+        var legalRoads = LegalBuildRoadEdges(requireCost: false);
         if (!legalRoads.Contains(edgeIndex))
         {
             throw new InvalidOperationException(
@@ -654,27 +713,20 @@ public sealed class CatanState : ICoreState
         }
 
         var next = Clone();
-        if (next._pendingRoadBuildingPlacements[CurrentPlayer] > 0)
-        {
+        var roadBuilding = next._pendingRoadBuildingPlacements[CurrentPlayer] > 0;
+        if (roadBuilding)
             next._pendingRoadBuildingPlacements[CurrentPlayer]--;
+        next.Board.EdgeOccupancy[edgeIndex] = new EdgeOccupancy(CurrentPlayer);
+        next.UpdateLongestRoadOwner();
+        if (roadBuilding && next._pendingRoadBuildingPlacements[CurrentPlayer] > 0
+            && next.LegalBuildRoadEdges(requireCost: false).Count > 0)
+        {
+            next.Stage = TurnStage.PlaceRoadCommitted;
         }
         else
         {
-            next.PayCost(next.Config.RoadCost);
-        }
-
-        next.Board.EdgeOccupancy[edgeIndex] = new EdgeOccupancy(CurrentPlayer);
-        next.UpdateLongestRoadOwner();
-        if (next._pendingRoadBuildingPlacements[CurrentPlayer] > 0 && next.LegalBuildRoadEdges(requireCost: false).Count == 0)
-        {
             next._pendingRoadBuildingPlacements[CurrentPlayer] = 0;
-        }
-
-        // When all road building placements are done and a return stage is
-        // pending (e.g. road building played before dice roll), transition back.
-        if (next._pendingRoadBuildingPlacements[CurrentPlayer] == 0 && next._postDevCardStage.HasValue)
-        {
-            next.Stage = next._postDevCardStage.Value;
+            next.Stage = next._postDevCardStage ?? TurnStage.BuildTrade;
             next._postDevCardStage = null;
         }
 
@@ -853,48 +905,94 @@ public sealed class CatanState : ICoreState
         return ApplyChooseRobberTileNoSteal(Board.RobberTile);
     }
 
-    private CatanState ApplyBuildCity(int vertexIndex)
+    private CatanState ApplyPlaceCity(int vertexIndex)
     {
-        if (Stage != TurnStage.BuildTrade)
+        if (Stage != TurnStage.PlaceCityCommitted)
         {
             throw new InvalidOperationException("City upgrade is only allowed during build/trade stage.");
         }
 
-        if (!LegalCityVertices().Contains(vertexIndex))
+        if (!LegalCityVertices(requireCost: false).Contains(vertexIndex))
         {
             throw new InvalidOperationException($"Vertex {vertexIndex} is not a legal city upgrade.");
         }
 
         var next = Clone();
-        next.PayCost(next.Config.CityCost);
         next.Board.VertexOccupancy[vertexIndex] = new VertexOccupancy(BuildingType.City, CurrentPlayer);
+        next.Stage = TurnStage.BuildTrade;
         next.RefreshVictory();
         return next;
     }
 
-    private CatanState ApplyBankTrade(ResourceType give, ResourceType receive)
+    private CatanState ApplyBuyRoad()
     {
         if (Stage != TurnStage.BuildTrade)
-        {
-            throw new InvalidOperationException("Trading is only allowed during build/trade stage.");
-        }
+            throw new InvalidOperationException("Road purchase is only allowed during build/trade stage.");
+        if (LegalBuildRoadEdges(requireCost: true).Count == 0)
+            throw new InvalidOperationException("No paid road placement is available.");
+        var next = Clone();
+        next.PayCost(next.Config.RoadCost);
+        next.Stage = TurnStage.PlaceRoadCommitted;
+        return next;
+    }
 
-        EnsureCollectableResource(give);
+    private CatanState ApplyBuySettlement()
+    {
+        if (Stage != TurnStage.BuildTrade || LegalSettlementVertices(initialPlacement: false).Count == 0)
+            throw new InvalidOperationException("Settlement purchase is not available.");
+        var next = Clone();
+        next.PayCost(next.Config.SettlementCost);
+        next.Stage = TurnStage.PlaceSettlementCommitted;
+        return next;
+    }
+
+    private CatanState ApplyUpgradeCity()
+    {
+        if (Stage != TurnStage.BuildTrade || LegalCityVertices().Count == 0)
+            throw new InvalidOperationException("City upgrade is not available.");
+        var next = Clone();
+        next.PayCost(next.Config.CityCost);
+        next.Stage = TurnStage.PlaceCityCommitted;
+        return next;
+    }
+
+    private CatanState ApplyTradeWithBank()
+    {
+        if (Stage != TurnStage.BuildTrade || LegalBankTradeGives().Count == 0)
+            throw new InvalidOperationException("Bank trade is not available.");
+        var next = Clone();
+        next.Stage = TurnStage.ChooseBankTradeGive;
+        return next;
+    }
+
+    private CatanState ApplyChooseBankTradeGive(ResourceType give)
+    {
+        if (Stage != TurnStage.ChooseBankTradeGive || !LegalBankTradeGives().Contains(give))
+            throw new InvalidOperationException("Bank trade give choice is not legal.");
+        var next = Clone();
+        next._pendingBankTradeGive = give;
+        next.Stage = TurnStage.ChooseBankTradeReceive;
+        return next;
+    }
+
+    private CatanState ApplyChooseBankTradeReceive(ResourceType receive)
+    {
+        if (Stage != TurnStage.ChooseBankTradeReceive || !_pendingBankTradeGive.HasValue)
+            throw new InvalidOperationException("Bank trade receive choice is not expected.");
+
+        var give = _pendingBankTradeGive.Value;
         EnsureCollectableResource(receive);
         if (give == receive)
-        {
             throw new InvalidOperationException("Give and receive resources must differ.");
-        }
-
         var ratio = Board.TradeRatio(CurrentPlayer, give);
         if (_resources[CurrentPlayer, ResourceToIndex(give)] < ratio)
-        {
             throw new InvalidOperationException("Insufficient resources to perform trade.");
-        }
 
         var next = Clone();
         next._resources[CurrentPlayer, ResourceToIndex(give)] -= ratio;
         next._resources[CurrentPlayer, ResourceToIndex(receive)] += 1;
+        next._pendingBankTradeGive = null;
+        next.Stage = TurnStage.BuildTrade;
         return next;
     }
 
@@ -923,10 +1021,12 @@ public sealed class CatanState : ICoreState
         {
             throw new InvalidOperationException("Player cannot play a knight bought this turn.");
         }
+        EnsureDevCardNotPlayed();
 
         var next = Clone();
         next._devCards[CurrentPlayer, (int)DevCardType.Knight]--;
         next._knightsPlayed[CurrentPlayer]++;
+        next._devCardPlayedThisTurn = true;
         next.UpdateLargestArmyOwner();
         next._postDevCardStage = Stage;
         next.Stage = TurnStage.ChooseRobberLocation;
@@ -949,28 +1049,26 @@ public sealed class CatanState : ICoreState
         {
             throw new InvalidOperationException("Player cannot play road building bought this turn.");
         }
+        EnsureDevCardNotPlayed();
 
         var next = Clone();
         next._devCards[CurrentPlayer, (int)DevCardType.RoadBuilding]--;
-        next._pendingRoadBuildingPlacements[CurrentPlayer] = Math.Min(2, next.LegalBuildRoadEdges(requireCost: false).Count);
-        if (Stage == TurnStage.PreRoll)
-        {
-            next._postDevCardStage = TurnStage.PreRoll;
-            next.Stage = TurnStage.BuildTrade;
-        }
+        next._devCardPlayedThisTurn = true;
+        next._pendingRoadBuildingPlacements[CurrentPlayer] = 2;
+        next._postDevCardStage = Stage;
+        next.Stage = TurnStage.PlaceRoadBuildingFirst;
 
         next.RefreshVictory();
         return next;
     }
 
-    private CatanState ApplyPlayMonopoly(ResourceType resource)
+    private CatanState ApplyPlayMonopoly()
     {
         if (Stage is not (TurnStage.BuildTrade or TurnStage.PreRoll))
         {
             throw new InvalidOperationException("Playing monopoly is only allowed during pre-roll or build/trade stage.");
         }
 
-        EnsureCollectableResource(resource);
         if (_devCards[CurrentPlayer, (int)DevCardType.Monopoly] <= 0)
         {
             throw new InvalidOperationException("Player has no monopoly card to play.");
@@ -979,9 +1077,22 @@ public sealed class CatanState : ICoreState
         {
             throw new InvalidOperationException("Player cannot play monopoly bought this turn.");
         }
+        EnsureDevCardNotPlayed();
 
         var next = Clone();
         next._devCards[CurrentPlayer, (int)DevCardType.Monopoly]--;
+        next._devCardPlayedThisTurn = true;
+        next._postDevCardStage = Stage;
+        next.Stage = TurnStage.ChooseMonopolyResource;
+        return next;
+    }
+
+    private CatanState ApplyChooseMonopolyResource(ResourceType resource)
+    {
+        if (Stage != TurnStage.ChooseMonopolyResource)
+            throw new InvalidOperationException("Monopoly resource choice is not expected.");
+        EnsureCollectableResource(resource);
+        var next = Clone();
         var resourceIndex = ResourceToIndex(resource);
 
         for (var player = 1; player <= PlayerCount; player++)
@@ -1000,19 +1111,18 @@ public sealed class CatanState : ICoreState
             next._resources[player, resourceIndex] = 0;
             next._resources[CurrentPlayer, resourceIndex] += amount;
         }
-
+        next.Stage = next._postDevCardStage ?? TurnStage.BuildTrade;
+        next._postDevCardStage = null;
         return next;
     }
 
-    private CatanState ApplyPlayYearOfPlenty(ResourceType first, ResourceType second)
+    private CatanState ApplyPlayYearOfPlenty()
     {
         if (Stage is not (TurnStage.BuildTrade or TurnStage.PreRoll))
         {
             throw new InvalidOperationException("Playing year of plenty is only allowed during pre-roll or build/trade stage.");
         }
 
-        EnsureCollectableResource(first);
-        EnsureCollectableResource(second);
         if (_devCards[CurrentPlayer, (int)DevCardType.YearOfPlenty] <= 0)
         {
             throw new InvalidOperationException("Player has no year of plenty card to play.");
@@ -1021,11 +1131,34 @@ public sealed class CatanState : ICoreState
         {
             throw new InvalidOperationException("Player cannot play year of plenty bought this turn.");
         }
+        EnsureDevCardNotPlayed();
 
         var next = Clone();
         next._devCards[CurrentPlayer, (int)DevCardType.YearOfPlenty]--;
-        next._resources[CurrentPlayer, ResourceToIndex(first)]++;
-        next._resources[CurrentPlayer, ResourceToIndex(second)]++;
+        next._devCardPlayedThisTurn = true;
+        next._postDevCardStage = Stage;
+        next.Stage = TurnStage.ChooseYearOfPlentyFirst;
+        return next;
+    }
+
+    private CatanState ApplyChooseYearOfPlentyResource(ResourceType resource)
+    {
+        EnsureCollectableResource(resource);
+        if (Stage is not (TurnStage.ChooseYearOfPlentyFirst or TurnStage.ChooseYearOfPlentySecond))
+            throw new InvalidOperationException("Year of Plenty resource choice is not expected.");
+        var next = Clone();
+        next._resources[CurrentPlayer, ResourceToIndex(resource)]++;
+        if (Stage == TurnStage.ChooseYearOfPlentyFirst)
+        {
+            next._pendingYearOfPlentyFirst = resource;
+            next.Stage = TurnStage.ChooseYearOfPlentySecond;
+        }
+        else
+        {
+            next._pendingYearOfPlentyFirst = null;
+            next.Stage = next._postDevCardStage ?? TurnStage.BuildTrade;
+            next._postDevCardStage = null;
+        }
         return next;
     }
 
@@ -1047,10 +1180,14 @@ public sealed class CatanState : ICoreState
         next.PendingSettlementVertex = null;
         Array.Clear(next._newDevCardsThisTurn, 0, DevCardCount);
         next._pendingRoadBuildingPlacements[CurrentPlayer] = 0;
+        next._devCardPlayedThisTurn = false;
+        next._pendingBankTradeGive = null;
+        next._pendingYearOfPlentyFirst = null;
+        next._postDevCardStage = null;
         return next;
     }
 
-    private IReadOnlyList<int> LegalSettlementVertices(bool initialPlacement)
+    private IReadOnlyList<int> LegalSettlementVertices(bool initialPlacement, bool requireCost = true)
     {
         var legal = new List<int>();
         for (var vi = 0; vi < Board.Topology.VertexCount; vi++)
@@ -1071,7 +1208,7 @@ public sealed class CatanState : ICoreState
                 continue;
             }
 
-            if (!CanAfford(Config.SettlementCost))
+            if (requireCost && !CanAfford(Config.SettlementCost))
             {
                 continue;
             }
@@ -1120,9 +1257,9 @@ public sealed class CatanState : ICoreState
         return legal;
     }
 
-    private IReadOnlyList<int> LegalCityVertices()
+    private IReadOnlyList<int> LegalCityVertices(bool requireCost = true)
     {
-        if (!CanAfford(Config.CityCost))
+        if (requireCost && !CanAfford(Config.CityCost))
         {
             return [];
         }
@@ -1163,9 +1300,9 @@ public sealed class CatanState : ICoreState
         return RobberVictims(Board.RobberTile);
     }
 
-    private IReadOnlyList<(ResourceType Give, ResourceType Receive)> LegalBankTrades()
+    private IReadOnlyList<ResourceType> LegalBankTradeGives()
     {
-        var legal = new List<(ResourceType Give, ResourceType Receive)>();
+        var legal = new List<ResourceType>();
         foreach (var give in CollectableResources())
         {
             var ratio = Board.TradeRatio(CurrentPlayer, give);
@@ -1174,13 +1311,7 @@ public sealed class CatanState : ICoreState
                 continue;
             }
 
-            foreach (var receive in CollectableResources())
-            {
-                if (receive != give)
-                {
-                    legal.Add((give, receive));
-                }
-            }
+            legal.Add(give);
         }
 
         return legal;
@@ -1208,6 +1339,8 @@ public sealed class CatanState : ICoreState
     private IReadOnlyList<CatanAction> LegalDevCardPlays()
     {
         var legal = new List<CatanAction>();
+        if (_devCardPlayedThisTurn)
+            return legal;
 
         if (GetPlayableDevCardCount(DevCardType.Knight) > 0)
         {
@@ -1224,22 +1357,12 @@ public sealed class CatanState : ICoreState
 
         if (GetPlayableDevCardCount(DevCardType.Monopoly) > 0)
         {
-            foreach (var resource in CollectableResources())
-            {
-                legal.Add(new PlayMonopolyAction(this, resource));
-            }
+            legal.Add(new PlayMonopolyAction(this));
         }
 
         if (GetPlayableDevCardCount(DevCardType.YearOfPlenty) > 0)
         {
-            var resources = CollectableResources().ToArray();
-            for (var i = 0; i < resources.Length; i++)
-            {
-                for (var j = i; j < resources.Length; j++)
-                {
-                    legal.Add(new PlayYearOfPlentyAction(this, resources[i], resources[j]));
-                }
-            }
+            legal.Add(new PlayYearOfPlentyAction(this));
         }
 
         return legal;
@@ -1641,6 +1764,9 @@ public sealed class CatanState : ICoreState
             (int[])_newDevCardsThisTurn.Clone(),
             (int[])_pendingRoadBuildingPlacements.Clone(),
             _postDevCardStage,
+            _pendingBankTradeGive,
+            _pendingYearOfPlentyFirst,
+            _devCardPlayedThisTurn,
             (byte[])_vertexPlacementRound.Clone());
     }
 
@@ -1651,6 +1777,12 @@ public sealed class CatanState : ICoreState
         var newThisTurn = _newDevCardsThisTurn[typeIndex];
         var playable = total - newThisTurn;
         return playable > 0 ? playable : 0;
+    }
+
+    private void EnsureDevCardNotPlayed()
+    {
+        if (_devCardPlayedThisTurn)
+            throw new InvalidOperationException("Only one development card may be played per turn.");
     }
 
     internal static int ResourceToIndex(ResourceType resource) => resource switch

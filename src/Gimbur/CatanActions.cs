@@ -131,7 +131,7 @@ public sealed class ChooseRobberVictimAction(CatanState origin, int victimPlayer
         [.. OriginState.ChooseRobberVictimOutcomes(VictimPlayer).Select(x => Tuple.Create(x.Weight, (ICoreState)x.State))];
 }
 
-public sealed class BuildCityAction(CatanState origin, int vertexIndex) : CatanDeterministicAction(origin)
+public sealed class PlaceCityAction(CatanState origin, int vertexIndex) : CatanDeterministicAction(origin)
 {
     public const byte Tag = 4;
     public int VertexIndex { get; } = vertexIndex;
@@ -140,13 +140,48 @@ public sealed class BuildCityAction(CatanState origin, int vertexIndex) : CatanD
     public override ICoreState DoCoreAction() => OriginState.Apply(this);
 }
 
-public sealed class BankTradeAction(CatanState origin, ResourceType give, ResourceType receive) : CatanDeterministicAction(origin)
+public sealed class BuyRoadAction(CatanState origin) : CatanDeterministicAction(origin)
 {
     public const byte Tag = 5;
-    public ResourceType Give { get; } = give;
-    public ResourceType Receive { get; } = receive;
-    public override int Arg1 => (int)Give;
-    public override int Arg2 => (int)Receive;
+    public override byte TypeTag => Tag;
+    public override ICoreState DoCoreAction() => OriginState.Apply(this);
+}
+
+public sealed class BuySettlementAction(CatanState origin) : CatanDeterministicAction(origin)
+{
+    public const byte Tag = 13;
+    public override byte TypeTag => Tag;
+    public override ICoreState DoCoreAction() => OriginState.Apply(this);
+}
+
+public sealed class UpgradeCityAction(CatanState origin) : CatanDeterministicAction(origin)
+{
+    public const byte Tag = 14;
+    public override byte TypeTag => Tag;
+    public override ICoreState DoCoreAction() => OriginState.Apply(this);
+}
+
+public sealed class TradeWithBankAction(CatanState origin) : CatanDeterministicAction(origin)
+{
+    public const byte Tag = 15;
+    public override byte TypeTag => Tag;
+    public override ICoreState DoCoreAction() => OriginState.Apply(this);
+}
+
+public sealed class ChooseBankTradeGiveAction(CatanState origin, ResourceType resource) : CatanDeterministicAction(origin)
+{
+    public const byte Tag = 16;
+    public ResourceType Resource { get; } = resource;
+    public override int Arg1 => (int)Resource;
+    public override byte TypeTag => Tag;
+    public override ICoreState DoCoreAction() => OriginState.Apply(this);
+}
+
+public sealed class ChooseBankTradeReceiveAction(CatanState origin, ResourceType resource) : CatanDeterministicAction(origin)
+{
+    public const byte Tag = 17;
+    public ResourceType Resource { get; } = resource;
+    public override int Arg1 => (int)Resource;
     public override byte TypeTag => Tag;
     public override ICoreState DoCoreAction() => OriginState.Apply(this);
 }
@@ -160,13 +195,11 @@ public sealed class BuyDevCardAction(CatanState origin) : CatanStochasticAction(
         [.. OriginState.BuyDevCardOutcomes().Select(x => Tuple.Create(x.Weight, (ICoreState)x.State))];
 }
 
-public sealed class PlayKnightAction(CatanState origin) : CatanStochasticAction(origin)
+public sealed class PlayKnightAction(CatanState origin) : CatanDeterministicAction(origin)
 {
     public const byte Tag = 7;
     public override byte TypeTag => Tag;
     public override ICoreState DoCoreAction() => OriginState.Apply(this);
-    public override Tuple<int, ICoreState>[] Outcomes() =>
-        [.. OriginState.PlayKnightOutcomes().Select(x => Tuple.Create(x.Weight, (ICoreState)x.State))];
 }
 
 public sealed class PlayRoadBuildingAction(CatanState origin) : CatanDeterministicAction(origin)
@@ -176,22 +209,34 @@ public sealed class PlayRoadBuildingAction(CatanState origin) : CatanDeterminist
     public override ICoreState DoCoreAction() => OriginState.Apply(this);
 }
 
-public sealed class PlayMonopolyAction(CatanState origin, ResourceType resource) : CatanDeterministicAction(origin)
+public sealed class PlayMonopolyAction(CatanState origin) : CatanDeterministicAction(origin)
 {
     public const byte Tag = 9;
+    public override byte TypeTag => Tag;
+    public override ICoreState DoCoreAction() => OriginState.Apply(this);
+}
+
+public sealed class ChooseMonopolyResourceAction(CatanState origin, ResourceType resource) : CatanDeterministicAction(origin)
+{
+    public const byte Tag = 10;
     public ResourceType Resource { get; } = resource;
     public override int Arg1 => (int)Resource;
     public override byte TypeTag => Tag;
     public override ICoreState DoCoreAction() => OriginState.Apply(this);
 }
 
-public sealed class PlayYearOfPlentyAction(CatanState origin, ResourceType first, ResourceType second) : CatanDeterministicAction(origin)
+public sealed class PlayYearOfPlentyAction(CatanState origin) : CatanDeterministicAction(origin)
 {
-    public const byte Tag = 10;
-    public ResourceType First { get; } = first;
-    public ResourceType Second { get; } = second;
-    public override int Arg1 => (int)First;
-    public override int Arg2 => (int)Second;
+    public const byte Tag = 18;
+    public override byte TypeTag => Tag;
+    public override ICoreState DoCoreAction() => OriginState.Apply(this);
+}
+
+public sealed class ChooseYearOfPlentyResourceAction(CatanState origin, ResourceType resource) : CatanDeterministicAction(origin)
+{
+    public const byte Tag = 19;
+    public ResourceType Resource { get; } = resource;
+    public override int Arg1 => (int)Resource;
     public override byte TypeTag => Tag;
     public override ICoreState DoCoreAction() => OriginState.Apply(this);
 }

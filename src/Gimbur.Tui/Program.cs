@@ -152,21 +152,26 @@ internal static class Program
                 continue;
             }
 
-            if (state.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement)
+            if (state.Stage is TurnStage.PlaceFirstSettlement
+                or TurnStage.PlaceSecondSettlement
+                or TurnStage.PlaceSettlementCommitted)
             {
                 state = ExecuteSettlementPlacement(state);
                 continue;
             }
 
-            if (state.Stage is TurnStage.PlaceFirstRoad or TurnStage.PlaceSecondRoad)
+            if (state.Stage is TurnStage.PlaceFirstRoad
+                or TurnStage.PlaceSecondRoad
+                or TurnStage.PlaceRoadBuildingFirst
+                or TurnStage.PlaceRoadCommitted)
             {
                 state = ExecuteRoadPlacement(state);
                 continue;
             }
 
-            if (state.Stage == TurnStage.BuildTrade && state.PendingRoadBuildingPlacementsFor(state.CurrentPlayer) > 0)
+            if (state.Stage == TurnStage.PlaceCityCommitted)
             {
-                state = ExecuteRoadPlacement(state);
+                state = ExecuteCityPlacement(state);
                 continue;
             }
 
@@ -886,11 +891,11 @@ internal static class Program
                 ActionSelectionMode.PlaceRoad =>
                     winRates.Where(kv => kv.Key is PlaceRoadAction).Select(kv => kv.Value).ToArray(),
                 ActionSelectionMode.PlaceCity =>
-                    winRates.Where(kv => kv.Key is BuildCityAction).Select(kv => kv.Value).ToArray(),
+                    winRates.Where(kv => kv.Key is PlaceCityAction).Select(kv => kv.Value).ToArray(),
                 ActionSelectionMode.PlaceRobber =>
                     winRates.Where(kv => kv.Key is ChooseRobberTileAction).Select(kv => kv.Value).ToArray(),
                 ActionSelectionMode.OpenTradeMenu =>
-                    winRates.Where(kv => kv.Key is BankTradeAction).Select(kv => kv.Value).ToArray(),
+                    winRates.Where(kv => kv.Key is TradeWithBankAction).Select(kv => kv.Value).ToArray(),
                 ActionSelectionMode.OpenYearOfPlentyMenu =>
                     winRates.Where(kv => kv.Key is PlayYearOfPlentyAction).Select(kv => kv.Value).ToArray(),
                 ActionSelectionMode.OpenMonopolyMenu =>
@@ -1065,7 +1070,7 @@ internal static class Program
         var entries = new List<MenuEntry>();
         if (context == ActionMenuContext.Trade)
         {
-            foreach (var action in actions.Where(a => a is BankTradeAction))
+            foreach (var action in actions.Where(a => a is TradeWithBankAction))
             {
                 entries.Add(new MenuEntry(DescribeAction(state, action), ActionSelectionMode.Direct, action));
             }
@@ -1111,7 +1116,7 @@ internal static class Program
             entries.Add(new MenuEntry("Place road", ActionSelectionMode.PlaceRoad, null));
         }
 
-        if (actions.Any(a => a is BuildCityAction))
+        if (actions.Any(a => a is PlaceCityAction))
         {
             entries.Add(new MenuEntry("Place city", ActionSelectionMode.PlaceCity, null));
         }
@@ -1126,7 +1131,7 @@ internal static class Program
             entries.Add(new MenuEntry("Buy dev card", ActionSelectionMode.BuyDevCardRandom, null));
         }
 
-        if (actions.Any(a => a is BankTradeAction))
+        if (actions.Any(a => a is TradeWithBankAction))
         {
             entries.Add(new MenuEntry("Trade", ActionSelectionMode.OpenTradeMenu, null));
         }
@@ -1146,12 +1151,12 @@ internal static class Program
             if (action is
                 RollDiceAction or
                 BuyDevCardAction or
-                BankTradeAction or
+                TradeWithBankAction or
                 PlayYearOfPlentyAction or
                 PlayMonopolyAction or
                 PlaceSettlementAction or
                 PlaceRoadAction or
-                BuildCityAction or
+                PlaceCityAction or
                 ChooseRobberTileAction)
             {
                 continue;
@@ -1205,14 +1210,22 @@ internal static class Program
         return action switch
         {
             RollDiceAction => "Roll dice",
-            BuildCityAction => $"Build city at vertex {action.Arg1}",
+            PlaceCityAction city => $"Place city at vertex {city.VertexIndex}",
+            BuyRoadAction => "Buy road",
+            BuySettlementAction => "Buy settlement",
+            UpgradeCityAction => "Upgrade city",
             ChooseRobberVictimAction => $"Rob player {action.Arg1}",
-            BankTradeAction => $"Trade {state.Board.TradeRatio(state.CurrentPlayer, (ResourceType)action.Arg1)} {(ResourceType)action.Arg1} -> {(ResourceType)action.Arg2}",
+            TradeWithBankAction => "Trade with bank",
+            ChooseBankTradeGiveAction give =>
+                $"Give {state.Board.TradeRatio(state.CurrentPlayer, give.Resource)} {give.Resource}",
+            ChooseBankTradeReceiveAction receive => $"Receive 1 {receive.Resource}",
             BuyDevCardAction => "Buy dev card",
             PlayKnightAction => "Play knight",
             PlayRoadBuildingAction => "Play road building",
-            PlayMonopolyAction => $"Play monopoly on {(ResourceType)action.Arg1}",
-            PlayYearOfPlentyAction => $"Play year of plenty: {(ResourceType)action.Arg1} + {(ResourceType)action.Arg2}",
+            PlayMonopolyAction => "Play monopoly",
+            ChooseMonopolyResourceAction choice => $"Choose {choice.Resource}",
+            PlayYearOfPlentyAction => "Play year of plenty",
+            ChooseYearOfPlentyResourceAction choice => $"Choose {choice.Resource}",
             EndTurnAction => "End turn",
             _ => action.GetType().Name,
         };
@@ -1259,7 +1272,7 @@ internal static class Program
     private static CatanState ExecuteCityPlacement(CatanState state)
     {
         var actions = GetCatanActions(state)
-            .Where(a => a is BuildCityAction)
+            .Where(a => a is PlaceCityAction)
             .ToArray();
 
         var legal = actions.Select(a => a.Arg1).ToArray();
@@ -1287,7 +1300,7 @@ internal static class Program
 
         if (selected is int vertex)
         {
-            var action = new BuildCityAction(state, vertex);
+            var action = new PlaceCityAction(state, vertex);
             return ApplyActionAndLog(state, action);
         }
 
@@ -1484,6 +1497,15 @@ internal static class Program
             TurnStage.ChooseRobberLocation => "Choose robber location",
             TurnStage.ChooseRobberVictim => "Choose robber victim",
             TurnStage.BuildTrade => "Build/trade",
+            TurnStage.PlaceRoadBuildingFirst => "Place first Road Building road",
+            TurnStage.PlaceRoadCommitted => "Place committed road",
+            TurnStage.PlaceSettlementCommitted => "Place committed settlement",
+            TurnStage.PlaceCityCommitted => "Place committed city",
+            TurnStage.ChooseBankTradeGive => "Choose bank trade resource to give",
+            TurnStage.ChooseBankTradeReceive => "Choose bank trade resource to receive",
+            TurnStage.ChooseMonopolyResource => "Choose monopoly resource",
+            TurnStage.ChooseYearOfPlentyFirst => "Choose first Year of Plenty resource",
+            TurnStage.ChooseYearOfPlentySecond => "Choose second Year of Plenty resource",
             _ => stage.ToString(),
         };
 

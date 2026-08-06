@@ -37,6 +37,9 @@ These alphabets apply to the **state** tokenizer (Parts I and II). Placement act
 
 # Part I — Game State Serialization
 
+The staged normal-play action graph and full policy vocabulary are specified in
+[complete-policy-value-model.md](complete-policy-value-model.md).
+
 *Consumed by the **GimburStateEvaluator** model during normal play (after initial placement is complete).*
 
 ## Serialization Layout

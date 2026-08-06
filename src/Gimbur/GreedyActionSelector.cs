@@ -171,8 +171,12 @@ public sealed class GreedyActionSelector
             PlaceSettlementAction => ScoreSettlementPlacement(state, action.Arg1),
             PlaceRoadAction => ScoreRoadPlacement(state, next, action.Arg1, player),
             ChooseRobberTileAction => ScoreRobberPlacement(state, next, action.Arg1, player),
-            BuildCityAction => ScoreCityUpgrade(state, action.Arg1),
-            BankTradeAction trade => ScoreBankTrade(state, next, trade.Give, trade.Receive, player),
+            PlaceCityAction => ScoreCityUpgrade(state, action.Arg1),
+            BuyRoadAction => 100.0,
+            BuySettlementAction => 300.0,
+            UpgradeCityAction => 450.0,
+            ChooseBankTradeReceiveAction trade when state._pendingBankTradeGive.HasValue =>
+                ScoreBankTrade(state, next, state._pendingBankTradeGive.Value, trade.Resource, player),
             BuyDevCardAction => ScoreDevCardPurchase(state, player),
             _ => 0.0,
         };

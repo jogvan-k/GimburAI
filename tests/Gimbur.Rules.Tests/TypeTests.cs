@@ -147,6 +147,15 @@ public class TypeTests
     [TestCase(TurnStage.ChooseRobberLocation, 'x')]
     [TestCase(TurnStage.ChooseRobberVictim, 'y')]
     [TestCase(TurnStage.BuildTrade, 't')]
+    [TestCase(TurnStage.PlaceRoadBuildingFirst, 'u')]
+    [TestCase(TurnStage.PlaceRoadCommitted, 'v')]
+    [TestCase(TurnStage.PlaceSettlementCommitted, 'z')]
+    [TestCase(TurnStage.PlaceCityCommitted, 'c')]
+    [TestCase(TurnStage.ChooseBankTradeGive, 'g')]
+    [TestCase(TurnStage.ChooseBankTradeReceive, 'h')]
+    [TestCase(TurnStage.ChooseMonopolyResource, 'm')]
+    [TestCase(TurnStage.ChooseYearOfPlentyFirst, 'j')]
+    [TestCase(TurnStage.ChooseYearOfPlentySecond, 'k')]
     public void StateToken_TurnStage_RoundTrips(TurnStage stage, char expected)
     {
         var encoded = StateToken.EncodeTurnStage(stage);

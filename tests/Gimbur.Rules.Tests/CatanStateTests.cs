@@ -279,10 +279,10 @@ public class CatanStateTests
 
         var actions = GetCatanActions(loaded).ToArray();
         Assert.That(actions.Any(a => a is Gimbur.EndTurnAction), Is.True);
-        Assert.That(actions.Any(a => a is Gimbur.BankTradeAction), Is.True);
-        Assert.That(actions.Any(a => a is Gimbur.PlaceRoadAction), Is.True);
+        Assert.That(actions.Any(a => a is Gimbur.TradeWithBankAction), Is.True);
+        Assert.That(actions.Any(a => a is Gimbur.BuyRoadAction), Is.True);
         Assert.That(
-            actions.Any(a => a is Gimbur.PlaceSettlementAction or Gimbur.BuildCityAction),
+            actions.Any(a => a is Gimbur.BuySettlementAction or Gimbur.UpgradeCityAction),
             Is.True);
         Assert.That(actions.Any(a => a is Gimbur.BuyDevCardAction), Is.True);
         Assert.That(actions.Any(a => a is Gimbur.PlayMonopolyAction), Is.True);
@@ -381,6 +381,7 @@ public class CatanStateTests
             .Single(a => a is Gimbur.PlayRoadBuildingAction);
         var pending2 = (Gimbur.CatanState)playRoadBuilding.DoCoreAction();
         Assert.That(pending2.PendingRoadBuildingPlacementsFor(current), Is.EqualTo(2));
+        Assert.That(pending2.Stage, Is.EqualTo(TurnStage.PlaceRoadBuildingFirst));
         Assert.That(
             GetCatanActions(pending2).All(a => a is Gimbur.PlaceRoadAction),
             Is.True);
@@ -388,6 +389,7 @@ public class CatanStateTests
         var firstRoad = GetCatanActions(pending2).First();
         var pending1 = (Gimbur.CatanState)firstRoad.DoCoreAction();
         Assert.That(pending1.PendingRoadBuildingPlacementsFor(current), Is.EqualTo(1));
+        Assert.That(pending1.Stage, Is.EqualTo(TurnStage.PlaceRoadCommitted));
         Assert.That(
             GetCatanActions(pending1).All(a => a is Gimbur.PlaceRoadAction),
             Is.True);
@@ -396,6 +398,43 @@ public class CatanStateTests
         var backToBuildTrade = (Gimbur.CatanState)secondRoad.DoCoreAction();
         Assert.That(backToBuildTrade.PendingRoadBuildingPlacementsFor(current), Is.EqualTo(0));
         Assert.That(GetCatanActions(backToBuildTrade).Any(a => a is Gimbur.EndTurnAction), Is.True);
+    }
+
+    [Test]
+    public void StagedPendingState_RoundTripsAndAllowsOnlyMandatoryCompletion()
+    {
+        var state = ReachBuildTrade(new Gimbur.CatanState(GameConfig.Mini, 2, new Random(42)));
+        var player = state.CurrentPlayer;
+        var serialized = SetResource(state.SerializeHumanReadable(), state, player, ResourceType.Wood, 8);
+        var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Mini, 2, serialized);
+
+        var giveStage = (Gimbur.CatanState)GetCatanActions(loaded).OfType<Gimbur.TradeWithBankAction>().Single().DoCoreAction();
+        var receiveStage = (Gimbur.CatanState)GetCatanActions(giveStage).OfType<Gimbur.ChooseBankTradeGiveAction>()
+            .Single(a => a.Resource == ResourceType.Wood).DoCoreAction();
+        var roundTripped = Gimbur.CatanState.DeserializeCompact(
+            GameConfig.Mini, 2, receiveStage.SerializeCompact());
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(roundTripped.Stage, Is.EqualTo(TurnStage.ChooseBankTradeReceive));
+            Assert.That(GetCatanActions(roundTripped), Is.All.TypeOf<Gimbur.ChooseBankTradeReceiveAction>());
+            Assert.That(roundTripped.SerializeHumanReadable(), Is.EqualTo(receiveStage.SerializeHumanReadable()));
+        });
+    }
+
+    [Test]
+    public void PlayingDevelopmentCard_HidesOtherDevelopmentCardInitiationsForTurn()
+    {
+        var state = ReachBuildTrade(new Gimbur.CatanState(GameConfig.Mini, 2, new Random(42)));
+        var player = state.CurrentPlayer;
+        var serialized = SetDevCard(state.SerializeHumanReadable(), state, player, DevCardType.Monopoly, 1);
+        serialized = SetDevCard(serialized, state, player, DevCardType.YearOfPlenty, 1);
+        var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Mini, 2, serialized);
+
+        var choice = (Gimbur.CatanState)GetCatanActions(loaded).OfType<Gimbur.PlayMonopolyAction>().Single().DoCoreAction();
+        var completed = (Gimbur.CatanState)GetCatanActions(choice).OfType<Gimbur.ChooseMonopolyResourceAction>().First().DoCoreAction();
+
+        Assert.That(GetCatanActions(completed).Any(a => a is Gimbur.PlayYearOfPlentyAction), Is.False);
     }
 
     [Test]

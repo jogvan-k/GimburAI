@@ -200,7 +200,10 @@ public static class StateToken
     // ── Turn Stage ──────────────────────────────────────────────────
     // a=PlaceFirstSettlement, e=PlaceFirstRoad, f=PlaceSecondSettlement,
     // i=PlaceSecondRoad, r=PreRoll, x=ChooseRobberLocation,
-    // y=ChooseRobberVictim, t=BuildTrade
+    // y=ChooseRobberVictim, t=BuildTrade, u=PlaceRoadBuildingFirst,
+    // v=PlaceRoadCommitted, z=PlaceSettlementCommitted, c=PlaceCityCommitted,
+    // g=ChooseBankTradeGive, h=ChooseBankTradeReceive,
+    // m=ChooseMonopolyResource, j/k=ChooseYearOfPlentyFirst/Second
 
     /// <summary>Encodes a <see cref="TurnStage"/> as a single character.</summary>
     public static char EncodeTurnStage(TurnStage stage) => stage switch
@@ -213,6 +216,15 @@ public static class StateToken
         TurnStage.ChooseRobberLocation => 'x',
         TurnStage.ChooseRobberVictim => 'y',
         TurnStage.BuildTrade => 't',
+        TurnStage.PlaceRoadBuildingFirst => 'u',
+        TurnStage.PlaceRoadCommitted => 'v',
+        TurnStage.PlaceSettlementCommitted => 'z',
+        TurnStage.PlaceCityCommitted => 'c',
+        TurnStage.ChooseBankTradeGive => 'g',
+        TurnStage.ChooseBankTradeReceive => 'h',
+        TurnStage.ChooseMonopolyResource => 'm',
+        TurnStage.ChooseYearOfPlentyFirst => 'j',
+        TurnStage.ChooseYearOfPlentySecond => 'k',
         _ => throw new ArgumentOutOfRangeException(nameof(stage), stage,
             "Unknown turn stage."),
     };
@@ -228,7 +240,16 @@ public static class StateToken
         'x' => TurnStage.ChooseRobberLocation,
         'y' => TurnStage.ChooseRobberVictim,
         't' => TurnStage.BuildTrade,
+        'u' => TurnStage.PlaceRoadBuildingFirst,
+        'v' => TurnStage.PlaceRoadCommitted,
+        'z' => TurnStage.PlaceSettlementCommitted,
+        'c' => TurnStage.PlaceCityCommitted,
+        'g' => TurnStage.ChooseBankTradeGive,
+        'h' => TurnStage.ChooseBankTradeReceive,
+        'm' => TurnStage.ChooseMonopolyResource,
+        'j' => TurnStage.ChooseYearOfPlentyFirst,
+        'k' => TurnStage.ChooseYearOfPlentySecond,
         _ => throw new ArgumentOutOfRangeException(nameof(c), c,
-            "Not a valid turn stage character. Expected one of: a e f i r x y t"),
+            "Not a valid turn stage character."),
     };
 }
