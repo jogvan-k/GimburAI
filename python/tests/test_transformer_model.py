@@ -25,11 +25,17 @@ def _config(output_mode: str):
 
 
 @pytest.mark.parametrize("game_cfg", ALL_CONFIGS, ids=lambda cfg: cfg.name)
-def test_state_value_shape_matches_player_count(game_cfg) -> None:
-    model = GimburTransformer(game_cfg, _config("value"))
+def test_state_combined_shapes_match_contract(game_cfg) -> None:
+    model = GimburTransformer(game_cfg, _config("combined"))
     output = model(torch.zeros(2, game_cfg.state_token_size, dtype=torch.long))
 
-    assert output.shape == (2, game_cfg.player_count)
+    assert output["value"].shape == (2, game_cfg.player_count)
+    assert output["policy"].shape == (2, game_cfg.policy_size)
+
+
+def test_state_rejects_value_only() -> None:
+    with pytest.raises(ValueError, match="only 'combined'"):
+        GimburTransformer(MINI_2P, _config("value"))
 
 
 @pytest.mark.parametrize("game_cfg", ALL_CONFIGS, ids=lambda cfg: cfg.name)

@@ -42,7 +42,7 @@ def test_pipeline_config_loads_per_model_training_enabled(tmp_path) -> None:
     path.write_text(
         json.dumps(
             {
-                "trainingMode": "placement-and-state",
+                "trainingMode": "complete",
                 "placementTrain": {"enabled": False},
                 "stateTrain": {"enabled": True},
             }
@@ -62,7 +62,7 @@ def test_pipeline_config_loads_nested_promotion_defaults_and_overrides(tmp_path)
     path.write_text(
         json.dumps(
             {
-                "trainingMode": "placement-and-state",
+                "trainingMode": "complete",
                 "promotion": {
                     "enabled": True,
                     "additionalTrainingGames": 250,
@@ -106,7 +106,7 @@ def test_promotion_benchmark_score_counts_draws_and_requires_exact_games() -> No
 
 def test_promotion_generation_completion_uses_terminal_decision(tmp_path) -> None:
     cfg = PipelineConfig(
-        training_mode="placement-and-state",
+        training_mode="complete",
         model_dir=str(tmp_path / "models"),
         results_dir=str(tmp_path / "results"),
     )
@@ -119,12 +119,11 @@ def test_promotion_generation_completion_uses_terminal_decision(tmp_path) -> Non
     assert _generation_complete(cfg, 2)
 
 
-def test_pipeline_rejects_promotion_for_single_model_mode(tmp_path) -> None:
+def test_pipeline_defaults_to_complete_promotion_mode(tmp_path) -> None:
     path = tmp_path / "pipeline.json"
     path.write_text(json.dumps({"promotion": {"enabled": True}}))
 
-    with pytest.raises(ValueError, match="placement-and-state"):
-        _load_config(path)
+    assert _load_config(path).training_mode == "complete"
 
 
 def test_train_config_loads_policy_target_temperature() -> None:
@@ -251,20 +250,16 @@ def test_step_train_passes_value_blending_and_state_sampling(tmp_path, monkeypat
     assert "policyTargetTemperature" not in config
 
 
-def test_placement_and_state_generates_shared_sim_and_separate_train_configs(
+def test_complete_mode_generates_shared_sim_and_one_combined_train_config(
     tmp_path, monkeypatch
 ) -> None:
     cfg = PipelineConfig(
-        training_mode="placement-and-state",
+        training_mode="complete",
         data_dir=str(tmp_path / "data"),
         model_dir=str(tmp_path / "models"),
-        placement_model_config="placement-small",
         state_model_config="state-small",
         simulate=SimulateConfig(games=1),
-        placement_train=TrainConfig(
-            batch_size=11, mcts_value_weight_start=0.8, policy_target_temperature=0.5
-        ),
-        state_train=TrainConfig(batch_size=22, mcts_value_weight_start=0.7),
+        train=TrainConfig(batch_size=22, mcts_value_weight_start=0.7, output_mode="combined"),
     )
     monkeypatch.setattr(
         "gimbur_nn.pipeline.subprocess.run",
@@ -273,28 +268,23 @@ def test_placement_and_state_generates_shared_sim_and_separate_train_configs(
     monkeypatch.setattr("gimbur_nn.pipeline._run", lambda *args, **kwargs: None)
 
     _step_simulate(cfg, 0, tmp_path, None)
-    _step_train(cfg, 0, tmp_path, model_type="placement")
     _step_train(cfg, 0, tmp_path, model_type="state")
 
     sim = json.loads((tmp_path / "models/.configs/simulate_gen0.json").read_text())
-    placement = json.loads((tmp_path / "models/.configs/train_gen0_placement.json").read_text())
     state = json.loads((tmp_path / "models/.configs/train_gen0_state.json").read_text())
     assert sim["exportType"] == "PlacementAndState"
     assert sim["placementSearchTimeMs"] == 16000
     assert sim["mainGameSearchTimeMs"] == 8000
-    assert placement["data"] == state["data"] == [str(tmp_path / "data/gen0")]
-    assert placement["modelConfig"] == "placement-small"
+    assert state["data"] == [str(tmp_path / "data/gen0")]
     assert state["modelConfig"] == "state-small"
-    assert placement["batchSize"] == 11
     assert state["batchSize"] == 22
-    assert placement["mctsValueWeightStart"] == 0.8
     assert state["mctsValueWeightStart"] == 0.7
-    assert placement["policyTargetTemperature"] == 0.5
+    assert state["outputMode"] == "combined"
 
 
-def test_placement_and_state_resume_requires_shared_data_and_both_models(tmp_path) -> None:
+def test_complete_mode_resume_requires_shared_data_and_model(tmp_path) -> None:
     cfg = PipelineConfig(
-        training_mode="placement-and-state",
+        training_mode="complete",
         data_dir=str(tmp_path / "data"),
         model_dir=str(tmp_path / "models"),
         results_dir=str(tmp_path / "results"),
@@ -304,12 +294,10 @@ def test_placement_and_state_resume_requires_shared_data_and_both_models(tmp_pat
     data = tmp_path / "data/gen0"
     data.mkdir(parents=True)
     (data / "game.json").write_text("{}")
-    (tmp_path / "models/placement").mkdir(parents=True)
-    (tmp_path / "models/state").mkdir(parents=True)
-    (tmp_path / "models/placement/gen0.pt").write_text("")
+    (tmp_path / "models/complete").mkdir(parents=True)
 
     assert not _generation_complete(cfg, 0)
-    (tmp_path / "models/state/gen0.pt").write_text("")
+    (tmp_path / "models/complete/gen0.pt").write_text("")
     assert _generation_complete(cfg, 0)
 
 

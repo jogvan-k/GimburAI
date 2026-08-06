@@ -23,6 +23,7 @@ from gimbur_nn.serve import (
     PredictPlayerRequest,
     PredictResponse,
     PriorQueue,
+    PriorRequest,
     PriorResponseItem,
     _load_checkpoint,
     create_app,
@@ -39,13 +40,16 @@ def test_placement_requests_are_state_only() -> None:
 
 
 def test_prediction_responses_use_player_probabilities() -> None:
-    state = PredictResponse(player_win_probabilities=[[0.25, 0.75]])
+    state = PredictResponse(
+        player_win_probabilities=[[0.25, 0.75]],
+        policy_probabilities=[[0.4, 0.6]],
+    )
     placement = PredictPlacementResponse(
         player_win_probabilities=[[0.25, 0.75]],
         policy_probabilities=[[0.4, 0.6]],
     )
 
-    assert set(state.model_dump()) == {"player_win_probabilities"}
+    assert set(state.model_dump()) == {"player_win_probabilities", "policy_probabilities"}
     assert set(placement.model_dump()) == {
         "player_win_probabilities",
         "policy_probabilities",
@@ -118,6 +122,30 @@ def test_predict_player_gathers_from_one_unrotated_vector_inference(monkeypatch)
 
     assert model.calls == 1
     assert response.win_probabilities == pytest.approx([0.880797, 0.119203])
+
+
+def test_state_predict_returns_complete_policy_and_canonical_value() -> None:
+    class FixedModel(torch.nn.Module):
+        def forward(self, tokens: torch.Tensor) -> dict[str, torch.Tensor]:
+            return {
+                "value": torch.tensor([[2.0, 0.0]] * tokens.shape[0]),
+                "policy": torch.zeros(tokens.shape[0], MINI_2P.policy_size),
+            }
+
+    app = create_app(
+        state_model=FixedModel(),
+        state_device=torch.device("cpu"),
+        state_game_cfg=MINI_2P,
+        state_output_mode="combined",
+    )
+    predict = next(route.endpoint for route in app.routes if route.path == "/state/predict")
+
+    request = type("Request", (), {"states": [MINI_BOARD + "|" + MINI_STATE_ONLY]})()
+    response = asyncio.run(predict(request))
+
+    assert response.player_win_probabilities[0] == pytest.approx([0.880797, 0.119203])
+    assert len(response.policy_probabilities[0]) == MINI_2P.policy_size
+    assert sum(response.policy_probabilities[0]) == pytest.approx(1.0)
 
 
 def test_leaf_predict_batches_requests_and_restores_boundaries() -> None:
@@ -296,13 +324,19 @@ def test_leaf_queue_cancellation_suppresses_in_flight_result() -> None:
     assert queue.collect_results() == []
 
 
-@pytest.mark.parametrize("architecture", ["state_player_value_v1", "placement_stage_policy"])
+def test_full_state_prior_request_is_parent_state_only() -> None:
+    request = PriorRequest(id="node", parent_state="state", priority=1)
+
+    assert set(request.model_dump()) == {"id", "parent_state", "priority"}
+
+
+@pytest.mark.parametrize("architecture", ["catan_policy_value_v1", "placement_stage_policy"])
 def test_load_checkpoint_accepts_current_architecture(tmp_path: Path, architecture: str) -> None:
     path = tmp_path / "model.pt"
     torch.save(
         {
             "model_state_dict": {},
-            **({"checkpoint_version": 4} if architecture == "state_player_value_v1" else {}),
+            **({"checkpoint_version": 5} if architecture == "catan_policy_value_v1" else {}),
             "architecture": architecture,
             "output_mode": "combined",
         },
@@ -332,4 +366,4 @@ def test_load_checkpoint_rejects_old_or_wrong_architecture(
     )
 
     with pytest.raises(ValueError, match="incompatible checkpoint"):
-        _load_checkpoint(path, torch.device("cpu"), "state_player_value_v1")
+        _load_checkpoint(path, torch.device("cpu"), "catan_policy_value_v1")

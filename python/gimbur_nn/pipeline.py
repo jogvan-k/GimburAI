@@ -85,7 +85,7 @@ class TrainConfig:
     resume_from_previous: bool = True
     replay_generations: int = 3
     target: str = "winrate"
-    output_mode: str = "value"
+    output_mode: str = "combined"
     advantage: bool = False
     value_loss_weight: float = 1.0
     policy_loss_weight: float = 1.0
@@ -200,7 +200,7 @@ class PipelineConfig:
     state_model_config: str | None = None  # defaults to model_config
     placement_model_config: str | None = None  # defaults to model_config
     model_type: str = "state"  # "state", "placement", or "combined"
-    training_mode: str = "single"  # "single" or "placement-and-state"
+    training_mode: str = "complete"
 
     # Reproducibility.
     seed: int | None = None
@@ -334,8 +334,8 @@ def _validate_promotion_config(cfg: PipelineConfig) -> None:
     promotion = cfg.promotion
     if not promotion.enabled:
         return
-    if cfg.training_mode != "placement-and-state":
-        raise ValueError("promotion.enabled requires trainingMode 'placement-and-state'.")
+    if cfg.training_mode != "complete":
+        raise ValueError("promotion.enabled requires trainingMode 'complete'.")
     if promotion.additional_training_games < 0 or promotion.max_retries < 0:
         raise ValueError("Promotion additional games and retry count must be non-negative.")
     if cfg.serve.port >= 65535:
@@ -551,11 +551,10 @@ def _generation_complete(cfg: PipelineConfig, gen: int) -> bool:
             return False
         decision = json.loads(decision_path.read_text())
         return decision.get("status") == "rejected" or _benchmark_complete(cfg, gen)
-    if cfg.training_mode == "placement-and-state":
+    if cfg.training_mode == "complete":
         return (
             _simulation_complete(cfg, gen)
-            and _training_complete(cfg, gen, "placement")
-            and _training_complete(cfg, gen, "state")
+            and _training_complete(cfg, gen, "complete")
             and _benchmark_complete(cfg, gen)
         )
     if cfg.model_type == "combined":
@@ -1069,7 +1068,7 @@ def _step_simulate(
     effective_type = model_type or cfg.model_type
     if effective_type == "placement":
         sim_config["exportType"] = "InitialPlacement"
-    if cfg.training_mode == "placement-and-state":
+    if cfg.training_mode == "complete":
         sim_config["exportType"] = "PlacementAndState"
 
     config_path = _write_config(cfg, f"simulate_gen{gen}{config_suffix}", sim_config)
@@ -1219,7 +1218,7 @@ def _step_train(
         _data_path(
             cfg,
             replay_gen,
-            None if cfg.training_mode == "placement-and-state" else model_type,
+            None if cfg.training_mode == "complete" else model_type,
         )
         for replay_gen in range(replay_start, gen + 1)
     ]
@@ -1231,12 +1230,9 @@ def _step_train(
         if effective_type == "placement"
         else cfg.state_model_config or cfg.model_config
     )
-    if effective_type == "state" and cfg.model_type != "combined" and tr.output_mode != "value":
-        raise ValueError(
-            "State policy/combined training is not supported by GameState exports; "
-            "set train.outputMode to 'value'."
-        )
-    output_mode = tr.output_mode if effective_type == "placement" else "value"
+    if effective_type == "state" and tr.output_mode != "combined":
+        raise ValueError("Full-state training requires train.outputMode 'combined'.")
+    output_mode = tr.output_mode
     target = tr.target if effective_type == "placement" else "winrate"
     advantage = tr.advantage if effective_type == "placement" else False
 
@@ -1549,19 +1545,20 @@ def _evaluate_promotion_gate(
 
 
 def _promote_candidate(cfg: PipelineConfig, gen: int, attempt: int) -> dict[str, Any]:
-    models: dict[str, str] = {}
-    for model_type in ("placement", "state"):
-        source = _candidate_model_path(cfg, gen, attempt, model_type)
-        destination = _champion_model_path(cfg, gen, model_type)
-        if not source.is_file():
-            raise FileNotFoundError(f"Candidate {model_type} model not found at {source}.")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
-        legacy = _model_path(cfg, gen, model_type)
-        legacy.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, legacy)
-        models[f"{model_type}Model"] = str(destination)
-    manifest: dict[str, Any] = {"generation": gen, "attempt": attempt, **models}
+    source = _candidate_model_path(cfg, gen, attempt, "complete")
+    destination = _champion_model_path(cfg, gen, "complete")
+    if not source.is_file():
+        raise FileNotFoundError(f"Candidate complete model not found at {source}.")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    legacy = _model_path(cfg, gen, "complete")
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, legacy)
+    manifest: dict[str, Any] = {
+        "generation": gen,
+        "attempt": attempt,
+        "model": str(destination),
+    }
     _write_json_atomic(_champion_manifest_path(cfg), manifest)
     return manifest
 
@@ -1573,56 +1570,39 @@ def _train_promotion_candidate(
     project_root: Path,
     champion: dict[str, Any] | None,
 ) -> None:
-    for model_type in ("placement", "state"):
-        train_cfg = (
-            cfg.placement_train or cfg.train
-            if model_type == "placement"
-            else cfg.state_train or cfg.train
-        )
-        destination = _candidate_model_path(cfg, gen, attempt, model_type)
-        checkpoint_dir = destination.parent / f"{model_type}_checkpoints"
-        resume = (
-            checkpoint_dir
-            if checkpoint_dir.is_dir() and any(checkpoint_dir.glob("epoch_*.pt"))
-            else Path(champion[f"{model_type}Model"])
-            if champion is not None
-            else None
-        )
-        if train_cfg.enabled:
-            _step_train(
-                cfg,
-                gen,
-                project_root,
-                model_type=model_type,
-                out_path_override=destination,
-                resume_path_override=resume,
-                checkpoint_path_override=checkpoint_dir,
-                config_suffix=f"_attempt{attempt}",
-            )
-        elif champion is not None and not destination.exists():
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(Path(champion[f"{model_type}Model"]), destination)
-        elif not destination.exists():
-            raise FileNotFoundError(
-                f"Cannot freeze {model_type} in bootstrap generation without a champion model."
-            )
+    destination = _candidate_model_path(cfg, gen, attempt, "complete")
+    checkpoint_dir = destination.parent / "complete_checkpoints"
+    resume = (
+        checkpoint_dir
+        if checkpoint_dir.is_dir() and any(checkpoint_dir.glob("epoch_*.pt"))
+        else Path(champion["model"])
+        if champion is not None
+        else None
+    )
+    _step_train(
+        cfg,
+        gen,
+        project_root,
+        model_type="state",
+        out_path_override=destination,
+        resume_path_override=resume,
+        checkpoint_path_override=checkpoint_dir,
+        config_suffix=f"_attempt{attempt}",
+    )
 
 
-def _start_model_pair_server(
+def _start_complete_model_server(
     server: _ServerProcess,
     cfg: PipelineConfig,
     serve_cfg: ServeConfig,
-    placement_model: Path,
-    state_model: Path,
+    model: Path,
     project_root: Path,
 ) -> str:
     server.start(
         serve_cfg=serve_cfg,
         game_config=cfg.game_config,
         python_module=cfg.python_module,
-        placement_model_path=placement_model,
-        placement_model_config=cfg.placement_model_config or cfg.model_config,
-        state_model_path=state_model,
+        state_model_path=model,
         state_model_config=cfg.state_model_config or cfg.model_config,
         cwd=project_root,
     )
@@ -1643,20 +1623,18 @@ def _run_promotion_gates(
     champion_cfg = replace(cfg.serve, port=cfg.serve.port + 1)
     gate_results: dict[str, Any] = {}
     try:
-        challenger_url = _start_model_pair_server(
+        challenger_url = _start_complete_model_server(
             challenger_server,
             cfg,
             challenger_cfg,
-            _candidate_model_path(cfg, gen, attempt, "placement"),
-            _candidate_model_path(cfg, gen, attempt, "state"),
+            _candidate_model_path(cfg, gen, attempt, "complete"),
             project_root,
         )
-        champion_url = _start_model_pair_server(
+        champion_url = _start_complete_model_server(
             champion_server,
             cfg,
             champion_cfg,
-            Path(champion["placementModel"]),
-            Path(champion["stateModel"]),
+            Path(champion["model"]),
             project_root,
         )
         for name, gate in (("direct", cfg.promotion.direct), ("hybrid", cfg.promotion.hybrid)):
@@ -1701,8 +1679,8 @@ def _run_promoted_placement_and_state_generation(
     project_root: Path,
     gimbur_server: _GimburServerProcess,
 ) -> None:
-    if cfg.training_mode != "placement-and-state":
-        raise ValueError("Promotion currently requires trainingMode 'placement-and-state'.")
+    if cfg.training_mode != "complete":
+        raise ValueError("Promotion requires trainingMode 'complete'.")
     generation_path = _promotion_generation_path(cfg, gen)
     if generation_path.is_file():
         return
@@ -1736,12 +1714,11 @@ def _run_promoted_placement_and_state_generation(
         simulation_url: str | None = None
         try:
             if champion is not None:
-                simulation_url = _start_model_pair_server(
+                simulation_url = _start_complete_model_server(
                     simulation_server,
                     cfg,
                     cfg.serve,
-                    Path(champion["placementModel"]),
-                    Path(champion["stateModel"]),
+                    Path(champion["model"]),
                     project_root,
                 )
             _step_simulate(
@@ -1810,20 +1787,15 @@ def _run_promoted_benchmarks(
     if decision.get("status") != "promoted" or _benchmark_complete(cfg, gen):
         return
 
-    placement_model = _champion_model_path(cfg, gen, "placement")
-    state_model = _champion_model_path(cfg, gen, "state")
-    missing = [path for path in (placement_model, state_model) if not path.is_file()]
-    if missing:
-        raise FileNotFoundError(
-            "Promoted model files are missing: " + ", ".join(str(path) for path in missing)
-        )
+    model = _champion_model_path(cfg, gen, "complete")
+    if not model.is_file():
+        raise FileNotFoundError(f"Promoted model file is missing: {model}")
 
-    nn_url = _start_model_pair_server(
+    nn_url = _start_complete_model_server(
         server,
         cfg,
         cfg.serve,
-        placement_model,
-        state_model,
+        model,
         project_root,
     )
     try:

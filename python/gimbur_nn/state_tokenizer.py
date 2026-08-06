@@ -30,6 +30,7 @@ _PIP_SIDE = "lhn"
 _BUILDING_TYPE = ".vc"
 _PLAYER_ID_ALL = "_-+*^"
 _TURN_STAGE = "aefirxyt"
+_TURN_STAGE_EXTENDED = "uvzcghmjk"
 _COUNT_REST = "6789ABCDEFGHJKMNPQRSTVWXYZ"
 
 _STRIP = str.maketrans("", "", "|/")
@@ -64,6 +65,7 @@ def _build_game_state_vocab(player_count: int) -> str:
         _player_id_chars(player_count),
         _TURN_STAGE,
         _COUNT_REST,
+        _TURN_STAGE_EXTENDED,
     ):
         for ch in group:
             if ch not in seen:
@@ -106,6 +108,95 @@ class StateTokenizer:
 
         self.vocab_size: int = len(self.vocab_chars)
         """Number of unique token characters in this vocabulary."""
+
+        self.policy_offsets = cfg.policy_offsets
+        self.policy_size = cfg.policy_size
+
+    def tile_policy_index(self, tile_index: int) -> int:
+        return self._segment_index(tile_index, self._cfg.tile_count, self.policy_offsets.tiles)
+
+    def vertex_policy_index(self, vertex_index: int) -> int:
+        return self._segment_index(
+            vertex_index, self._cfg.vertex_count, self.policy_offsets.vertices
+        )
+
+    def edge_policy_index(self, edge_index: int) -> int:
+        return self._segment_index(edge_index, self._cfg.edge_count, self.policy_offsets.edges)
+
+    def resource_policy_index(self, resource_index: int) -> int:
+        return self._segment_index(resource_index, 5, self.policy_offsets.resources)
+
+    def buy_trade_policy_index(self, action_index: int) -> int:
+        return self._segment_index(action_index, 5, self.policy_offsets.buy_trade)
+
+    def dev_card_policy_index(self, card_index: int) -> int:
+        return self._segment_index(card_index, 4, self.policy_offsets.play_dev_card)
+
+    def victim_policy_index(self, player_slot: int) -> int:
+        return self._segment_index(player_slot, self._cfg.player_count, self.policy_offsets.victims)
+
+    def control_policy_index(self, control_index: int) -> int:
+        return self._segment_index(control_index, 2, self.policy_offsets.controls)
+
+    @staticmethod
+    def _segment_index(index: int, width: int, offset: int) -> int:
+        if not 0 <= index < width:
+            raise ValueError(f"policy segment index {index} is outside 0..{width - 1}")
+        return offset + index
+
+    def validate_stage_policy_index(self, stage: str, policy_index: int) -> int:
+        """Validate an exported global policy index against its turn stage."""
+        o = self.policy_offsets
+        ranges = {
+            "a": (o.vertices, o.edges),
+            "f": (o.vertices, o.edges),
+            "z": (o.vertices, o.edges),
+            "c": (o.vertices, o.edges),
+            "e": (o.edges, o.resources),
+            "i": (o.edges, o.resources),
+            "u": (o.edges, o.resources),
+            "v": (o.edges, o.resources),
+            "x": (o.tiles, o.vertices),
+            "y": (o.victims, o.controls),
+            "g": (o.resources, o.buy_trade),
+            "h": (o.resources, o.buy_trade),
+            "m": (o.resources, o.buy_trade),
+            "j": (o.resources, o.buy_trade),
+            "k": (o.resources, o.buy_trade),
+        }
+        if stage in ranges:
+            start, end = ranges[stage]
+            valid = start <= policy_index < end
+        elif stage == "r":
+            valid = (
+                o.play_dev_card <= policy_index < o.victims
+                or policy_index == o.controls
+            )
+        elif stage == "t":
+            valid = (
+                o.buy_trade <= policy_index < o.victims
+                or policy_index == o.controls + 1
+            )
+        else:
+            raise ValueError(f"unknown turn stage {stage!r}")
+        if not valid:
+            raise ValueError(f"policy index {policy_index} is invalid for stage {stage!r}")
+        return policy_index
+
+    def stage_legal_mask(self, stage: str, policy_indices: list[int]) -> torch.Tensor:
+        """Build a dense legal mask from C#-authoritative exported indices."""
+        mask = torch.zeros(self.policy_size, dtype=torch.bool)
+        for policy_index in policy_indices:
+            mask[self.validate_stage_policy_index(stage, policy_index)] = True
+        return mask
+
+    def rotate_policy_index(self, policy_index: int, target_player: int) -> int:
+        """Rotate only the victim-player segment with player canonicalization."""
+        start = self.policy_offsets.victims
+        if start <= policy_index < self.policy_offsets.controls:
+            slot = policy_index - start
+            return start + (slot - (target_player - 1)) % self._cfg.player_count
+        return policy_index
 
     def tokenize(self, state_str: str) -> torch.Tensor:
         """Convert a serialized game state into an int tensor.
@@ -153,6 +244,20 @@ class StateTokenizer:
                 msg = f"State {i} has length {t.shape[0]}, expected {seq_len}"
                 raise ValueError(msg)
         return torch.stack(tensors)
+
+    def acting_player(self, state_str: str) -> int:
+        """Return the 1-based current player encoded in a full state."""
+        compact = state_str.translate(_STRIP)
+        position = 3 * self._cfg.tile_count + self._cfg.port_count + 1
+        try:
+            return _PLAYER_ID_ALL[1:].index(compact[position]) + 1
+        except (IndexError, ValueError) as exc:
+            raise ValueError("state does not encode a valid current player") from exc
+
+    def canonicalize(self, state_str: str) -> str:
+        """Compact a state and rotate its acting player into canonical slot one."""
+        compact = state_str.translate(_STRIP)
+        return self.rotate_player_state(compact, self.acting_player(compact))
 
     def rotate_player_state(
         self,

@@ -285,8 +285,8 @@ def expand_games(
     mcts_value_weight_end: float = 0.1,
     victory_point_sampling_statistic: str = "median",
     victory_point_sampling_upper_percentage: float = 0.10,
-) -> list[tuple[torch.Tensor, torch.Tensor]]:
-    """Expand games into player-rotated state and value-distribution samples.
+) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
+    """Expand games into acting-player-canonical policy/value samples.
 
     Each game's states are expanded via symmetry permutations and player
     rotation.
@@ -295,11 +295,11 @@ def expand_games(
         games: List of parsed game dicts.
         cfg: Game configuration matching the exported data.
     Returns:
-        A flat list of ``(token_ids, player_value_target)`` pairs.
+        ``(token_ids, value_target, policy_target, legal_mask)`` tuples.
     """
     if tokenizer is None:
         tokenizer = StateTokenizer(cfg)
-    samples: list[tuple[torch.Tensor, torch.Tensor]] = []
+    samples: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = []
     n_players = cfg.player_count
     selected_entries = _select_state_entries(
         games,
@@ -324,7 +324,7 @@ def _process_game(
     game: dict,
     cfg: GameConfig,
     n_players: int,
-    samples: list[tuple[torch.Tensor, torch.Tensor]],
+    samples: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]],
     tokenizer: StateTokenizer,
     mcts_value_weight_start: float,
     mcts_value_weight_end: float,
@@ -357,17 +357,35 @@ def _process_game(
         target = _value_target(wins, game.get("winner"), n_players, weight)
         if target is None:
             continue
-        for board_str, state_str in zip(board_variants, state_variants):
+        actions = state_entry.get("actions", [])
+        visits = [max(0, int(action.get("visits", 0))) for action in actions]
+        total_visits = sum(visits)
+        if actions and total_visits == 0:
+            continue
+        player_turn = int(state_entry["playerTurn"])
+        rotated_target = rotate_player_target(target, player_turn)
+
+        for variant_idx, (board_str, state_str) in enumerate(zip(board_variants, state_variants)):
             # Reconstruct full human-readable form, then compact.
             full_hr = board_str + "|" + state_str
             compact = _compact(full_hr)
-
-            for player in range(1, n_players + 1):
-                rotated = tokenizer.rotate_player_state(compact, player)
-                token_ids = tokenizer.tokenize(rotated)
-                rotation = player - 1
-                rotated_target = torch.roll(target, shifts=-rotation)
-                samples.append((token_ids, rotated_target))
+            rotated = tokenizer.rotate_player_state(compact, player_turn)
+            token_ids = tokenizer.tokenize(rotated)
+            policy = torch.zeros(tokenizer.policy_size, dtype=torch.float32)
+            legal_indices: list[int] = []
+            for action, visit_count in zip(actions, visits):
+                policy_index = int(
+                    action["policyIndex"]
+                    if variant_idx == 0
+                    else action["permutations"][variant_idx - 1]
+                )
+                policy_index = tokenizer.rotate_policy_index(policy_index, player_turn)
+                tokenizer.validate_stage_policy_index(state_entry["stage"], policy_index)
+                legal_indices.append(policy_index)
+                if total_visits:
+                    policy[policy_index] += visit_count / total_visits
+            legal_mask = tokenizer.stage_legal_mask(state_entry["stage"], legal_indices)
+            samples.append((token_ids, rotated_target, policy, legal_mask))
 
 
 # ── Legacy convenience (used by tests) ───────────────────────────────
@@ -376,7 +394,7 @@ def _process_game(
 def load_samples(
     path: str | Path,
     cfg: GameConfig,
-) -> list[tuple[torch.Tensor, torch.Tensor]]:
+) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
     """Load and expand all samples from a JSONL file.
 
     Convenience wrapper: ``load_games(path)`` → ``expand_games(…)``.
@@ -388,11 +406,11 @@ def load_samples(
 # ── Dataset ──────────────────────────────────────────────────────────
 
 
-class SimulationDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
+class SimulationDataset(Dataset[tuple[torch.Tensor, ...]]):
     """PyTorch dataset backed by a list of game records.
 
     Expands games into samples on construction and holds them in memory.
-    Each item contains token IDs and a float player-value distribution.
+    Each item contains tokens, value and policy targets, and a legal mask.
 
     Args:
         games: List of parsed game dicts (from :func:`load_games`).
@@ -419,14 +437,21 @@ class SimulationDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
             victory_point_sampling_statistic=victory_point_sampling_statistic,
             victory_point_sampling_upper_percentage=victory_point_sampling_upper_percentage,
         )
-        self._tokens = [t for t, _ in raw]
-        self._targets = [target for _, target in raw]
+        self._tokens = [sample[0] for sample in raw]
+        self._value_targets = [sample[1] for sample in raw]
+        self._policy_targets = [sample[2] for sample in raw]
+        self._legal_masks = [sample[3] for sample in raw]
 
     def __len__(self) -> int:
         return len(self._tokens)
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._tokens[idx], self._targets[idx]
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, ...]:
+        return (
+            self._tokens[idx],
+            self._value_targets[idx],
+            self._policy_targets[idx],
+            self._legal_masks[idx],
+        )
 
 
 # ── Placement phase sample expansion ─────────────────────────────────

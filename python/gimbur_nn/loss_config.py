@@ -40,8 +40,15 @@ def masked_soft_target_cross_entropy(
     logits: torch.Tensor, targets: torch.Tensor, legal_mask: torch.Tensor
 ) -> torch.Tensor:
     """Cross entropy for dense soft targets over legal actions only."""
-    masked_logits = logits.masked_fill(~legal_mask.bool(), float("-inf"))
-    log_probs = F.log_softmax(masked_logits, dim=-1).masked_fill(~legal_mask.bool(), 0.0)
+    legal_mask = legal_mask.bool()
+    valid_rows = legal_mask.any(dim=-1)
+    if not valid_rows.any():
+        return logits.sum() * 0.0
+    logits = logits[valid_rows]
+    targets = targets[valid_rows]
+    legal_mask = legal_mask[valid_rows]
+    masked_logits = logits.masked_fill(~legal_mask, float("-inf"))
+    log_probs = F.log_softmax(masked_logits, dim=-1).masked_fill(~legal_mask, 0.0)
     per_sample = -(targets * log_probs).sum(dim=-1)
     return per_sample.mean()
 

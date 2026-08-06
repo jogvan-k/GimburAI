@@ -246,12 +246,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-mode",
         type=str,
-        default="value",
+        default="combined",
         choices=sorted(OUTPUT_MODES),
         help=(
-            "Output head topology. Placement models support 'value' and "
-            "'combined'; policy-only is retained only for state-model config "
-            "compatibility and is not currently trainable."
+            "Output head topology. Full-state models require 'combined'."
         ),
     )
     parser.add_argument("--value-loss-weight", type=float, default=1.0)
@@ -353,7 +351,7 @@ _ARG_DEFAULTS: dict[str, object] = {
     "test_split": 0.0,
     "log_interval": 50,
     "target": "winrate",
-    "output_mode": "value",
+    "output_mode": "combined",
     "advantage": False,
     "value_loss_weight": 1.0,
     "policy_loss_weight": 1.0,
@@ -391,11 +389,11 @@ def _save_epoch_checkpoint(
 ) -> None:
     model_type = "placement" if isinstance(model, GimburPlacementTransformer) else "state"
     architecture = (
-        "placement_stage_policy" if model_type == "placement" else "state_player_value_v1"
+        "placement_stage_policy" if model_type == "placement" else "catan_policy_value_v1"
     )
     metadata = {"architecture": architecture}
     if model_type == "state":
-        metadata["checkpoint_version"] = 4
+        metadata["checkpoint_version"] = 5
     temporary = path.with_suffix(path.suffix + ".tmp")
     torch.save(
         {
@@ -425,11 +423,11 @@ def _save_final_model(
     Placement checkpoints identify the current-only architecture explicitly.
     """
     architecture = (
-        "placement_stage_policy" if args.model_type == "placement" else "state_player_value_v1"
+        "placement_stage_policy" if args.model_type == "placement" else "catan_policy_value_v1"
     )
     metadata = {"architecture": architecture}
     if args.model_type == "state":
-        metadata["checkpoint_version"] = 4
+        metadata["checkpoint_version"] = 5
     temporary = path.with_suffix(path.suffix + ".tmp")
     torch.save(
         {
@@ -450,13 +448,13 @@ def _load_model_state(path: Path, device: torch.device, model_type: str) -> dict
     """Load a player-value checkpoint and reject incompatible architectures."""
     raw = torch.load(path, map_location=device, weights_only=False)
     architecture = (
-        "placement_stage_policy" if model_type == "placement" else "state_player_value_v1"
+        "placement_stage_policy" if model_type == "placement" else "catan_policy_value_v1"
     )
     if (
         not isinstance(raw, dict)
         or "model_state_dict" not in raw
         or raw.get("architecture") != architecture
-        or (model_type == "state" and raw.get("checkpoint_version") != 4)
+        or (model_type == "state" and raw.get("checkpoint_version") != 5)
     ):
         raise ValueError(f"incompatible checkpoint; expected architecture {architecture!r}")
     return raw
@@ -575,11 +573,8 @@ def main() -> None:
         raise SystemExit("Error: --game-config is required (via CLI or config file).")
     if args.model_config is None:
         raise SystemExit("Error: --model-config is required (via CLI or config file).")
-    if args.model_type == "state" and args.output_mode != "value":
-        raise SystemExit(
-            "Error: state policy/combined training requires per-action visit-share data, "
-            "which GameState exports do not currently contain. Use --output-mode=value."
-        )
+    if args.model_type == "state" and args.output_mode != "combined":
+        raise SystemExit("Error: full-state models require --output-mode=combined.")
     if args.model_type == "placement" and args.output_mode == "policy":
         raise SystemExit("Error: placement models support only value or combined output modes.")
     if args.model_type == "placement" and not args.policy_target_temperature > 0:
@@ -634,14 +629,14 @@ def main() -> None:
             architecture = (
                 "placement_stage_policy"
                 if args.model_type == "placement"
-                else "state_player_value_v1"
+                else "catan_policy_value_v1"
             )
             if ckpt.get("architecture") != architecture:
                 raise SystemExit(
                     f"Error: incompatible checkpoint; expected architecture {architecture!r}"
                 )
-            if args.model_type == "state" and ckpt.get("checkpoint_version") != 4:
-                raise SystemExit("Error: incompatible state checkpoint; expected version 3")
+            if args.model_type == "state" and ckpt.get("checkpoint_version") != 5:
+                raise SystemExit("Error: incompatible checkpoint; expected version 5")
             model.load_state_dict(ckpt["model_state_dict"])
             resume_optimizer_state = ckpt["optimizer_state_dict"]
             start_epoch = ckpt["epoch"]

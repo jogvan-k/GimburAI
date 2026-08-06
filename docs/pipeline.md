@@ -1,5 +1,8 @@
 # Self-Play Training Pipeline
 
+The current full-game policy/value contract is documented in
+[complete-policy-value-model.md](complete-policy-value-model.md).
+
 The pipeline orchestrator drives an AlphaZero-style training loop for
 GimburAI: simulate self-play games, train a neural network on the
 resulting data, benchmark the new model, and repeat. Each iteration of

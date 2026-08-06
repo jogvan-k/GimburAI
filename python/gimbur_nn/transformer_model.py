@@ -153,10 +153,10 @@ class TransformerBlock(nn.Module):
 
 
 class GimburTransformer(nn.Module):
-    """Neural network for evaluating Catan game states.
+    """Complete Catan policy/value model.
 
     Input:  tokenized state tensor (from tokenizer.tokenize_game).
-    Output: raw per-player value logits with shape ``(batch, player_count)``.
+    Output: raw value and complete-policy logits.
     """
 
     def __init__(self, game_cfg: GameConfig, model_cfg: GimburTransformerConfig) -> None:
@@ -177,11 +177,12 @@ class GimburTransformer(nn.Module):
         )
         self.final_ln = nn.LayerNorm(model_cfg.d_model)
 
-        if self.output_mode != "value":
-            raise ValueError("State models support only 'value' output mode.")
+        if self.output_mode != "combined":
+            raise ValueError("State models support only 'combined' output mode.")
         self.value_head = nn.Linear(model_cfg.d_model, game_cfg.player_count, bias=False)
+        self.policy_head = nn.Linear(model_cfg.d_model, game_cfg.policy_size, bias=False)
 
-    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
+    def forward(self, token_ids: torch.Tensor) -> dict[str, torch.Tensor]:
         """Forward pass.
 
         Args:
@@ -199,7 +200,11 @@ class GimburTransformer(nn.Module):
         x = self.trf_blocks(x)
         x = self.final_ln(x)
 
-        return self.value_head(x.mean(dim=1))
+        pooled = x.mean(dim=1)
+        return {
+            "value": self.value_head(pooled),
+            "policy": self.policy_head(pooled),
+        }
 
 
 class GimburPlacementTransformer(nn.Module):

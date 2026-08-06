@@ -20,6 +20,7 @@ from gimbur_nn.data_loader import (
     split_games,
 )
 from gimbur_nn.game_config import MINI_2P
+from gimbur_nn.state_tokenizer import StateTokenizer
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -67,6 +68,7 @@ def _make_state(
     turn_number: int = 1,
     stage: str = "r",
     scores: list[float] | None = None,
+    actions: list[dict] | None = None,
 ) -> dict:
     """Create a minimal state entry within a game."""
     return {
@@ -80,6 +82,7 @@ def _make_state(
         "wins": wins if wins is not None else best_action_wins,
         "scores": scores if scores is not None else [2.0, 2.0],
         "permutations": state_perms,
+        "actions": actions or [],
     }
 
 
@@ -342,7 +345,7 @@ class TestSplitGames:
 
 class TestLoadSamples:
     def test_no_permutations_2_players(self, tmp_path: Path) -> None:
-        """Without permutations: 1 state * 1 combo * 2 players = 2 samples."""
+        """Without permutations there is one acting-player-canonical sample."""
         game = _make_game(
             board=MINI_BOARD,
             board_perms=[],
@@ -358,15 +361,16 @@ class TestLoadSamples:
         _write_jsonl(tmp_path / "test.jsonl", [game])
         samples = load_samples(tmp_path / "test.jsonl", MINI_2P)
 
-        assert len(samples) == 2
+        assert len(samples) == 1
 
         # All token tensors should have correct length.
-        for token_ids, target in samples:
+        for token_ids, target, policy, legal_mask in samples:
             assert token_ids.shape == (MINI_2P.state_token_size,)
             torch.testing.assert_close(target.sum(), torch.tensor(1.0))
+            assert policy.shape == legal_mask.shape == (MINI_2P.policy_size,)
 
     def test_with_permutations(self, tmp_path: Path) -> None:
-        """With 2 permutations: 1 state * 3 combos * 2 players = 6 samples."""
+        """With 2 permutations there are three canonical samples."""
         game = _make_game(
             board=MINI_BOARD,
             board_perms=[MINI_BOARD, MINI_BOARD],
@@ -382,11 +386,10 @@ class TestLoadSamples:
         _write_jsonl(tmp_path / "test.jsonl", [game])
         samples = load_samples(tmp_path / "test.jsonl", MINI_2P)
 
-        # (1 + 2 permutations) * 2 players = 6
-        assert len(samples) == 6
+        assert len(samples) == 3
 
     def test_multiple_states(self, tmp_path: Path) -> None:
-        """2 states, no permutations: 2 * 1 * 2 = 4 samples."""
+        """Two roots produce two canonical samples."""
         game = _make_game(
             board=MINI_BOARD,
             board_perms=[],
@@ -407,10 +410,10 @@ class TestLoadSamples:
         _write_jsonl(tmp_path / "test.jsonl", [game])
         samples = load_samples(tmp_path / "test.jsonl", MINI_2P)
 
-        assert len(samples) == 4
+        assert len(samples) == 2
 
     def test_multiple_games(self, tmp_path: Path) -> None:
-        """2 games with 1 state each, no perms: 2 * 1 * 1 * 2 = 4 samples."""
+        """Two games with one root each produce two samples."""
         game = _make_game(
             board=MINI_BOARD,
             board_perms=[],
@@ -426,7 +429,7 @@ class TestLoadSamples:
         _write_jsonl(tmp_path / "test.jsonl", [game, game])
         samples = load_samples(tmp_path / "test.jsonl", MINI_2P)
 
-        assert len(samples) == 4
+        assert len(samples) == 2
 
     def test_player_rotation_rotates_target_vector(self, tmp_path: Path) -> None:
         game = _make_game(
@@ -444,12 +447,10 @@ class TestLoadSamples:
         _write_jsonl(tmp_path / "test.jsonl", [game])
         samples = load_samples(tmp_path / "test.jsonl", MINI_2P)
 
-        # samples[0] is player 1 (no rotation), samples[1] is player 2.
         torch.testing.assert_close(samples[0][1], torch.tensor([0.918, 0.082]))
-        torch.testing.assert_close(samples[1][1], torch.tensor([0.082, 0.918]))
 
     def test_player_rotation_applied(self, tmp_path: Path) -> None:
-        """Token IDs should differ between player 1 and player 2 views."""
+        """The acting player is rotated into canonical slot one."""
         game = _make_game(
             board=MINI_BOARD,
             board_perms=[],
@@ -458,6 +459,7 @@ class TestLoadSamples:
                     state_str=MINI_STATE_ONLY,
                     state_perms=[],
                     best_action_wins=[60.0, 40.0],
+                    player_turn=2,
                 ),
             ],
             n_players=2,
@@ -465,12 +467,10 @@ class TestLoadSamples:
         _write_jsonl(tmp_path / "test.jsonl", [game])
         samples = load_samples(tmp_path / "test.jsonl", MINI_2P)
 
-        tokens_p1, _ = samples[0]
-        tokens_p2, _ = samples[1]
-
-        # The current player is '-' (P1) in the original; after rotation
-        # for P2 it becomes '+'. So the tokens must differ.
-        assert not torch.equal(tokens_p1, tokens_p2)
+        token_ids = samples[0][0]
+        tokenizer = StateTokenizer(MINI_2P)
+        compact = (MINI_BOARD + "|" + MINI_STATE_ONLY).translate(str.maketrans("", "", "|/"))
+        assert torch.equal(token_ids, tokenizer.tokenize(tokenizer.rotate_player_state(compact, 2)))
 
     def test_empty_file(self, tmp_path: Path) -> None:
         (tmp_path / "empty.jsonl").write_text("")
@@ -493,7 +493,7 @@ class TestLoadSamples:
         content = "\n" + json.dumps(game) + "\n\n"
         (tmp_path / "test.jsonl").write_text(content)
         samples = load_samples(tmp_path / "test.jsonl", MINI_2P)
-        assert len(samples) == 2
+        assert len(samples) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +502,44 @@ class TestLoadSamples:
 
 
 class TestExpandGames:
+    def test_combined_policy_target_and_symmetry_indices(self) -> None:
+        tok = StateTokenizer(MINI_2P)
+        roll = tok.control_policy_index(0)
+        knight = tok.dev_card_policy_index(0)
+        game = _simple_game([60.0, 40.0])
+        game["board"]["permutations"] = [MINI_BOARD]
+        state = game["states"][0]
+        state["permutations"] = [MINI_STATE_ONLY]
+        state["actions"] = [
+            {"policyIndex": roll, "permutations": [roll], "visits": 30},
+            {"policyIndex": knight, "permutations": [knight], "visits": 70},
+        ]
+
+        samples = expand_games([game], MINI_2P)
+
+        assert len(samples) == 2
+        for _, _, policy, legal_mask in samples:
+            assert policy[roll] == pytest.approx(0.3)
+            assert policy[knight] == pytest.approx(0.7)
+            assert legal_mask.sum() == 2
+
+    def test_victim_policy_rotates_with_acting_player(self) -> None:
+        tok = StateTokenizer(MINI_2P)
+        game = _simple_game()
+        state = game["states"][0]
+        state["stage"] = "y"
+        state["playerTurn"] = 2
+        state["serializedState"] = MINI_STATE_ONLY.replace("|-t|", "|+y|")
+        state["actions"] = [
+            {"policyIndex": tok.victim_policy_index(0), "permutations": [], "visits": 10}
+        ]
+
+        _, value, policy, legal_mask = expand_games([game], MINI_2P)[0]
+
+        torch.testing.assert_close(value, torch.tensor([0.41, 0.59]))
+        assert policy[tok.victim_policy_index(1)] == 1
+        assert legal_mask[tok.victim_policy_index(1)]
+
     def test_resolved_state_uses_exact_distribution_without_terminal_blend(self) -> None:
         game = _simple_game([25.0, 75.0])
         game["winner"] = 1
@@ -538,7 +576,6 @@ class TestExpandGames:
         samples = expand_games([game], MINI_2P)
 
         torch.testing.assert_close(samples[0][1], torch.tensor([0.918, 0.082]))
-        torch.testing.assert_close(samples[1][1], torch.tensor([0.082, 0.918]))
 
     def test_geometric_symmetry_keeps_player_target(self) -> None:
         game = _simple_game([70.0, 30.0])
@@ -547,14 +584,13 @@ class TestExpandGames:
 
         samples = expand_games([game], MINI_2P)
 
-        torch.testing.assert_close(samples[0][1], samples[2][1])
-        torch.testing.assert_close(samples[1][1], samples[3][1])
+        torch.testing.assert_close(samples[0][1], samples[1][1])
 
     def test_keeps_mcts_probabilities_from_unfinished_games(self) -> None:
         game = _simple_game()
         game["winner"] = 0
 
-        assert len(expand_games([game], MINI_2P)) == 2
+        assert len(expand_games([game], MINI_2P)) == 1
 
     def test_skips_state_without_mcts_or_terminal_target(self) -> None:
         game = _simple_game()
@@ -566,7 +602,7 @@ class TestExpandGames:
     def test_expand_single_game(self) -> None:
         games = [_simple_game()]
         samples = expand_games(games, MINI_2P)
-        assert len(samples) == 2  # 1 state * 1 combo * 2 players
+        assert len(samples) == 1
 
     def test_expand_empty(self) -> None:
         samples = expand_games([], MINI_2P)
@@ -583,22 +619,24 @@ class TestSimulationDataset:
         games = [_simple_game([60.0, 40.0])]
         ds = SimulationDataset(games, MINI_2P)
 
-        assert len(ds) == 2
+        assert len(ds) == 1
 
-        token_ids, target = ds[0]
+        token_ids, target, policy, legal_mask = ds[0]
         assert token_ids.shape == (MINI_2P.state_token_size,)
         assert token_ids.dtype == torch.int32
         assert target.dtype == torch.float32
         assert target.shape == (MINI_2P.player_count,)
+        assert policy.shape == legal_mask.shape == (MINI_2P.policy_size,)
 
     def test_compatible_with_dataloader(self) -> None:
         games = [_simple_game()]
         ds = SimulationDataset(games, MINI_2P)
         loader = torch.utils.data.DataLoader(ds, batch_size=2)
 
-        batch_tokens, batch_targets = next(iter(loader))
-        assert batch_tokens.shape == (2, MINI_2P.state_token_size)
-        assert batch_targets.shape == (2, MINI_2P.player_count)
+        batch_tokens, batch_targets, policies, masks = next(iter(loader))
+        assert batch_tokens.shape == (1, MINI_2P.state_token_size)
+        assert batch_targets.shape == (1, MINI_2P.player_count)
+        assert policies.shape == masks.shape == (1, MINI_2P.policy_size)
 
     def test_empty_games_list(self) -> None:
         ds = SimulationDataset([], MINI_2P)
@@ -902,5 +940,5 @@ def test_combined_game_feeds_placement_and_state_datasets() -> None:
 
     placement_dataset = PlacementDataset([combined], MINI_2P, target="combined")
 
-    assert len(state_dataset) == 2
+    assert len(state_dataset) == 1
     assert len(placement_dataset) == 2

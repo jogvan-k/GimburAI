@@ -125,13 +125,13 @@ STANDARD_EXPECTED = [
 
 class TestVocab:
     def test_game_state_vocab_sizes(self) -> None:
-        """Vocab size varies by player count: 2p=55, 3p=56, 4p=57."""
-        assert StateTokenizer(MINI_2P).vocab_size == 55
-        assert StateTokenizer(SMALL_2P).vocab_size == 55
-        assert StateTokenizer(SMALL_3P).vocab_size == 56
-        assert StateTokenizer(STANDARD_2P).vocab_size == 55
-        assert StateTokenizer(STANDARD_3P).vocab_size == 56
-        assert StateTokenizer(STANDARD_4P).vocab_size == 57
+        """Extended staged choices add five unique state characters."""
+        assert StateTokenizer(MINI_2P).vocab_size == 60
+        assert StateTokenizer(SMALL_2P).vocab_size == 60
+        assert StateTokenizer(SMALL_3P).vocab_size == 61
+        assert StateTokenizer(STANDARD_2P).vocab_size == 60
+        assert StateTokenizer(STANDARD_3P).vocab_size == 61
+        assert StateTokenizer(STANDARD_4P).vocab_size == 62
 
     def test_placement_state_vocab_sizes(self) -> None:
         """Placement state vocab includes stage and pending-settlement tokens."""
@@ -155,6 +155,52 @@ class TestVocab:
         assert len(tok.vocab) == len(tok.vocab_chars)
         for idx, ch in enumerate(tok.vocab_chars):
             assert tok.vocab[ch] == idx
+
+
+class TestCompletePolicyVocabulary:
+    @pytest.mark.parametrize(
+        ("cfg", "width"),
+        [
+            (MINI_2P, 79),
+            (SMALL_2P, 101),
+            (SMALL_3P, 102),
+            (STANDARD_3P, 164),
+            (STANDARD_4P, 165),
+        ],
+    )
+    def test_policy_width_formula(self, cfg, width: int) -> None:
+        assert cfg.policy_size == width
+        assert cfg.policy_size == (
+            cfg.tile_count + cfg.vertex_count + cfg.edge_count + 5 + 5 + 4
+            + cfg.player_count + 2
+        )
+
+    def test_offsets_and_index_helpers(self) -> None:
+        tok = StateTokenizer(MINI_2P)
+        assert tok.policy_offsets == (0, 7, 31, 61, 66, 71, 75, 77, 79)
+        assert tok.tile_policy_index(6) == 6
+        assert tok.vertex_policy_index(23) == 30
+        assert tok.edge_policy_index(29) == 60
+        assert tok.resource_policy_index(4) == 65
+        assert tok.buy_trade_policy_index(4) == 70
+        assert tok.dev_card_policy_index(3) == 74
+        assert tok.victim_policy_index(1) == 76
+        assert tok.control_policy_index(1) == 78
+
+    def test_stage_mask_uses_exported_global_indices(self) -> None:
+        tok = StateTokenizer(MINI_2P)
+        roll = tok.control_policy_index(0)
+        knight = tok.dev_card_policy_index(0)
+        mask = tok.stage_legal_mask("r", [roll, knight])
+        assert mask.sum() == 2
+        assert mask[roll] and mask[knight]
+        with pytest.raises(ValueError, match="invalid for stage"):
+            tok.stage_legal_mask("r", [tok.edge_policy_index(0)])
+
+    def test_victim_index_rotates_with_acting_player(self) -> None:
+        tok = StateTokenizer(MINI_2P)
+        assert tok.rotate_policy_index(tok.victim_policy_index(0), 2) == tok.victim_policy_index(1)
+        assert tok.rotate_policy_index(tok.vertex_policy_index(3), 2) == tok.vertex_policy_index(3)
 
 
 # ---------------------------------------------------------------------------

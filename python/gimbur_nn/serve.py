@@ -73,7 +73,7 @@ def _load_checkpoint(path: Path, device: torch.device, architecture: str) -> dic
         not isinstance(raw, dict)
         or "model_state_dict" not in raw
         or raw.get("architecture") != architecture
-        or (architecture == "state_player_value_v1" and raw.get("checkpoint_version") != 4)
+        or (architecture == "catan_policy_value_v1" and raw.get("checkpoint_version") != 5)
     ):
         raise ValueError(
             f"incompatible checkpoint; expected architecture={architecture!r}"
@@ -102,6 +102,9 @@ class PredictResponse(BaseModel):
 
     player_win_probabilities: list[list[float]]
     """Per-state player win distributions."""
+
+    policy_probabilities: list[list[float]]
+    """Per-state complete fixed-width policy distributions."""
 
 
 class PredictPlayerRequest(BaseModel):
@@ -150,15 +153,8 @@ class PriorRequest(BaseModel):
     id: str
     """Opaque ID to correlate response back to the MCTSState."""
 
-    parent_state: str | None = None
-    """Serialized state at the node, used by a value head when available."""
-
-    states: list[str]
-    """Serialized result states for each action (deterministic: 1 state,
-    stochastic: 1 per outcome)."""
-
-    player: int
-    """1-based acting player for server-side rotation."""
+    parent_state: str
+    """Serialized parent decision state."""
 
     priority: int
     """Depth from root; lower = more important."""
@@ -178,7 +174,7 @@ class PriorResponseItem(BaseModel):
     """Per-action prior weights in the legal-action order supplied by the client."""
 
     value_estimate: float | None = None
-    """Scalar value estimate for the node's state. None if not available."""
+    """Canonical acting-player value estimate."""
 
     player_win_probabilities: list[float] | None = None
     """Full player value distribution when a value head is available."""
@@ -535,53 +531,33 @@ def create_app(
         leaf_queue: PriorQueue[LeafRequest] = PriorQueue()
 
         def _infer_prior_batch(batch: list[PriorRequest]) -> list[PriorResponseItem]:
-            """Run inference on a batch of prior requests and return results."""
-            results: list[PriorResponseItem] = []
-            for req in batch:
-                if not req.states:
-                    results.append(PriorResponseItem(id=req.id, priors=[]))
-                    continue
+            """Return complete parent-state policies and canonical values."""
+            valid: list[tuple[int, PriorRequest]] = []
+            results: list[PriorResponseItem | None] = [None] * len(batch)
+            tokens: list[torch.Tensor] = []
+            for index, req in enumerate(batch):
                 try:
-                    inference_states = req.states
-                    has_parent = req.parent_state is not None
-                    if has_parent:
-                        inference_states = [req.parent_state, *inference_states]
-                    if not 1 <= req.player <= state_game_cfg.player_count:
-                        raise ValueError("player is outside the configured player range")
-                    token_ids = tokenizer.tokenize_batch(inference_states).to(state_device)
+                    tokens.append(tokenizer.tokenize(tokenizer.canonicalize(req.parent_state)))
+                    valid.append((index, req))
                 except (KeyError, ValueError):
-                    # Bad state — return zeros so the MCTS falls back to uniform.
-                    results.append(
-                        PriorResponseItem(
-                            id=req.id,
-                            priors=[0.0] * len(req.states),
-                        )
-                    )
-                    continue
+                    results[index] = PriorResponseItem(id=req.id, priors=[])
 
+            if tokens:
+                token_ids = torch.stack(tokens).to(state_device)
                 with torch.no_grad():
                     output = state_model(token_ids)
-                    prior_logits = _extract_logits(output)
-                    prior_probs = F.softmax(prior_logits, dim=-1)
-
-                prior_offset = 1 if has_parent else 0
-                player_index = req.player - 1
-                priors = prior_probs[prior_offset:, player_index].cpu().tolist()
-                value_estimate: float | None = None
-                player_probs: list[float] | None = None
-                if has_parent:
-                    player_probs = prior_probs[0].cpu().tolist()
-                    value_estimate = player_probs[player_index]
-                results.append(
-                    PriorResponseItem(
+                    values = F.softmax(_extract_logits(output, "value"), dim=-1)
+                    policies = F.softmax(_extract_logits(output, "policy"), dim=-1)
+                for batch_index, (result_index, req) in enumerate(valid):
+                    player_values = values[batch_index].cpu().tolist()
+                    results[result_index] = PriorResponseItem(
                         id=req.id,
-                        priors=priors,
-                        value_estimate=value_estimate,
-                        player_win_probabilities=player_probs,
+                        priors=policies[batch_index].cpu().tolist(),
+                        value_estimate=player_values[0],
+                        player_win_probabilities=player_values,
                     )
-                )
 
-            return results
+            return [result for result in results if result is not None]
 
         async def _prior_worker() -> None:
             """Background task that continuously processes the prior queue."""
@@ -609,7 +585,8 @@ def create_app(
                     results[index] = LeafResponseItem(id=request.id, values=[])
                     continue
                 try:
-                    tokens = tokenizer.tokenize_batch(request.states)
+                    canonical = [tokenizer.canonicalize(state) for state in request.states]
+                    tokens = tokenizer.tokenize_batch(canonical)
                     if tokens.shape[1] != state_game_cfg.state_token_size:
                         raise ValueError("state has the wrong token length")
                     token_batches.append(tokens)
@@ -621,7 +598,7 @@ def create_app(
                 return [result for result in results if result is not None]
             token_ids = torch.cat(token_batches).to(state_device)
             with torch.no_grad():
-                probabilities = F.softmax(_extract_logits(state_model(token_ids)), dim=-1)
+                probabilities = F.softmax(_extract_logits(state_model(token_ids), "value"), dim=-1)
             values = probabilities.cpu().tolist()
             offset = 0
             for result_index, request in valid:
@@ -729,7 +706,8 @@ def create_app(
                 raise HTTPException(status_code=400, detail="states list must not be empty")
 
             try:
-                token_ids = tokenizer.tokenize_batch(request.states).to(state_device)
+                canonical = [tokenizer.canonicalize(state) for state in request.states]
+                token_ids = tokenizer.tokenize_batch(canonical).to(state_device)
             except (KeyError, ValueError) as exc:
                 logger.error(
                     "Tokenization failed in /state/predict: %s\n  First state (truncated): %.200s",
@@ -740,9 +718,13 @@ def create_app(
 
             with torch.no_grad():
                 output = state_model(token_ids)
-                probs = F.softmax(_extract_logits(output), dim=-1)
+                probs = F.softmax(_extract_logits(output, "value"), dim=-1)
+                policy_probs = F.softmax(_extract_logits(output, "policy"), dim=-1)
 
-            return PredictResponse(player_win_probabilities=probs.cpu().tolist())
+            return PredictResponse(
+                player_win_probabilities=probs.cpu().tolist(),
+                policy_probabilities=policy_probs.cpu().tolist(),
+            )
 
         @app.post("/state/predict-player", response_model=PredictPlayerResponse)
         async def predict_player(
@@ -996,10 +978,10 @@ def main() -> None:
         state_game_cfg = CONFIGS_BY_NAME[args.game_config]
         state_model_cfg = MODEL_CONFIGS_BY_NAME[args.model_config]
         try:
-            state_ckpt = _load_checkpoint(args.model, device, "state_player_value_v1")
+            state_ckpt = _load_checkpoint(args.model, device, "catan_policy_value_v1")
         except ValueError as exc:
             raise SystemExit(f"Error: {exc}") from exc
-        state_output_mode = str(state_ckpt.get("output_mode", "value"))
+        state_output_mode = str(state_ckpt.get("output_mode", "combined"))
         if state_output_mode != getattr(state_model_cfg, "output_mode", "value"):
             state_model_cfg = _make_model_config(
                 d_model=state_model_cfg.d_model,

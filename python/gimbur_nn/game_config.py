@@ -27,6 +27,21 @@ Player-count-independent (player info is embedded in vertex/edge tokens).
 from __future__ import annotations
 
 from enum import Enum
+from typing import NamedTuple
+
+
+class PolicyOffsets(NamedTuple):
+    """Offsets into the fixed-width complete Catan policy vocabulary."""
+
+    tiles: int
+    vertices: int
+    edges: int
+    resources: int
+    buy_trade: int
+    play_dev_card: int
+    victims: int
+    controls: int
+    size: int
 
 
 class ModelType(Enum):
@@ -78,6 +93,12 @@ class GameConfig:
     placement_vocab_size: int
     """Placement state input embedding table size."""
 
+    policy_offsets: PolicyOffsets
+    """Complete policy segment offsets and total width."""
+
+    policy_size: int
+    """Complete policy width: ``T + V + E + 5 + 5 + 4 + N + 2``."""
+
     # ── Victory / thresholds ─────────────────────────────────────────
     victory_points_to_win: int
 
@@ -123,6 +144,27 @@ def _placement_state_vocab_size(player_count: int) -> int:
     return player_count + 23
 
 
+def _policy_offsets(t: int, v: int, e: int, n: int) -> PolicyOffsets:
+    vertices = t
+    edges = vertices + v
+    resources = edges + e
+    buy_trade = resources + 5
+    play_dev_card = buy_trade + 5
+    victims = play_dev_card + 4
+    controls = victims + n
+    return PolicyOffsets(
+        0,
+        vertices,
+        edges,
+        resources,
+        buy_trade,
+        play_dev_card,
+        victims,
+        controls,
+        controls + 2,
+    )
+
+
 def _make_config(
     *,
     name: str,
@@ -158,6 +200,8 @@ def _make_config(
     )
     cfg.placement_policy_size = max(vertex_count, 6)
     cfg.placement_vocab_size = _placement_state_vocab_size(player_count)
+    cfg.policy_offsets = _policy_offsets(tile_count, vertex_count, edge_count, player_count)
+    cfg.policy_size = cfg.policy_offsets.size
     cfg.victory_points_to_win = victory_points_to_win
     cfg.longest_road_minimum = longest_road_minimum
     cfg.largest_army_minimum = largest_army_minimum
