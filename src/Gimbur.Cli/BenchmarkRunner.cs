@@ -22,19 +22,8 @@ internal enum AiKind
     Greedy,
     Mcts,
     Nn,
-    NnPlacement,
-    NnPlacementRandom,
-    NnState,
-    NnStateRandom,
-    NnPlacementState,
     ServerMcts,
     ServerMctsNn,
-    NnMctsPlacement,
-    NnMctsPlacementRandom,
-    MctsPlacement,
-    MctsPlacementRandom,
-    NnMctsPlacementState,
-    NnMctsState,
 }
 
 /// <summary>
@@ -86,12 +75,6 @@ internal record BenchmarkOptions
     /// Defaults to <c>http://localhost:5123</c>.
     /// </summary>
     public string ServerUrl { get; init; } = "http://localhost:5123";
-
-    /// <summary>
-    /// Prior mode for server-mcts-nn AI kind: "state" or "placement".
-    /// Defaults to "state".
-    /// </summary>
-    public string ServerPriorMode { get; init; } = "state";
 
     /// <summary>
     /// Maximum tree depth for NN prior requests (server-mcts-nn only).
@@ -150,53 +133,6 @@ internal static class BenchmarkConfidence
         margin is > 0 and < 1
             ? (int)Math.Ceiling(Confidence95Z * Confidence95Z * 0.25 / (margin * margin))
             : throw new ArgumentOutOfRangeException(nameof(margin));
-}
-
-/// <summary>Routes setup and main-game actions to separate strategies.</summary>
-internal sealed class PhaseSwitchingPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDisposable
-{
-    private readonly IBenchmarkPlayer _placement;
-    private readonly IBenchmarkPlayer _mainGame;
-
-    public PhaseSwitchingPlayer(IBenchmarkPlayer placement, IBenchmarkPlayer mainGame)
-    {
-        _placement = placement;
-        _mainGame = mainGame;
-    }
-
-    public int TotalNnRequests => NnStats(_placement).Requests + NnStats(_mainGame).Requests;
-    public int TotalNnStatesEvaluated => NnStats(_placement).States + NnStats(_mainGame).States;
-    public int TotalPriorNodesRequested =>
-        PriorStats(_placement).Nodes + PriorStats(_mainGame).Nodes;
-    public int TotalPriorActionsApplied => PriorStats(_placement).Applied + PriorStats(_mainGame).Applied;
-    public int TotalPriorActionsRequested => PriorStats(_placement).Requested + PriorStats(_mainGame).Requested;
-    public int TotalPriorInferencesRequested =>
-        PriorStats(_placement).Inferences + PriorStats(_mainGame).Inferences;
-
-    public CatanState? Act(CatanState state, Random rng) => IsPlacement(state.Stage)
-        ? _placement.Act(state, rng)
-        : _mainGame.Act(state, rng);
-
-    internal static bool IsPlacement(TurnStage stage) => stage is
-        TurnStage.PlaceFirstSettlement or TurnStage.PlaceFirstRoad or
-        TurnStage.PlaceSecondSettlement or TurnStage.PlaceSecondRoad;
-
-    public void Dispose()
-    {
-        if (_placement is IDisposable placementDisposable) placementDisposable.Dispose();
-        if (_mainGame is IDisposable mainGameDisposable) mainGameDisposable.Dispose();
-    }
-
-    private static (int Requests, int States) NnStats(IBenchmarkPlayer player) =>
-        player is INnStatsProvider stats
-            ? (stats.TotalNnRequests, stats.TotalNnStatesEvaluated)
-            : (0, 0);
-
-    private static (int Nodes, int Applied, int Requested, int Inferences) PriorStats(
-        IBenchmarkPlayer player) => player is IPriorStatsProvider stats
-            ? (stats.TotalPriorNodesRequested, stats.TotalPriorActionsApplied,
-                stats.TotalPriorActionsRequested, stats.TotalPriorInferencesRequested)
-            : (0, 0, 0, 0);
 }
 
 /// <summary>
@@ -674,13 +610,9 @@ internal class BenchmarkRunner
     /// Creates a new player instance for the given AI kind.
     /// A new instance is created per game to allow stateful players (e.g. MCTS tree reuse).
     /// </summary>
-    private IBenchmarkPlayer CreatePlayer(AiKind kind, GameConfig config, string nnUrl)
+    private IBenchmarkPlayer CreatePlayer(AiKind kind, string nnUrl)
     {
         var nnClient = _nnClients.GetValueOrDefault(nnUrl);
-        ServerPlayer CreateServerNnPlayer(string priorMode) => new(
-            _options.ServerUrl, "mcts-nn-ai", _options.MapConfig ?? "standard",
-            _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth,
-            nnUrl, priorMode, _options.ServerMaxPriorDepth);
 
         return kind switch
         {
@@ -700,51 +632,13 @@ internal class BenchmarkRunner
                 500,
                 1000)),
             AiKind.Nn => new NnPlayer(nnClient!),
-            AiKind.NnPlacement => new NnPlacementPlayer(
-                nnClient!, PlacementActionSerializer.ForTopology(config.Map.Topology)),
-            AiKind.NnPlacementRandom => new NnPlacementPlayer(
-                nnClient!, PlacementActionSerializer.ForTopology(config.Map.Topology), new RandomPlayer()),
-            AiKind.NnState => new NnStatePlayer(nnClient!),
-            AiKind.NnStateRandom => new NnStatePlayer(nnClient!, new RandomPlayer()),
-            AiKind.NnPlacementState => new PhaseSwitchingPlayer(
-                new NnPlacementPlayer(
-                    nnClient!, PlacementActionSerializer.ForTopology(config.Map.Topology)),
-                new NnStatePlayer(nnClient!)),
             AiKind.ServerMcts => new ServerPlayer(
                 _options.ServerUrl, "mcts-ai", _options.MapConfig ?? "standard",
                 _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth),
             AiKind.ServerMctsNn => new ServerPlayer(
                 _options.ServerUrl, "mcts-nn-ai", _options.MapConfig ?? "standard",
                 _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth,
-                nnUrl, _options.ServerPriorMode, _options.ServerMaxPriorDepth),
-            AiKind.NnMctsPlacement => new ServerPlacementPlayer(
-                new ServerPlayer(
-                    _options.ServerUrl, "mcts-nn-ai", _options.MapConfig ?? "standard",
-                    _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth,
-                    nnUrl, "placement", _options.ServerMaxPriorDepth),
-                new GreedyPlayer()),
-            AiKind.NnMctsPlacementRandom => new ServerPlacementPlayer(
-                new ServerPlayer(
-                    _options.ServerUrl, "mcts-nn-ai", _options.MapConfig ?? "standard",
-                    _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth,
-                    nnUrl, "placement", _options.ServerMaxPriorDepth),
-                new RandomPlayer()),
-            AiKind.MctsPlacement => new ServerPlacementPlayer(
-                new ServerPlayer(
-                    _options.ServerUrl, "mcts-ai", _options.MapConfig ?? "standard",
-                    _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth),
-                new GreedyPlayer()),
-            AiKind.MctsPlacementRandom => new ServerPlacementPlayer(
-                new ServerPlayer(
-                    _options.ServerUrl, "mcts-ai", _options.MapConfig ?? "standard",
-                    _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth),
-                new RandomPlayer()),
-            AiKind.NnMctsPlacementState => new PhaseSwitchingPlayer(
-                CreateServerNnPlayer("placement"),
-                CreateServerNnPlayer("state")),
-            AiKind.NnMctsState => new PhaseSwitchingPlayer(
-                new GreedyPlayer(),
-                CreateServerNnPlayer("state")),
+                nnUrl, _options.ServerMaxPriorDepth),
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, $"Unknown AI kind: {kind}"),
         };
     }
@@ -756,16 +650,10 @@ internal class BenchmarkRunner
     /// Returns true if any player in the array requires a Gimbur.Server instance.
     /// </summary>
     private static bool UsesServer(AiKind[] players) =>
-        players.Any(ai => ai is AiKind.ServerMcts or AiKind.ServerMctsNn
-                               or AiKind.NnMctsPlacement or AiKind.NnMctsPlacementRandom
-                               or AiKind.MctsPlacement or AiKind.MctsPlacementRandom
-                               or AiKind.NnMctsPlacementState or AiKind.NnMctsState);
+        players.Any(ai => ai is AiKind.ServerMcts or AiKind.ServerMctsNn);
 
     private static bool UsesNn(AiKind[] players) =>
-        players.Any(ai => ai is AiKind.Nn or AiKind.NnPlacement or AiKind.NnPlacementRandom
-            or AiKind.NnState or AiKind.NnStateRandom or AiKind.NnPlacementState
-            or AiKind.ServerMctsNn or AiKind.NnMctsPlacement or AiKind.NnMctsPlacementRandom
-            or AiKind.NnMctsPlacementState or AiKind.NnMctsState);
+        players.Any(ai => ai is AiKind.Nn or AiKind.ServerMctsNn);
 
     internal static string[] ResolveNnUrls(BenchmarkOptions options)
     {
@@ -817,7 +705,7 @@ internal class BenchmarkRunner
         var players = new IBenchmarkPlayer[playerCount + 1];
         for (var i = 0; i < playerCount; i++)
         {
-            players[i + 1] = CreatePlayer(seatAssignment[i], config, seatNnUrls[i]);
+            players[i + 1] = CreatePlayer(seatAssignment[i], seatNnUrls[i]);
         }
 
         const int maxTotalActions = 10_000;

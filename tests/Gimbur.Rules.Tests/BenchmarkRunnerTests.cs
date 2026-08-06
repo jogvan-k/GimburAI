@@ -1,17 +1,16 @@
 using Gimbur.Cli;
 using Gimbur.Commands;
-using Gimbur.Rules;
-using Kjarni;
-
 namespace Gimbur.Rules.Tests;
 
 [TestFixture]
 internal sealed class BenchmarkRunnerTests
 {
-    [TestCase("nn-placement-state", AiKind.NnPlacementState)]
-    [TestCase("nn-mcts-placement-state", AiKind.NnMctsPlacementState)]
-    [TestCase("nn-state", AiKind.NnState)]
-    [TestCase("nn-mcts-state", AiKind.NnMctsState)]
+    [TestCase("random", AiKind.Random)]
+    [TestCase("greedy", AiKind.Greedy)]
+    [TestCase("mcts", AiKind.Mcts)]
+    [TestCase("nn", AiKind.Nn)]
+    [TestCase("server-mcts", AiKind.ServerMcts)]
+    [TestCase("server-mcts-nn", AiKind.ServerMctsNn)]
     public void ParsesStableAiNames(string name, AiKind expected)
     {
         Assert.That(RootCommandFactory.TryParseAiKind(name, out var actual), Is.True);
@@ -19,35 +18,16 @@ internal sealed class BenchmarkRunnerTests
         Assert.That(AiKindNames.Format(actual), Is.EqualTo(name));
     }
 
-    [Test]
-    public void PhaseSwitchingPlayerRoutesSetupAndMainGameAndAggregatesStats()
+    [TestCase("nn-placement")]
+    [TestCase("nn-state")]
+    [TestCase("nn-placement-state")]
+    [TestCase("nn-mcts-placement")]
+    [TestCase("nn-mcts-state")]
+    [TestCase("nn-mcts-placement-state")]
+    [TestCase("mcts-placement")]
+    public void RejectsRemovedAiNames(string name)
     {
-        var placement = new RecordingPlayer(1, 2, 3, 4, 5);
-        var mainGame = new RecordingPlayer(10, 20, 30, 40, 50);
-        using var player = new PhaseSwitchingPlayer(placement, mainGame);
-        var rng = new Random(1);
-        var state = new CatanState(GameConfig.Mini, 2, rng);
-
-        player.Act(state, rng);
-        Assert.That(placement.ActCount, Is.EqualTo(1));
-        Assert.That(mainGame.ActCount, Is.Zero);
-
-        while (PhaseSwitchingPlayer.IsPlacement(state.Stage))
-        {
-            var action = Unwrap(state.Actions()[0]);
-            state = (CatanState)action.DoCoreAction();
-        }
-
-        player.Act(state, rng);
-        Assert.That(mainGame.ActCount, Is.EqualTo(1));
-        Assert.Multiple(() =>
-        {
-            Assert.That(player.TotalNnRequests, Is.EqualTo(11));
-            Assert.That(player.TotalNnStatesEvaluated, Is.EqualTo(22));
-            Assert.That(player.TotalPriorActionsApplied, Is.EqualTo(33));
-            Assert.That(player.TotalPriorActionsRequested, Is.EqualTo(44));
-            Assert.That(player.TotalPriorInferencesRequested, Is.EqualTo(55));
-        });
+        Assert.That(RootCommandFactory.TryParseAiKind(name, out _), Is.False);
     }
 
     [Test]
@@ -76,7 +56,7 @@ internal sealed class BenchmarkRunnerTests
         var options = new BenchmarkOptions
         {
             NumberOfGames = 10,
-            Players = [AiKind.NnPlacementState, AiKind.NnPlacementState],
+            Players = [AiKind.Nn, AiKind.Nn],
             NnUrls = ["http://localhost:8000", "http://localhost:8001"],
             PlayerLabels = ["challenger", "champion"],
         };
@@ -116,33 +96,4 @@ internal sealed class BenchmarkRunnerTests
             Is.EqualTo(new[] { "nn", "greedy" }));
     }
 
-    private static CatanAction Unwrap(CoreAction action) => action.IsDeterministic
-        ? (CatanDeterministicAction)((CoreAction.Deterministic)action).Item
-        : (CatanStochasticAction)((CoreAction.Stochastic)action).Item;
-
-    private sealed class RecordingPlayer(
-        int requests,
-        int states,
-        int applied,
-        int requested,
-        int inferences) : IBenchmarkPlayer, IPriorStatsProvider, IDisposable
-    {
-        public int ActCount { get; private set; }
-        public int TotalNnRequests => requests;
-        public int TotalNnStatesEvaluated => states;
-        public int TotalPriorNodesRequested => requests;
-        public int TotalPriorActionsApplied => applied;
-        public int TotalPriorActionsRequested => requested;
-        public int TotalPriorInferencesRequested => inferences;
-
-        public CatanState Act(CatanState state, Random rng)
-        {
-            ActCount++;
-            return state;
-        }
-
-        public void Dispose()
-        {
-        }
-    }
 }

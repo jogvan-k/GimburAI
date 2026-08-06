@@ -21,7 +21,6 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDis
     private readonly int _searchTimeMs;
     private readonly int _maxRolloutDepth;
     private readonly string? _nnUrl;
-    private readonly string? _priorMode;
     private readonly int? _maxPriorDepth;
 
     public int TotalNnRequests { get; private set; }
@@ -44,7 +43,6 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDis
     /// <param name="searchTimeMs">MCTS search time limit in ms.</param>
     /// <param name="maxRolloutDepth">Maximum MCTS rollout depth.</param>
     /// <param name="nnUrl">NN inference server URL (required for mcts-nn-ai).</param>
-    /// <param name="priorMode">Prior mode: "state" or "placement" (for mcts-nn-ai).</param>
     /// <param name="maxPriorDepth">Max prior depth (for mcts-nn-ai).</param>
     public ServerPlayer(
         string serverUrl,
@@ -54,7 +52,6 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDis
         int searchTimeMs,
         int maxRolloutDepth = 500,
         string? nnUrl = null,
-        string? priorMode = null,
         int? maxPriorDepth = null)
     {
         _http = new HttpClient
@@ -68,7 +65,6 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDis
         _searchTimeMs = searchTimeMs;
         _maxRolloutDepth = maxRolloutDepth;
         _nnUrl = nnUrl;
-        _priorMode = priorMode;
         _maxPriorDepth = maxPriorDepth;
     }
 
@@ -95,7 +91,6 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDis
             SearchTimeMs = _searchTimeMs,
             MaxRolloutDepth = _maxRolloutDepth,
             NnUrl = _nnUrl,
-            PriorMode = _priorMode,
             MaxPriorDepth = _maxPriorDepth,
         };
 
@@ -175,7 +170,6 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDis
         public int? MaxRolloutDepth { get; init; }
         public int? MaxPriorDepth { get; init; }
         public string? NnUrl { get; init; }
-        public string? PriorMode { get; init; }
     }
 
     private sealed class ServerChooseActionResponse

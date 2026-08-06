@@ -39,96 +39,19 @@ internal sealed class NnPlayer : IBenchmarkPlayer, INnStatsProvider
             return (CatanState)UnwrapCoreAction(coreActions[0]).DoCoreAction();
         }
 
-        var actingPlayer = state.CurrentPlayer;
-
-        // Collect all states we need to evaluate.
-        // For deterministic actions: 1 resulting state.
-        // For stochastic actions: multiple weighted outcomes.
-        var allStates = new List<string>();
-        var actionDescriptors = new List<ActionDescriptor>();
-
-        for (var i = 0; i < coreActions.Length; i++)
-        {
-            var coreAction = coreActions[i];
-
-            if (coreAction.IsDeterministic)
-            {
-                var deterministicAction = (CatanDeterministicAction)((CoreAction.Deterministic)coreAction).Item;
-                var resultState = (CatanState)deterministicAction.State();
-                if (resultState.WinnerPlayer != 0)
-                {
-                    actionDescriptors.Add(new ActionDescriptor(
-                        i, [], [1], [resultState.WinnerPlayer == actingPlayer ? 1.0f : 0.0f]));
-                    continue;
-                }
-                var stateIndex = allStates.Count;
-                allStates.Add(resultState.SerializeCompact());
-                actionDescriptors.Add(new ActionDescriptor(i, [stateIndex], [1], [float.NaN]));
-            }
-            else if (coreAction.IsStochastic)
-            {
-                var stochasticAction = (CatanStochasticAction)((CoreAction.Stochastic)coreAction).Item;
-                var outcomes = stochasticAction.Outcomes();
-                var weights = new int[outcomes.Length];
-                var stateIndices = new int[outcomes.Length];
-                var exactScores = new float[outcomes.Length];
-                for (var j = 0; j < outcomes.Length; j++)
-                {
-                    weights[j] = outcomes[j].Item1;
-                    var outcomeState = (CatanState)outcomes[j].Item2;
-                    if (outcomeState.WinnerPlayer != 0)
-                    {
-                        stateIndices[j] = -1;
-                        exactScores[j] = outcomeState.WinnerPlayer == actingPlayer ? 1.0f : 0.0f;
-                    }
-                    else
-                    {
-                        stateIndices[j] = allStates.Count;
-                        exactScores[j] = float.NaN;
-                        allStates.Add(outcomeState.SerializeCompact());
-                    }
-                }
-
-                actionDescriptors.Add(new ActionDescriptor(i, stateIndices, weights, exactScores));
-            }
-        }
-
-        var playerValues = allStates.Count > 0
-            ? _client.PredictAsync(allStates).GetAwaiter().GetResult()
+        var actions = coreActions.Select(UnwrapCoreAction).ToArray();
+        var serializer = new CatanPolicySerializer(state.Board.Topology, state.PlayerCount);
+        var prediction = _client.PredictPolicyValueAsync([state.SerializeCompact()])
+            .GetAwaiter().GetResult();
+        TotalNnRequests++;
+        TotalNnStatesEvaluated++;
+        var densePolicy = prediction.PolicyProbabilities.Length == 1
+            ? Array.ConvertAll(prediction.PolicyProbabilities[0], value => (double)value)
             : [];
-        if (allStates.Count > 0)
-        {
-            TotalNnRequests++;
-            TotalNnStatesEvaluated += allStates.Count;
-        }
-
-        // Score each action: for deterministic actions use the win prob directly;
-        // for stochastic actions compute the expected value across outcomes.
-        var bestActionIndex = 0;
-        var bestScore = float.NegativeInfinity;
-
-        foreach (var desc in actionDescriptors)
-        {
-            var totalWeight = 0;
-            var weightedSum = 0.0f;
-            for (var j = 0; j < desc.Weights.Length; j++)
-            {
-                var value = float.IsNaN(desc.ExactScores[j])
-                    ? playerValues[desc.StateIndices[j]][actingPlayer - 1]
-                    : desc.ExactScores[j];
-                totalWeight += desc.Weights[j];
-                weightedSum += desc.Weights[j] * value;
-            }
-            var score = totalWeight > 0 ? weightedSum / totalWeight : 0;
-
-            if (score > bestScore)
-            {
-                bestScore = score;
-                bestActionIndex = desc.ActionIndex;
-            }
-        }
-
-        return (CatanState)UnwrapCoreAction(coreActions[bestActionIndex]).DoCoreAction();
+        var legalIndices = actions.Select(action => serializer.IndexOf(state, action)).ToArray();
+        var policy = serializer.MaskAndNormalize(densePolicy, legalIndices);
+        var bestIndex = Array.IndexOf(policy, policy.Max());
+        return (CatanState)actions[bestIndex].DoCoreAction();
     }
 
     private static CatanAction UnwrapCoreAction(CoreAction coreAction)
@@ -140,13 +63,4 @@ internal sealed class NnPlayer : IBenchmarkPlayer, INnStatsProvider
         throw new InvalidOperationException($"Unknown CoreAction tag: {coreAction.Tag}");
     }
 
-    /// <summary>
-    /// Describes how an action's resulting state(s) map into the flat
-    /// prediction array.
-    /// </summary>
-    private readonly record struct ActionDescriptor(
-        int ActionIndex,
-        int[] StateIndices,
-        int[] Weights,
-        float[] ExactScores);
 }

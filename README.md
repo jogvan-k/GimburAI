@@ -112,7 +112,7 @@ The goal is to train a neural network that evaluates board positions (state to w
 - [x] Transformer architecture: serialized state tokens to win probability (scalar 0-1)
 - [x] Training loop, validation, metrics (MSE, win/loss prediction accuracy)
 - [x] Serve model using python endpoint
-- [x] `placement_stage_policy`: five-section placement encoder with player-value and stage-policy heads
+- [x] `catan_policy_value_v1`: complete full-state player-value and policy heads
 
 #### 3c: Self-Play Loop (AlphaZero-style)
 
@@ -191,9 +191,8 @@ dotnet run --project src/Gimbur.Cli -- <command> [options]
 
 Run MCTS self-play games with optional JSONL training data export.
 
-Use `--export-type PlacementAndState` to export placement policy roots and full-game state
-roots from the same game. Combined runs default to 16000 ms placement search and 8000 ms
-main-game search; override them with `--placement-search-time` and `--main-game-search-time`.
+The current Python trainer consumes complete full-state policy/value roots across
+initial placement and normal play.
 
 ```bash
 # Run 100 games on the mini map, export training data
@@ -239,9 +238,9 @@ dotnet run --project src/Gimbur.Cli -- benchmark \
 dotnet run --project src/Gimbur.Cli -- benchmark \
     --ai nn mcts --nn-url http://localhost:8000
 
-# Placement policy during setup, state evaluation afterward, versus greedy
+# Complete policy/value player versus greedy
 dotnet run --project src/Gimbur.Cli -- benchmark \
-    --games 10000 --ai nn-placement-state greedy --map-config mini
+    --games 10000 --ai nn greedy --map-config mini
 ```
 
 | Option | Short | Default | Description |
@@ -254,11 +253,8 @@ dotnet run --project src/Gimbur.Cli -- benchmark \
 | `--max-rollout-depth <n>` | | `500` | Max rollout depth |
 | `--nn-url <url>` | | `http://localhost:8000` | Base URL of the NN inference server |
 
-Focused model AI types are `nn-placement` (placement model, then greedy), `nn-state`
-(greedy placement, then state model), and `nn-placement-state` (placement model, then
-state model without MCTS). `nn-mcts-placement-state` uses placement-policy MCTS during
-setup and state-prior MCTS with asynchronous state leaf evaluation afterward; it also
-requires `Gimbur.Server`. The same `--nn-url` serves both model endpoints.
+`nn` uses the complete policy directly across all stages. `server-mcts-nn` uses the
+complete policy/value model with MCTS and requires `Gimbur.Server`.
 
 Use 10,000 games for reported comparisons. Its worst-case 95% Wald margin is 0.0098
 (0.98 percentage points); result JSON includes observed and worst-case confidence margins.
@@ -331,14 +327,12 @@ Endpoints:
 | `GET` | `/health` | Health check |
 | `POST` | `/state/predict` | Batch predict win probabilities for full game states |
 | `POST` | `/state/predict-player` | Predict win probability for a specific player |
-| `POST` | `/placement/predict` | Predict placement values and optional dense policies from placement states |
-| `POST` | `/state/prior-enqueue`, `/placement/prior-enqueue` | Enqueue state or placement MCTS prior requests |
-| `POST` | `/state/prior-collect`, `/placement/prior-collect` | Collect completed prior results |
-| `POST` | `/state/prior-flush`, `/placement/prior-flush` | Clear the corresponding server queue |
+| `POST` | `/state/prior-enqueue` | Enqueue full-state parent policy/value requests |
+| `POST` | `/state/prior-collect` | Collect completed parent policy/value results |
+| `POST` | `/state/prior-flush` | Clear the state prior queue |
+| `POST` | `/state/leaf-predict` | Batch full-state leaf-value requests |
 
-The `placement_stage_policy` model accepts canonical five-section placement states. It always emits player-value logits `[B,N]` and one fixed-width policy head `[B,max(V,6)]`: settlement stages use the first `V` vertex logits, while road stages use the first six logits in `N, NE, SE, S, SW, NW` order. Masking and interpretation are external to the model. `/placement/predict` softmaxes the fixed-width head and returns it as `policy_probabilities`.
-
-State checkpoints use version 4 architecture `state_player_value_v1`. Placement checkpoints use the current-only `placement_stage_policy` architecture; older checkpoints are incompatible.
+Checkpoints use version 5 architecture `catan_policy_value_v1`. Older and placement-only checkpoints are incompatible.
 
 ### End-to-End Workflow (Manual)
 

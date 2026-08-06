@@ -13,7 +13,6 @@ from gimbur_nn.game_config import (
     STANDARD_3P,
     STANDARD_4P,
 )
-from gimbur_nn.placement_tokenizer import DIRECTION_ORDER, PlacementTokenizer
 from gimbur_nn.state_tokenizer import StateTokenizer
 
 # ---------------------------------------------------------------------------
@@ -31,7 +30,7 @@ MINI_STATE = (
     "|21010/00130"
     "|0/0"
     "|00000/00000"
-    "|00000|0_|72111|_"
+    "|00000|0___0|72111|_"
 )
 
 SMALL_STATE = (
@@ -45,7 +44,7 @@ SMALL_STATE = (
     "|10010/00100"
     "|0/0"
     "|00000/00000"
-    "|00000|0_|A3111|_"
+    "|00000|0___0|A3111|_"
 )
 
 STANDARD_STATE = (
@@ -59,7 +58,7 @@ STANDARD_STATE = (
     "|31201/02143/10320"
     "|2/0/1"
     "|10000/01010/00100"
-    "|00000|0_|E5222|_"
+    "|00000|0___0|E5222|_"
 )
 
 # fmt: off
@@ -80,6 +79,7 @@ MINI_EXPECTED = [
     7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
     7, 7, 7, 7, 7,
     7, 19,
+    19, 19, 7,
     31, 9, 8, 8, 8, 19,
 ]
 
@@ -96,6 +96,7 @@ SMALL_EXPECTED = [
     7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
     7, 7, 7, 7, 7,
     7, 19,
+    19, 19, 7,
     34, 10, 8, 8, 8, 19,
 ]
 
@@ -112,6 +113,7 @@ STANDARD_EXPECTED = [
     8, 7, 7, 7, 7, 7, 8, 7, 8, 7, 7, 7, 8, 7, 7,
     7, 7, 7, 7, 7,
     7, 19,
+    19, 19, 7,
     39, 12, 9, 9, 9, 19,
 ]
 
@@ -132,19 +134,6 @@ class TestVocab:
         assert StateTokenizer(STANDARD_2P).vocab_size == 60
         assert StateTokenizer(STANDARD_3P).vocab_size == 61
         assert StateTokenizer(STANDARD_4P).vocab_size == 62
-
-    def test_placement_state_vocab_sizes(self) -> None:
-        """Placement state vocab includes stage and pending-settlement tokens."""
-        assert PlacementTokenizer(MINI_2P).state_vocab_size == 25
-        assert PlacementTokenizer(SMALL_2P).state_vocab_size == 25
-        assert PlacementTokenizer(SMALL_3P).state_vocab_size == 26
-        assert PlacementTokenizer(STANDARD_2P).state_vocab_size == 25
-        assert PlacementTokenizer(STANDARD_3P).state_vocab_size == 26
-        assert PlacementTokenizer(STANDARD_4P).state_vocab_size == 27
-
-    def test_placement_input_vocab_is_state_only(self) -> None:
-        assert PlacementTokenizer(MINI_2P).vocab_size == 25
-        assert PlacementTokenizer(STANDARD_4P).vocab_size == 27
 
     def test_no_duplicate_chars(self) -> None:
         tok = StateTokenizer(MINI_2P)
@@ -171,8 +160,7 @@ class TestCompletePolicyVocabulary:
     def test_policy_width_formula(self, cfg, width: int) -> None:
         assert cfg.policy_size == width
         assert cfg.policy_size == (
-            cfg.tile_count + cfg.vertex_count + cfg.edge_count + 5 + 5 + 4
-            + cfg.player_count + 2
+            cfg.tile_count + cfg.vertex_count + cfg.edge_count + 5 + 5 + 4 + cfg.player_count + 2
         )
 
     def test_offsets_and_index_helpers(self) -> None:
@@ -212,7 +200,7 @@ class TestMiniMap:
     def test_full_tensor(self) -> None:
         tok = StateTokenizer(MINI_2P)
         t = tok.tokenize(MINI_STATE)
-        assert t.shape == (145,)
+        assert t.shape == (148,)
         assert t.dtype == torch.int32
         assert t.tolist() == MINI_EXPECTED
 
@@ -221,7 +209,7 @@ class TestSmallMap:
     def test_full_tensor(self) -> None:
         tok = StateTokenizer(SMALL_2P)
         t = tok.tokenize(SMALL_STATE)
-        assert t.shape == (181,)
+        assert t.shape == (184,)
         assert t.dtype == torch.int32
         assert t.tolist() == SMALL_EXPECTED
 
@@ -230,7 +218,7 @@ class TestStandardMap:
     def test_full_tensor(self) -> None:
         tok = StateTokenizer(STANDARD_3P)
         t = tok.tokenize(STANDARD_STATE)
-        assert t.shape == (297,)
+        assert t.shape == (300,)
         assert t.dtype == torch.int32
         assert t.tolist() == STANDARD_EXPECTED
 
@@ -259,7 +247,7 @@ class TestBatch:
     def test_same_map_batch(self) -> None:
         tok = StateTokenizer(MINI_2P)
         t = tok.tokenize_batch([MINI_STATE, MINI_STATE])
-        assert t.shape == (2, 145)
+        assert t.shape == (2, 148)
         assert t.dtype == torch.int32
 
     def test_batch_matches_single(self) -> None:
@@ -386,13 +374,13 @@ class TestRotatePlayerState:
             "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t|__|"
             "._._._._._._v-._._._._._._._v+._._._._._._._._._|"
             "_____-_______+________________|"
-            "21010/00130|0/0|00000/00000|00000|0_|72111|_"
+            "21010/00130|0/0|00000/00000|00000|0___0|72111|_"
         )
         expected_hr = (
             "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|+t|__|"
             "._._._._._._v+._._._._._._._v-._._._._._._._._._|"
             "_____+_______-________________|"
-            "00130/21010|0/0|00000/00000|00000|0_|72111|_"
+            "00130/21010|0/0|00000/00000|00000|0___0|72111|_"
         )
         original = original_hr.translate(_STRIP)
         expected = expected_hr.translate(_STRIP)
@@ -519,91 +507,3 @@ class TestRotatePlayerState:
         tok = StateTokenizer(MINI_2P)
         with pytest.raises(ValueError, match="Expected"):
             tok.rotate_player_state(MINI_COMPACT + "x", 2)
-
-
-# ---------------------------------------------------------------------------
-# PlacementTokenizer
-# ---------------------------------------------------------------------------
-
-
-class TestPlacementTokenizer:
-    """Tests for state inputs and stage-policy output indices."""
-
-    # -- Mini empty-board placement state (from spec Part II) --
-    MINI_PLACEMENT_STATE = (
-        "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|a"
-        "|._._._._._._._._._._._._._._._._._._._._._._._._"
-        "|______________________________"
-    )
-
-    # -- State tokenization ------------------------------------------------
-
-    def test_tokenize_state_mini_empty_board(self) -> None:
-        """tokenize_state produces correct shape and dtype."""
-        tok = PlacementTokenizer(MINI_2P)
-        t = tok.tokenize_state(self.MINI_PLACEMENT_STATE)
-        assert t.shape == (MINI_2P.placement_token_size,)
-        assert t.dtype == torch.int32
-
-    def test_tokenize_state_strips_separators(self) -> None:
-        """Separators | and / are stripped before tokenization."""
-        tok = PlacementTokenizer(MINI_2P)
-        human = tok.tokenize_state(self.MINI_PLACEMENT_STATE)
-        compact_str = self.MINI_PLACEMENT_STATE.replace("|", "").replace("/", "")
-        compact = tok.tokenize_state(compact_str)
-        assert torch.equal(human, compact)
-
-    def test_tokenize_state_unknown_char_raises(self) -> None:
-        tok = PlacementTokenizer(MINI_2P)
-        with pytest.raises(KeyError):
-            tok.tokenize_state("w5l#bad")
-
-    # -- Placement token sizes from config ---------------------------------
-
-    def test_placement_token_size_mini(self) -> None:
-        cfg = MINI_2P
-        expected = 3 * cfg.tile_count + cfg.port_count + 1 + 2 * cfg.vertex_count + cfg.edge_count
-        assert cfg.placement_token_size == expected
-        assert cfg.placement_token_size == 106
-
-    def test_placement_token_size_small(self) -> None:
-        cfg = SMALL_2P
-        expected = 3 * cfg.tile_count + cfg.port_count + 1 + 2 * cfg.vertex_count + cfg.edge_count
-        assert cfg.placement_token_size == expected
-        assert cfg.placement_token_size == 142
-
-    def test_placement_token_size_standard(self) -> None:
-        cfg = STANDARD_3P
-        expected = 3 * cfg.tile_count + cfg.port_count + 1 + 2 * cfg.vertex_count + cfg.edge_count
-        assert cfg.placement_token_size == expected
-        assert cfg.placement_token_size == 247
-
-    # -- Policy indexing ---------------------------------------------------
-
-    def test_vertex_action_indices(self) -> None:
-        tok = PlacementTokenizer(MINI_2P)
-        assert tok.vertex_action_index(0) == 0
-        assert tok.vertex_action_index(23) == 23
-        with pytest.raises(ValueError, match="vertex"):
-            tok.vertex_action_index(24)
-
-    def test_direction_order_matches_csharp(self) -> None:
-        tok = PlacementTokenizer(MINI_2P)
-        assert DIRECTION_ORDER == ("N", "NE", "SE", "S", "SW", "NW")
-        assert [tok.direction_action_index(direction) for direction in DIRECTION_ORDER] == list(
-            range(6)
-        )
-        with pytest.raises(ValueError, match="direction"):
-            tok.direction_action_index("E")
-
-    def test_tokenize_batch_is_state_only(self) -> None:
-        tok = PlacementTokenizer(MINI_2P)
-        batch = tok.tokenize_batch([self.MINI_PLACEMENT_STATE] * 2)
-        assert batch.shape == (2, MINI_2P.placement_token_size)
-
-    # -- Policy sizes ------------------------------------------------------
-
-    def test_policy_size_matches_config(self) -> None:
-        for cfg in (MINI_2P, SMALL_2P, SMALL_3P, STANDARD_2P, STANDARD_3P, STANDARD_4P):
-            tok = PlacementTokenizer(cfg)
-            assert tok.policy_size == cfg.placement_policy_size == cfg.vertex_count

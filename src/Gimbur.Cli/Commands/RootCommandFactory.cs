@@ -176,23 +176,6 @@ internal static class RootCommandFactory
             Description = "Base URL of the NN inference server (e.g. http://localhost:8000)",
             DefaultValueFactory = _ => "http://localhost:8000",
         };
-        var serverUrlOption = new Option<string>("--server-url")
-        {
-            Description = "Base URL of the Gimbur.Server (e.g. http://localhost:5123)",
-            DefaultValueFactory = _ => "http://localhost:5123",
-        };
-
-        var serverPriorModeOption = new Option<string>("--server-prior-mode")
-        {
-            Description = "Prior mode for server-mcts-nn: 'state' or 'placement'",
-            DefaultValueFactory = _ => "state",
-        };
-
-        var serverMaxPriorDepthOption = new Option<int?>("--server-max-prior-depth")
-        {
-            Description = "Max tree depth for NN prior requests (server-mcts-nn only)",
-        };
-
         var placementOnlyOption = new Option<bool>("--placement-only")
         {
             Description = "Stop MCTS expansion at the placement/main-game boundary (RollDiceAction). " +
@@ -276,9 +259,6 @@ internal static class RootCommandFactory
             bool noSymmetries = parseResult.GetValue(noSymmetriesOption);
             bool prior = parseResult.GetValue(priorOption);
             string nnUrl = parseResult.GetValue(nnUrlOption)!;
-            string serverUrl = parseResult.GetValue(serverUrlOption)!;
-            string serverPriorMode = parseResult.GetValue(serverPriorModeOption)!;
-            int? serverMaxPriorDepth = parseResult.GetValue(serverMaxPriorDepthOption);
             bool placementOnly = parseResult.GetValue(placementOnlyOption);
             int maxPriorDepth = parseResult.GetValue(maxPriorDepthOption);
             int parallelism = parseResult.GetValue(parallelismOption);
@@ -343,12 +323,6 @@ internal static class RootCommandFactory
                     prior = ConfigLoader.GetBool(cfg, "prior") ?? prior;
                 if (!WasProvided(parseResult, "--nn-url"))
                     nnUrl = ConfigLoader.GetString(cfg, "nnUrl") ?? nnUrl;
-                if (!WasProvided(parseResult, "--server-url"))
-                    serverUrl = ConfigLoader.GetString(cfg, "serverUrl") ?? serverUrl;
-                if (!WasProvided(parseResult, "--server-prior-mode"))
-                    serverPriorMode = ConfigLoader.GetString(cfg, "serverPriorMode") ?? serverPriorMode;
-                if (!WasProvided(parseResult, "--server-max-prior-depth"))
-                    serverMaxPriorDepth = ConfigLoader.GetInt(cfg, "serverMaxPriorDepth") ?? serverMaxPriorDepth;
                 if (!WasProvided(parseResult, "--placement-only"))
                     placementOnly = ConfigLoader.GetBool(cfg, "placementOnly") ?? placementOnly;
                 if (!WasProvided(parseResult, "--max-prior-depth"))
@@ -462,7 +436,7 @@ internal static class RootCommandFactory
         var playersOption = new Option<string[]>("--ai")
         {
             Description = "AI for each player seat (e.g. --ai random greedy mcts nn). " +
-                          "Available: random, greedy, mcts, nn, nn-placement, nn-placement-random, nn-state, nn-state-random, nn-placement-state, server-mcts, server-mcts-nn, nn-mcts-placement, nn-mcts-placement-random, nn-mcts-state, nn-mcts-placement-state, mcts-placement, mcts-placement-random",
+                          "Available: random, greedy, mcts, nn, server-mcts, server-mcts-nn",
             AllowMultipleArgumentsPerToken = true,
         };
         playersOption.DefaultValueFactory = _ => new[] { "random", "greedy" };
@@ -512,12 +486,6 @@ internal static class RootCommandFactory
             DefaultValueFactory = _ => "http://localhost:5123",
         };
 
-        var serverPriorModeOption = new Option<string>("--server-prior-mode")
-        {
-            Description = "Prior mode for server-mcts-nn: 'state' or 'placement'",
-            DefaultValueFactory = _ => "state",
-        };
-
         var serverMaxPriorDepthOption = new Option<int?>("--server-max-prior-depth")
         {
             Description = "Max tree depth for NN prior requests (server-mcts-nn only)",
@@ -536,7 +504,6 @@ internal static class RootCommandFactory
             nnUrlsOption,
             playerLabelsOption,
             serverUrlOption,
-            serverPriorModeOption,
             serverMaxPriorDepthOption,
         };
 
@@ -562,7 +529,6 @@ internal static class RootCommandFactory
             string[]? nnUrls = parseResult.GetValue(nnUrlsOption);
             string[]? playerLabels = parseResult.GetValue(playerLabelsOption);
             string serverUrl = parseResult.GetValue(serverUrlOption)!;
-            string serverPriorMode = parseResult.GetValue(serverPriorModeOption)!;
             int? serverMaxPriorDepth = parseResult.GetValue(serverMaxPriorDepthOption);
 
             // ── Apply config file defaults for benchmark ─────────────
@@ -602,8 +568,6 @@ internal static class RootCommandFactory
                     playerLabels = ConfigLoader.GetStringArray(cfg, "playerLabels") ?? playerLabels;
                 if (!WasProvided(parseResult, "--server-url"))
                     serverUrl = ConfigLoader.GetString(cfg, "serverUrl") ?? serverUrl;
-                if (!WasProvided(parseResult, "--server-prior-mode"))
-                    serverPriorMode = ConfigLoader.GetString(cfg, "serverPriorMode") ?? serverPriorMode;
                 if (!WasProvided(parseResult, "--server-max-prior-depth"))
                     serverMaxPriorDepth = ConfigLoader.GetInt(cfg, "serverMaxPriorDepth") ?? serverMaxPriorDepth;
                 if (!WasProvided(parseResult, "--verbosity", "-v") && !WasProvided(parseResult, "-q") && !WasProvided(parseResult, "--verbose"))
@@ -643,7 +607,6 @@ internal static class RootCommandFactory
                 NnUrls = nnUrls,
                 PlayerLabels = playerLabels,
                 ServerUrl = serverUrl,
-                ServerPriorMode = serverPriorMode,
                 ServerMaxPriorDepth = serverMaxPriorDepth,
                 Parallelism = parallelism,
             };

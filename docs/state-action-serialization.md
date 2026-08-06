@@ -1,13 +1,12 @@
 # State & Action Serialization
 
-This document defines two state serialization formats and placement stage-policy indexing used by GimburAI neural network evaluators. The state formats use fixed-length, human-readable token strings with a reversible compact form for transformer ingestion.
-
-Two neural network models consume these serializations:
+This document defines the full-state serialization used by the complete GimburAI
+policy/value model. It uses fixed-length, human-readable token strings with a
+reversible compact form for transformer ingestion.
 
 | Model | Input | Output | Used during |
 |-------|-------|--------|-------------|
-| **GimburStateEvaluator** | Game state serialization (full) | Per-player win probability | Normal play (after initial placement) |
-| **Placement model (`placement_stage_policy`)** | Five-section placement state | Per-player value and stage-policy logits | Initial placement phase |
+| **`catan_policy_value_v1`** | Full game state | Per-player value and complete policy | All decision stages |
 
 ## Encoding Overview
 
@@ -386,126 +385,6 @@ Changes:
 
 The rotation is implemented in `python/gimbur_nn/tokenizer.py` as `rotate_player_state()`. The inference server's `/state/predict-player` endpoint applies rotation automatically: callers send the original (unrotated) compact state together with the target player number, and the server handles the rest.
 
----
-
-# Part II — Placement Phase State Serialization
-
-*Consumed as the complete input to `placement_stage_policy` during initial placement. Legal actions are not appended to the input.*
-
-## Placement Phase Layout
-
-The placement serialization has five sections in fixed order: `tiles|ports|stage|vertices|edges`. There is no explicit current-player token.
-
-| # | Section | Tokens per unit | Description |
-|---|---------|----------------|-------------|
-| 1 | [Tiles](#1-tiles) | 3 per tile | Identical to game state tiles |
-| 2 | [Ports](#2-ports--harbors) | 1 per port | Identical to game state ports |
-| 3 | Stage | 1 | `a`, `e`, `f`, or `i` |
-| 4 | Placement Vertices | 2 per vertex | Placement marker and canonical owner |
-| 5 | Edges | 1 per edge | Canonical owner |
-
-### Sections 1–2: Tiles and Ports
-
-Identical encoding to game state [tiles](#1-tiles) and [ports](#2-ports--harbors). See Part I for details.
-
-### Canonical Acting Player
-
-C# cyclically rotates every nonempty vertex and edge owner so the acting player is player 1 (`-`). For `N` players, original owner `p` becomes `((p - playerTurn + N) mod N) + 1`. Python consumes these owner IDs directly and rotates exported value targets by the same offset, using the retained `playerTurn`, so target slot 0 is the acting player.
-
-### Section 3: Stage
-
-The stage token is `a` (first settlement), `e` (first road), `f` (second settlement), or `i` (second road).
-
-### Section 4: Placement Vertices
-
-During initial placement, cities are impossible. Instead the model needs to know *which* placement round produced each settlement (1st or 2nd), since 2nd-placement settlements grant starting resources and players choose them with different strategies.
-
-For each vertex index `v`, two tokens:
-- `vertex[v].placement` — **placement number**:
-  - `.` = empty
-  - `a` = 1st settlement (placed in round 1)
-  - `b` = 2nd settlement (placed in round 2)
-  - `p` = pending settlement during a road stage
-- `vertex[v].owner` — **player id**:
-  - `_` = none (must pair with `.`)
-  - `-` `+` `*` `^` = player 1..4
-
-Valid combinations:
-
-| Tokens | Meaning |
-|--------|----------|
-| `._` | Empty vertex |
-| `a-` | Player 1's 1st settlement |
-| `a+` | Player 2's 1st settlement |
-| `b-` | Player 1's 2nd settlement |
-| `b+` | Player 2's 2nd settlement |
-| `p-` | Acting player's settlement awaiting its road |
-| `a*` `b*` `a^` `b^` | Players 3–4 (standard map) |
-
-Exactly one `p` occurs in stage `e` or `i`; no `p` occurs in stage `a` or `f`. Symmetry moves the complete vertex pair and leaves stage unchanged.
-
-**Tokens**: `V * 2` — mini: 48, small: 64, standard: 108.
-
-### Section 5: Edges
-
-Identical encoding to game state [edges](#7-edges). See Part I for details.
-
-**Tokens**: `E` — mini: 30, small: 41, standard: 72.
-
-## Placement Phase Example
-
-An empty mini board at first-settlement stage is:
-
-```
-w5lb3ls4lW3hd0nW4ho2l|gsgbgw|a|._._._._._._._._._._._._._._._._._._._._._._._._|______________________________
-```
-
-Its compact form has 106 characters. After settlement placement, stage is `e` and the new vertex is `p-` until its road is placed.
-
----
-
-# Part III — Placement Stage-Policy Indexing
-
-The model always emits one policy tensor of shape `[B,max(V,6)]`. The stage token determines how to interpret it; masking occurs in the dataset or serving consumer.
-
-## Placement Action Format
-
-At settlement stages `a` and `f`, output index `v` represents vertex `v`; only the first `V` logits are meaningful.
-
-Placement exports use this representation directly: each non-forced MCTS root stores all legal actions as integer `policyIndex` values. At settlement stages the index is transformed under symmetry through `perm.Vertices`; at road stages it is transformed from the pending vertex and road edge with `TransformDirectionIndex`. No composite action string is part of the current export schema.
-
-### Vertex Index
-
-The decimal index (0-based) of the vertex where the settlement is placed. Range: 0–23 (mini), 0–31 (small), 0–53 (standard).
-
-### Road Direction
-
-The public clockwise direction-index order is `N, NE, SE, S, SW, NW`. The compass direction from the settlement vertex to the adjacent vertex identifies the road edge. Every vertex is either a **peak** or **valley** and has up to three directions:
-
-**Peak vertices** (edges go up and down-left/down-right):
-
-| Direction | Geometry |
-|-----------|----------|
-| `N` | Vertical edge going up to valley above |
-| `SW` | Diagonal edge going down-left to valley below-left |
-| `SE` | Diagonal edge going down-right to valley below-right |
-
-**Valley vertices** (edges go down and up-left/up-right):
-
-| Direction | Geometry |
-|-----------|----------|
-| `S` | Vertical edge going down to peak below |
-| `NW` | Diagonal edge going up-left to peak above-left |
-| `NE` | Diagonal edge going up-right to peak above-right |
-
-At road stages `e` and `i`, indices 0 through 5 represent `N, NE, SE, S, SW, NW`. Only these six logits are meaningful. C# game rules determine which directions are legal for the pending settlement.
-
-### Policy Width
-
-The fixed width is `max(V,6)`: 24 for mini, 32 for small, and 54 for standard. Since every supported map has more than six vertices, this currently equals `V`.
-
----
-
 # Token Counts
 
 Compact form: strip all `/` and `|` separators from the human-readable form. The result is a fixed-length string, one character per token.
@@ -519,21 +398,13 @@ Compact form: strip all `/` and `|` separators from the human-readable form. The
 
 The constant 5 = robber(1) + current-turn(2) + awards(2). The trailing 13 = new dev cards (5), resolution state (2), remaining deck (5), and winner (1).
 
-## Placement Phase State
-
-```
-(3*T) + P + 1 + (2*V) + E
-```
-
-Player-count-independent: player information is embedded in vertex/edge tokens, and per-player sections are omitted.
-
 ## Summary
 
-| Map | Players | Placement Phase State | Game State |
-|-----|---------|----------------------|------------|
-| Mini (T=7, V=24, E=30, P=6) | 2 | 106 | 138 |
-| Small (T=10, V=32, E=41, P=6) | 2 | 142 | 174 |
-| Small (T=10, V=32, E=41, P=6) | 3 | 142 | 185 |
-| Standard (T=19, V=54, E=72, P=9) | 2 | 247 | 279 |
-| Standard (T=19, V=54, E=72, P=9) | 3 | 247 | 290 |
-| Standard (T=19, V=54, E=72, P=9) | 4 | 247 | 301 |
+| Map | Players | Game State |
+|-----|---------|------------|
+| Mini (T=7, V=24, E=30, P=6) | 2 | 138 |
+| Small (T=10, V=32, E=41, P=6) | 2 | 174 |
+| Small (T=10, V=32, E=41, P=6) | 3 | 185 |
+| Standard (T=19, V=54, E=72, P=9) | 2 | 279 |
+| Standard (T=19, V=54, E=72, P=9) | 3 | 290 |
+| Standard (T=19, V=54, E=72, P=9) | 4 | 301 |

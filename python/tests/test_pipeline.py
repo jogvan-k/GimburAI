@@ -17,7 +17,6 @@ from gimbur_nn.pipeline import (
     _generation_complete,
     _load_config,
     _load_section,
-    _run_placement_and_state_generation,
     _save_progress_chart,
     _save_summary,
     _step_simulate,
@@ -31,38 +30,11 @@ def test_train_config_loads_replay_window() -> None:
     assert config.replay_generations == 5
 
 
-def test_train_config_loads_enabled() -> None:
-    config = _load_section(TrainConfig, {"enabled": False})
-
-    assert not config.enabled
-
-
-def test_pipeline_config_loads_per_model_training_enabled(tmp_path) -> None:
-    path = tmp_path / "pipeline.json"
-    path.write_text(
-        json.dumps(
-            {
-                "trainingMode": "complete",
-                "placementTrain": {"enabled": False},
-                "stateTrain": {"enabled": True},
-            }
-        )
-    )
-
-    config = _load_config(path)
-
-    assert config.placement_train is not None
-    assert not config.placement_train.enabled
-    assert config.state_train is not None
-    assert config.state_train.enabled
-
-
 def test_pipeline_config_loads_nested_promotion_defaults_and_overrides(tmp_path) -> None:
     path = tmp_path / "pipeline.json"
     path.write_text(
         json.dumps(
             {
-                "trainingMode": "complete",
                 "promotion": {
                     "enabled": True,
                     "additionalTrainingGames": 250,
@@ -106,7 +78,6 @@ def test_promotion_benchmark_score_counts_draws_and_requires_exact_games() -> No
 
 def test_promotion_generation_completion_uses_terminal_decision(tmp_path) -> None:
     cfg = PipelineConfig(
-        training_mode="complete",
         model_dir=str(tmp_path / "models"),
         results_dir=str(tmp_path / "results"),
     )
@@ -117,19 +88,6 @@ def test_promotion_generation_completion_uses_terminal_decision(tmp_path) -> Non
     decision.parent.mkdir(parents=True)
     decision.write_text('{"status":"rejected"}')
     assert _generation_complete(cfg, 2)
-
-
-def test_pipeline_defaults_to_complete_promotion_mode(tmp_path) -> None:
-    path = tmp_path / "pipeline.json"
-    path.write_text(json.dumps({"promotion": {"enabled": True}}))
-
-    assert _load_config(path).training_mode == "complete"
-
-
-def test_train_config_loads_policy_target_temperature() -> None:
-    config = _load_section(TrainConfig, {"policyTargetTemperature": 0.5})
-
-    assert config.policy_target_temperature == 0.5
 
 
 def test_train_config_loads_value_blending_and_state_sampling() -> None:
@@ -168,16 +126,6 @@ def test_simulate_config_loads_parallelism() -> None:
     assert config.drain_timeout_ms == 750
     assert config.max_errors_per_game == 3
     assert config.max_discard_rate == 0.1
-
-
-def test_simulate_config_has_combined_budgets() -> None:
-    config = _load_section(
-        SimulateConfig,
-        {"placementSearchTimeMs": 16000, "mainGameSearchTimeMs": 8000},
-    )
-
-    assert config.placement_search_time_ms == 16000
-    assert config.main_game_search_time_ms == 8000
 
 
 def test_accepted_count_excludes_discarded_files(tmp_path) -> None:
@@ -247,19 +195,17 @@ def test_step_train_passes_value_blending_and_state_sampling(tmp_path, monkeypat
     assert config["mctsValueWeightEnd"] == 0.25
     assert config["victoryPointSamplingStatistic"] == "average"
     assert config["victoryPointSamplingUpperPercentage"] == 0.25
-    assert "policyTargetTemperature" not in config
+    assert "modelType" not in config
+    assert "outputMode" not in config
 
 
-def test_complete_mode_generates_shared_sim_and_one_combined_train_config(
-    tmp_path, monkeypatch
-) -> None:
+def test_complete_mode_generates_state_sim_and_one_train_config(tmp_path, monkeypatch) -> None:
     cfg = PipelineConfig(
-        training_mode="complete",
         data_dir=str(tmp_path / "data"),
         model_dir=str(tmp_path / "models"),
-        state_model_config="state-small",
+        model_config="small",
         simulate=SimulateConfig(games=1),
-        train=TrainConfig(batch_size=22, mcts_value_weight_start=0.7, output_mode="combined"),
+        train=TrainConfig(batch_size=22, mcts_value_weight_start=0.7),
     )
     monkeypatch.setattr(
         "gimbur_nn.pipeline.subprocess.run",
@@ -268,23 +214,20 @@ def test_complete_mode_generates_shared_sim_and_one_combined_train_config(
     monkeypatch.setattr("gimbur_nn.pipeline._run", lambda *args, **kwargs: None)
 
     _step_simulate(cfg, 0, tmp_path, None)
-    _step_train(cfg, 0, tmp_path, model_type="state")
+    _step_train(cfg, 0, tmp_path)
 
     sim = json.loads((tmp_path / "models/.configs/simulate_gen0.json").read_text())
-    state = json.loads((tmp_path / "models/.configs/train_gen0_state.json").read_text())
-    assert sim["exportType"] == "PlacementAndState"
-    assert sim["placementSearchTimeMs"] == 16000
-    assert sim["mainGameSearchTimeMs"] == 8000
+    state = json.loads((tmp_path / "models/.configs/train_gen0.json").read_text())
+    assert sim["exportType"] == "GameState"
     assert state["data"] == [str(tmp_path / "data/gen0")]
-    assert state["modelConfig"] == "state-small"
+    assert state["modelConfig"] == "small"
     assert state["batchSize"] == 22
     assert state["mctsValueWeightStart"] == 0.7
-    assert state["outputMode"] == "combined"
+    assert "outputMode" not in state
 
 
 def test_complete_mode_resume_requires_shared_data_and_model(tmp_path) -> None:
     cfg = PipelineConfig(
-        training_mode="complete",
         data_dir=str(tmp_path / "data"),
         model_dir=str(tmp_path / "models"),
         results_dir=str(tmp_path / "results"),
@@ -294,97 +237,10 @@ def test_complete_mode_resume_requires_shared_data_and_model(tmp_path) -> None:
     data = tmp_path / "data/gen0"
     data.mkdir(parents=True)
     (data / "game.json").write_text("{}")
-    (tmp_path / "models/complete").mkdir(parents=True)
-
     assert not _generation_complete(cfg, 0)
-    (tmp_path / "models/complete/gen0.pt").write_text("")
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models/gen0.pt").write_text("")
     assert _generation_complete(cfg, 0)
-
-
-class _UnusedServer:
-    def start(self, **kwargs) -> None:
-        raise AssertionError("server should not start")
-
-    def stop(self) -> None:
-        raise AssertionError("server should not stop")
-
-
-def test_placement_and_state_disabled_model_copies_previous_checkpoint(
-    tmp_path, monkeypatch
-) -> None:
-    cfg = PipelineConfig(
-        training_mode="placement-and-state",
-        data_dir=str(tmp_path / "data"),
-        model_dir=str(tmp_path / "models"),
-        benchmarks=[],
-        simulate=SimulateConfig(games=1),
-        placement_train=TrainConfig(enabled=False),
-        state_train=TrainConfig(),
-    )
-    data = tmp_path / "data/gen1"
-    data.mkdir(parents=True)
-    (data / "game.json").write_text("{}")
-    previous = tmp_path / "models/placement/gen0.pt"
-    previous.parent.mkdir(parents=True)
-    previous.write_bytes(b"frozen placement")
-    trained: list[str] = []
-
-    def fake_train(cfg, gen, project_root, model_type=None, sim_override=None) -> None:
-        trained.append(model_type)
-        destination = tmp_path / f"models/{model_type}/gen{gen}.pt"
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(b"trained")
-
-    monkeypatch.setattr("gimbur_nn.pipeline._step_train", fake_train)
-
-    _run_placement_and_state_generation(cfg, 1, tmp_path, _UnusedServer(), "unused", {})
-
-    assert (tmp_path / "models/placement/gen1.pt").read_bytes() == b"frozen placement"
-    assert trained == ["state"]
-    assert not (tmp_path / "models/.configs").exists()
-    assert not (tmp_path / "models/placement/gen1_checkpoints").exists()
-
-
-def test_placement_and_state_disabled_gen0_without_checkpoint_errors(tmp_path, monkeypatch) -> None:
-    cfg = PipelineConfig(
-        training_mode="placement-and-state",
-        model_dir=str(tmp_path / "models"),
-        placement_train=TrainConfig(enabled=False),
-        benchmarks=[],
-    )
-    monkeypatch.setattr(
-        "gimbur_nn.pipeline._step_simulate",
-        lambda *args, **kwargs: pytest.fail("simulation should not run"),
-    )
-
-    with pytest.raises(FileNotFoundError, match="generation 0.*Seed that path"):
-        _run_placement_and_state_generation(cfg, 0, tmp_path, _UnusedServer(), "unused", {})
-
-
-def test_placement_and_state_enabled_models_still_train(tmp_path, monkeypatch) -> None:
-    cfg = PipelineConfig(
-        training_mode="placement-and-state",
-        data_dir=str(tmp_path / "data"),
-        model_dir=str(tmp_path / "models"),
-        benchmarks=[],
-        simulate=SimulateConfig(games=1),
-    )
-    data = tmp_path / "data/gen0"
-    data.mkdir(parents=True)
-    (data / "game.json").write_text("{}")
-    trained: list[str] = []
-
-    def fake_train(cfg, gen, project_root, model_type=None, sim_override=None) -> None:
-        trained.append(model_type)
-        destination = tmp_path / f"models/{model_type}/gen{gen}.pt"
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(b"trained")
-
-    monkeypatch.setattr("gimbur_nn.pipeline._step_train", fake_train)
-
-    _run_placement_and_state_generation(cfg, 0, tmp_path, _UnusedServer(), "unused", {})
-
-    assert trained == ["placement", "state"]
 
 
 def test_summary_preserves_confidence_metadata(tmp_path) -> None:

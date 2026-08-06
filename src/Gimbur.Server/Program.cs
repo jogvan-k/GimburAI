@@ -25,6 +25,9 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
     if (aiMode == "mcts-nn-ai" && string.IsNullOrWhiteSpace(req.NnUrl))
         return Results.BadRequest(new { error = "nnUrl is required when aiMode is 'mcts-nn-ai'" });
 
+    if (req.PriorMode is not null && !req.PriorMode.Equals("state", StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest(new { error = $"Unknown priorMode: '{req.PriorMode}'. Supported: state" });
+
     // 2. Select config preset.
     var config = (req.Config?.ToLowerInvariant()) switch
     {
@@ -33,13 +36,7 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
         _ => GameConfig.Standard,
     };
 
-    // 3. Resolve prior mode.
-    var priorModeStr = req.PriorMode?.ToLowerInvariant() ?? "state";
-    if (priorModeStr is not ("state" or "placement"))
-        return Results.BadRequest(new { error = $"Unknown priorMode: '{req.PriorMode}'. Supported: state, placement" });
-    var priorMode = priorModeStr == "placement" ? PriorMode.Placement : PriorMode.State;
-
-    // 4. Deserialize the game state.
+    // 3. Deserialize the game state.
     CatanState state;
     try
     {
@@ -50,12 +47,12 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
         return Results.BadRequest(new { error = "Failed to deserialize state", detail = ex.Message });
     }
 
-    // 5. Get legal actions.
+    // 4. Get legal actions.
     var actions = state.Actions();
     if (actions.Length == 0)
         return Results.BadRequest(new { error = "No legal actions available (game may be over)" });
 
-    // 6. If only one action, return it immediately (forced move).
+    // 5. If only one action, return it immediately (forced move).
     if (actions.Length == 1)
     {
         var forced = UnwrapCoreAction(actions[0]);
@@ -84,7 +81,7 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
         });
     }
 
-    // 7. Configure MCTS with optional NN prior client.
+    // 6. Configure MCTS with optional NN prior client.
     var searchTimeMs = req.SearchTimeMs ?? 1000;
     var maxRolloutDepth = req.MaxRolloutDepth ?? 500;
     var maxPriorDepth = req.MaxPriorDepth ?? int.MaxValue;
@@ -96,10 +93,7 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
         // across HTTP requests; per-request PriorClients were being created
         // and disposed before any prior responses could be collected, leaving
         // server-mcts-nn effectively running without NN guidance.
-        priorClient = PriorClientPool.Get(
-            req.NnUrl!,
-            priorMode,
-            PlacementActionSerializer.ForTopology(config.Map.Topology));
+        priorClient = PriorClientPool.Get(req.NnUrl!);
     }
 
     try
@@ -111,7 +105,7 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
             explorationConstant: Math.Sqrt(2.0),
             actionRolloutLimit: int.MaxValue,
             priorClient: priorClient,
-            leafEvaluator: aiMode == "mcts-nn-ai" && priorMode == PriorMode.State
+            leafEvaluator: aiMode == "mcts-nn-ai"
                 ? CatanStateLeafEvaluatorPool.Get(req.NnUrl!)
                 : null,
             leafBoundary: null,
@@ -127,7 +121,7 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
         mcts.RunSimulation(mctsRoot);
         sw.Stop();
 
-        // 8. Extract best action.
+        // 7. Extract best action.
         var bestPath = extractBestPath(mctsRoot);
         if (bestPath.IsEmpty)
             return Results.Problem("MCTS returned no result");
@@ -136,7 +130,7 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
         var bestAction = UnwrapCoreAction(actions[bestActionIndex]);
         var playerIndex = (int)state.PlayerTurn;
 
-        // 9. Gather per-action statistics.
+        // 8. Gather per-action statistics.
         var allActions = new List<ActionInfo>();
         for (var i = 0; i < actions.Length; i++)
         {
@@ -259,13 +253,9 @@ record ChooseActionRequest
     /// </summary>
     public string? NnUrl { get; init; }
 
-    /// <summary>
-    /// Prior mode: "state" (default) for game-state priors, "placement" for
-    /// placement-phase-only priors. Only used when aiMode is "mcts-nn-ai".
-    /// In placement mode, NN priors are only requested during settlement
-    /// placement stages; the rest of the game uses pure MCTS.
-    /// </summary>
+    /// <summary>Optional compatibility field. Only "state" is supported.</summary>
     public string? PriorMode { get; init; }
+
 }
 
 record ChooseActionResponse

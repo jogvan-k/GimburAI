@@ -41,7 +41,7 @@ internal enum ExportType
     /// </summary>
     GameState,
     /// <summary>
-    /// Export initial placement data for the stage-policy placement model.
+    /// Export initial placement diagnostics using the compact placement representation.
     /// Records every non-forced settlement and road root with per-action edge statistics.
     /// Implies placement-only mode.
     /// </summary>
@@ -53,10 +53,7 @@ internal enum ExportType
 internal static class SimulationRouting
 {
     public static PriorMode PriorModeFor(ExportType exportType, bool placementPhase) =>
-        exportType == ExportType.InitialPlacement
-        || exportType == ExportType.PlacementAndState && placementPhase
-            ? PriorMode.Placement
-            : PriorMode.State;
+        PriorMode.State;
 }
 
 /// <summary>
@@ -292,6 +289,7 @@ internal record StateRecord
 internal record StateActionRecord
 {
     public required string Action { get; init; }
+    public required int PolicyIndex { get; init; }
     public required double[] Wins { get; init; }
     public int Visits { get; init; }
     public double WinRate { get; init; }
@@ -622,21 +620,10 @@ internal class SimulationRunner
         IPriorClient? placementPriorClient = null;
         if (_options.Prior)
         {
-            var priorMode = SimulationRouting.PriorModeFor(_options.ExportType, placementPhase: true);
-            PlacementActionSerializer? priorActionSerializer = null;
-            if (priorMode == PriorMode.Placement)
-            {
-                var priorConfig = ResolveGameConfig();
-                priorActionSerializer = PlacementActionSerializer.ForTopology(priorConfig.Map.Topology);
-            }
-            priorClient = new PriorClient(_options.NnUrl, priorMode, priorActionSerializer);
+            priorClient = new PriorClient(_options.NnUrl);
             if (isCombinedExport)
             {
                 placementPriorClient = priorClient;
-                // The state model is a value-only leaf evaluator. Submitting an
-                // additional child-state prior request duplicates inference and
-                // can starve the shared leaf queue.
-                priorClient = null;
             }
         }
         else if (_options.GreedyPrior)
@@ -967,7 +954,8 @@ internal class SimulationRunner
         int playerIndex,
         bool selected,
         string? selectedOutcome,
-        int flattenedPriorOffset)
+        int flattenedPriorOffset,
+        CatanPolicySerializer policySerializer)
     {
         var (wins, winRate, visits) = GetActionWinData(mctsRoot, actionIndex, playerIndex);
         var coreAction = UnwrapCoreAction(action);
@@ -1007,6 +995,7 @@ internal class SimulationRunner
         return new StateActionRecord
         {
             Action = DescribeAction(coreAction),
+            PolicyIndex = policySerializer.IndexOf((CatanState)coreAction.OriginState, coreAction),
             Wins = wins,
             Visits = visits,
             WinRate = winRate,
@@ -1027,13 +1016,20 @@ internal class SimulationRunner
         RollDiceAction => "Roll",
         ChooseRobberTileAction robber => $"ChooseRobberTile:{robber.TileIndex}",
         ChooseRobberVictimAction victim => $"ChooseRobberVictim:Player{victim.VictimPlayer}",
-        BuildCityAction city => $"BuildCity:{city.VertexIndex}",
-        BankTradeAction trade => $"BankTrade:{trade.Give}->{trade.Receive}",
+        PlaceCityAction city => $"PlaceCity:{city.VertexIndex}",
+        BuyRoadAction => "BuyRoad",
+        BuySettlementAction => "BuySettlement",
+        UpgradeCityAction => "UpgradeCity",
+        TradeWithBankAction => "TradeWithBank",
+        ChooseBankTradeGiveAction give => $"ChooseBankTradeGive:{give.Resource}",
+        ChooseBankTradeReceiveAction receive => $"ChooseBankTradeReceive:{receive.Resource}",
         BuyDevCardAction => "BuyDevCard",
         PlayKnightAction => "PlayKnight",
         PlayRoadBuildingAction => "PlayRoadBuilding",
-        PlayMonopolyAction monopoly => $"PlayMonopoly:{monopoly.Resource}",
-        PlayYearOfPlentyAction plenty => $"PlayYearOfPlenty:{plenty.First}+{plenty.Second}",
+        PlayMonopolyAction => "PlayMonopoly",
+        ChooseMonopolyResourceAction monopoly => $"ChooseMonopolyResource:{monopoly.Resource}",
+        PlayYearOfPlentyAction => "PlayYearOfPlenty",
+        ChooseYearOfPlentyResourceAction plenty => $"ChooseYearOfPlentyResource:{plenty.Resource}",
         EndTurnAction => "EndTurn",
         _ => action.GetType().Name,
     };
@@ -1068,7 +1064,7 @@ internal class SimulationRunner
     }
 
     private static string RuleOutcomeLabel(CatanStochasticAction action, int outcomeIndex) =>
-        action is PlayKnightAction ? "RobberPlacement" : $"Outcome{outcomeIndex}";
+        $"Outcome{outcomeIndex}";
 
     private static double[]? ComputePlacementValueTarget(IReadOnlyList<PlacementActionRecord> actions)
     {
@@ -1171,6 +1167,7 @@ internal class SimulationRunner
             ? (double[])mctsRoot.WinCounts.Clone()
             : Array.Empty<double>();
         var playerIndex = (int)state.PlayerTurn;
+        var policySerializer = new CatanPolicySerializer(state.Board.Topology, state.PlayerCount);
         var winRate = mctsRoot.Rollouts > 0 && playerIndex < winCounts.Length
             ? winCounts[playerIndex] / mctsRoot.Rollouts
             : 0.0;
@@ -1191,7 +1188,8 @@ internal class SimulationRunner
             Wins = winCounts,
             ValueTarget = resolvedTarget,
             Actions = CreateStateActionRecords(
-                state.Actions(), mctsRoot, playerIndex, selectedActionIndex, selectedOutcome),
+                state.Actions(), mctsRoot, playerIndex, selectedActionIndex, selectedOutcome,
+                policySerializer),
             ReachedTerminal = logInfo.reachedTerminal,
             PriorNodesRequested = logInfo.priorNodesRequested,
             PriorResponsesOrphaned = logInfo.priorResponsesOrphaned,
@@ -1213,7 +1211,8 @@ internal class SimulationRunner
         Kjarni.MCTS.Types.MCTSState mctsRoot,
         int playerIndex,
         int selectedActionIndex,
-        string? selectedOutcome)
+        string? selectedOutcome,
+        CatanPolicySerializer policySerializer)
     {
         var result = new List<StateActionRecord>(actions.Length);
         var flattenedPriorOffset = 0;
@@ -1226,7 +1225,8 @@ internal class SimulationRunner
                 playerIndex,
                 actionIndex == selectedActionIndex,
                 selectedOutcome,
-                flattenedPriorOffset));
+                flattenedPriorOffset,
+                policySerializer));
             var action = UnwrapCoreAction(actions[actionIndex]);
             flattenedPriorOffset += action is CatanStochasticAction stochastic
                 ? stochastic.Outcomes().Length
@@ -1286,6 +1286,8 @@ internal class SimulationRunner
             actions.Add(new StateActionRecord
             {
                 Action = DescribeAction(coreAction),
+                PolicyIndex = new CatanPolicySerializer(
+                    state.Board.Topology, state.PlayerCount).IndexOf(state, coreAction),
                 Wins = resolved ? (double[])wins.Clone() : [],
                 Visits = 0,
                 WinRate = resolved ? wins[state.CurrentPlayer - 1] : 0.0,
@@ -1925,6 +1927,7 @@ internal class SimulationRunner
                  actions = s.Actions.Select(a => new
                  {
                      a.Action,
+                     a.PolicyIndex,
                      a.Wins,
                      a.Visits,
                      a.WinRate,
@@ -1939,6 +1942,10 @@ internal class SimulationRunner
                          outcome.ModelPrior,
                          outcome.Selected,
                      }).ToArray(),
+                     permutations = symmetryPerms.Select(permutation =>
+                         new CatanPolicySerializer(
+                             ResolveTopology(game.Map), game.Players)
+                             .TransformIndex(a.PolicyIndex, permutation)).ToArray(),
                  }).ToArray(),
                  s.ReachedTerminal,
                 s.PriorNodesRequested,
@@ -2115,6 +2122,7 @@ internal class SimulationRunner
                  actions = s.Actions.Select(a => new
                  {
                      a.Action,
+                     a.PolicyIndex,
                      a.Wins,
                      a.Visits,
                      a.WinRate,
@@ -2129,6 +2137,9 @@ internal class SimulationRunner
                          outcome.ModelPrior,
                          outcome.Selected,
                      }).ToArray(),
+                     permutations = symmetryPerms.Select(permutation =>
+                         new CatanPolicySerializer(topology, game.Players)
+                             .TransformIndex(a.PolicyIndex, permutation)).ToArray(),
                   }).ToArray(),
                  s.ReachedTerminal,
                 s.PriorNodesRequested,
@@ -2155,4 +2166,11 @@ internal class SimulationRunner
             return serializer.TransformDirectionIndex(vertex, edge, permutation);
         throw new InvalidOperationException($"Invalid placement export stage/action data for stage {state.Stage}.");
     }
+
+    private static BoardTopology ResolveTopology(string map) => map.ToLowerInvariant() switch
+    {
+        "mini" or "m" => BoardTopology.Mini,
+        "small" or "sm" => BoardTopology.Small,
+        _ => BoardTopology.Standard,
+    };
 }

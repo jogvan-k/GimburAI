@@ -78,6 +78,7 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
         var request = new QueuedLeafRequest
         {
             RequestId = requestId,
+            ActingPlayers = states.Select(state => ((CatanState)state).CurrentPlayer).ToArray(),
             Item = new LeafRequestItem
             {
                 Id = requestId.ToString(),
@@ -169,8 +170,11 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
                     var requestId = long.Parse(item.Id);
                     if (!_submittedAt.TryRemove(requestId, out var submitted))
                         continue;
-                    var values = item.Values.Select(vector =>
-                        Array.ConvertAll(vector, value => (double)value)).ToArray();
+                    var request = requests.Single(request => request.RequestId == requestId);
+                    var values = item.Values.Select((vector, index) =>
+                        PriorClient.RestoreAbsolutePlayerOrder(
+                            Array.ConvertAll(vector, value => (double)value),
+                            request.ActingPlayers[index])).ToArray();
                     _mailbox.Enqueue(new LeafEvaluationResponse(
                         requestId, values, Math.Max(0, Environment.TickCount64 - submitted)));
                     addedResponse = true;
@@ -300,6 +304,7 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
     private sealed class QueuedLeafRequest
     {
         public long RequestId { get; init; }
+        public int[] ActingPlayers { get; init; } = [];
         public LeafRequestItem Item { get; init; } = new();
     }
 

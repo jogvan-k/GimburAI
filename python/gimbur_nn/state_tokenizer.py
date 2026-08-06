@@ -9,7 +9,6 @@ Builds a **minimal vocabulary** from the game configuration
 Alphabets table in ``docs/state-action-serialization.md``.
 Separators ``|`` and ``/`` are stripped before tokenization.
 
-See also :mod:`placement_tokenizer` for the placement phase tokenizer.
 """
 
 from __future__ import annotations
@@ -72,7 +71,6 @@ def _build_game_state_vocab(player_count: int) -> str:
                 chars.append(ch)
                 seen.add(ch)
     return "".join(chars)
-
 
 
 def _rotate_player_char(ch: str, rotation: int, n_players: int) -> str:
@@ -168,15 +166,9 @@ class StateTokenizer:
             start, end = ranges[stage]
             valid = start <= policy_index < end
         elif stage == "r":
-            valid = (
-                o.play_dev_card <= policy_index < o.victims
-                or policy_index == o.controls
-            )
+            valid = o.play_dev_card <= policy_index < o.victims or policy_index == o.controls
         elif stage == "t":
-            valid = (
-                o.buy_trade <= policy_index < o.victims
-                or policy_index == o.controls + 1
-            )
+            valid = o.buy_trade <= policy_index < o.victims or policy_index == o.controls + 1
         else:
             raise ValueError(f"unknown turn stage {stage!r}")
         if not valid:
@@ -330,7 +322,9 @@ class StateTokenizer:
         # Current player (1st char of current-turn section).
         pos_current_player = base + 1
         chars[pos_current_player] = _rotate_player_char(
-            chars[pos_current_player], rotation, n,
+            chars[pos_current_player],
+            rotation,
+            n,
         )
 
         # Turn stage (2nd char of current-turn section) is NOT a player ID.
@@ -348,7 +342,9 @@ class StateTokenizer:
         for vi in range(v):
             owner_pos = vertex_start + 2 * vi + 1
             chars[owner_pos] = _rotate_player_char(
-                chars[owner_pos], rotation, n,
+                chars[owner_pos],
+                rotation,
+                n,
             )
 
         # Edge occupancy.
@@ -367,10 +363,7 @@ class StateTokenizer:
             """
             total = block_size * n
             section = chars[start : start + total]
-            blocks = [
-                section[i * block_size : (i + 1) * block_size]
-                for i in range(n)
-            ]
+            blocks = [section[i * block_size : (i + 1) * block_size] for i in range(n)]
             rotated = blocks[rotation:] + blocks[:rotation]
             flat = [ch for blk in rotated for ch in blk]
             chars[start : start + total] = flat
@@ -383,9 +376,9 @@ class StateTokenizer:
         # Dev cards: N blocks of 5.
         next_start = _rotate_blocks(next_start, 5)
 
-        # New dev cards (5), resolution state (2), and remaining deck (5)
+        # New dev cards (5), staged resolution state (5), and remaining deck (5)
         # are relative/global rather than absolute player blocks.
-        winner_pos = next_start + 5 + 2 + 5
+        winner_pos = next_start + 5 + 5 + 5
         chars[winner_pos] = _rotate_player_char(chars[winner_pos], rotation, n)
 
         return "".join(chars)

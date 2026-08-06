@@ -1,25 +1,13 @@
 {
-  // Shared identifiers — used by simulate, train, serve, and benchmark.
+  // Current-only complete full-state policy/value pipeline.
   "mapConfig": "mini",
   "gameConfig": "mini_2p",
   "modelConfig": "small",
-  // Train placement and state models from one shared simulation corpus.
-  "trainingMode": "placement-and-state",
-  "modelType": "state",
-
-  // Omit "seed" for non-reproducible runs, or set for reproducibility.
-  // Each generation offsets the seed: seed + gen for simulate, seed + gen*1000 for benchmark.
   "seed": 42,
-
-  // Directories for pipeline artifacts (relative to project root).
   "dataDir": "pipeline/data",
   "modelDir": "pipeline/models",
   "resultsDir": "pipeline/results",
-
-  // Number of generations to run (gen 0 .. generations-1).
   "generations": 10,
-
-  // Self-play simulation parameters (gimbur simulate).
   "simulate": {
     "games": 1000,
     "players": 2,
@@ -28,30 +16,19 @@
     "maxRolloutDepth": 500,
     "greedyPrior": true,
     "greedyPriorUniformMix": 0.25,
-    // "actionRolloutLimit": 50,  // uncomment to cap per-action rollouts
     "symmetries": true,
     "verbosity": "quiet",
-    // Request oversample*games from the CLI and stop early once "games"
-    // files have been written.  Avoids waiting for long-tail slow games.
-    // 1.0 = no oversampling (default), 1.1 = request 10% extra.
     "oversample": 1.1,
-    // Per-game evaluation quality gates. Hard errors are timeout + invalid + orphan.
     "maxErrorsPerGame": 5,
     "maxErrorRatePerGame": 0.02,
     "minimumRequestsForRate": 50,
     "discardGamesWithFallbacks": false,
-    // Stop generation rather than retrying forever when inference is unhealthy.
     "maxDiscardedGames": 20,
     "maxDiscardRate": 0.05,
     "minimumAttemptsForDiscardRate": 50,
     "maxConsecutiveDiscards": 5
   },
-
-  // Model training parameters (python -m gimbur_nn.train).
   "train": {
-    // In placement-and-state mode, override this in placementTrain or stateTrain
-    // with "enabled": false to carry that model's previous checkpoint forward.
-    "enabled": true,
     "epochs": 0,
     "patience": 5,
     "batchSize": 64,
@@ -59,82 +36,49 @@
     "valSplit": 0.1,
     "testSplit": 0.0,
     "logInterval": 50,
-    // Placement models support "value" or "combined". Combined emits value
-    // [B,N] per-player value and dense policy [B,A] logits.
-    "outputMode": "combined",
-    "target": "combined",
-    // Linearly reduce normalized-MCTS evidence from start to end by
-    // turnNumber / game.turns. Placement states use the start weight.
     "mctsValueWeightStart": 0.9,
     "mctsValueWeightEnd": 0.1,
-    // Full-state datasets adaptively cap total-VP buckets after splitting.
-    // Placement datasets are not sampled.
     "victoryPointSamplingStatistic": "median",
     "victoryPointSamplingUpperPercentage": 0.10,
     "valueLossWeight": 1.0,
     "policyLossWeight": 1.0,
-    // Placement-only supervised-target sharpening. This does not change MCTS generation.
-    // Positive legal visit shares are raised to 1/temperature and renormalized.
-    "policyTargetTemperature": 1.0,
-    // Enable per-epoch checkpointing for training recovery.
     "checkpointDir": true,
-    // When true, each generation resumes training from the previous
-    // generation's model weights instead of starting from scratch.
-    "resumeFromPrevious": true
+    "resumeFromPrevious": true,
+    "replayGenerations": 3
   },
-
-  // Inference server parameters (python -m gimbur_nn.serve).
   "serve": {
     "port": 8000,
     "host": "127.0.0.1",
-    // Log level for uvicorn. Use "warning" to suppress HTTP 200/202 access
-    // logs while still showing errors. Options: debug, info, warning, error.
     "logLevel": "warning"
   },
-
-  // Optional champion/challenger lifecycle. Generation 0 is promoted as the
-  // bootstrap champion. Later challengers must pass both gates; failed gates
-  // append additional self-play games and retrain from the current champion.
   "promotion": {
     "enabled": true,
     "additionalTrainingGames": 500,
     "maxRetries": 2,
     "direct": {
       "games": 10000,
-      "ai": "nn-placement-state",
+      "ai": "nn",
       "minimumImprovementVsGreedy": 0.0,
       "minimumImprovementVsChampion": 0.0
     },
     "hybrid": {
       "games": 1000,
-      "ai": "nn-mcts-placement-state",
+      "ai": "server-mcts-nn",
       "searchTimeMs": 1000,
       "minimumImprovementVsGreedy": 0.0,
       "minimumImprovementVsChampion": 0.0
     }
   },
-
-  // Benchmark configurations. Each entry runs independently after training.
   "benchmarks": [
     {
-      "name": "nn-placement-vs-greedy",
+      "name": "complete-vs-greedy",
       "games": 10000,
-      "ai": ["nn-placement", "greedy"]
+      "ai": ["nn", "greedy"]
     },
     {
-      "name": "nn-state-vs-greedy",
-      "games": 10000,
-      "ai": ["nn-state", "greedy"]
-    },
-    {
-      "name": "nn-placement-state-vs-greedy",
-      "games": 10000,
-      "ai": ["nn-placement-state", "greedy"]
-    },
-    {
-      "name": "nn-mcts-placement-state-vs-greedy",
+      "name": "complete-mcts-vs-greedy",
       "games": 1000,
-      "ai": ["nn-mcts-placement-state", "greedy"],
+      "ai": ["server-mcts-nn", "greedy"],
       "searchTimeMs": 1000
     }
   ]

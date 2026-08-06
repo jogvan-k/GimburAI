@@ -340,7 +340,7 @@ internal static class Program
 
         if (isPlacement && usePlacementModel)
         {
-            current = ExecuteNnPlacementStep(current);
+            current = ExecuteNnPolicyStep(current);
         }
         else if (isPlacement)
         {
@@ -360,7 +360,7 @@ internal static class Program
         }
         else
         {
-            current = ExecuteNnValueStep(current, startingPlayer);
+            current = ExecuteNnPolicyStep(current);
         }
 
         // Continue applying forced actions on this player's turn.
@@ -385,9 +385,9 @@ internal static class Program
     }
 
     /// <summary>
-    /// Handles one settlement or road decision using the placement model's stage policy.
+    /// Handles one decision using the complete policy-value model.
     /// </summary>
-    private static CatanState ExecuteNnPlacementStep(CatanState state)
+    private static CatanState ExecuteNnPolicyStep(CatanState state)
     {
         var coreActions = state.Actions();
         if (coreActions.Length <= 1)
@@ -397,18 +397,15 @@ internal static class Program
                 : state;
         }
 
-        var placementState = state.SerializePlacementPhaseCompact();
         var actions = coreActions.Select(UnwrapCoreAction).ToArray();
-        var legalIndices = state.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement
-            ? actions.Cast<PlaceSettlementAction>().Select(action => action.VertexIndex).ToArray()
-            : actions.Cast<PlaceRoadAction>().Select(action => _actionSerializer!.DirectionIndexOf(
-                state.PendingSettlementVertex!.Value, action.EdgeIndex)).ToArray();
-
-        var prediction = _nnClient!.PredictPlacementAsync([placementState]).GetAwaiter().GetResult();
+        var serializer = new CatanPolicySerializer(state.Board.Topology, state.PlayerCount);
+        var legalIndices = actions.Select(action => serializer.IndexOf(state, action)).ToArray();
+        var prediction = _nnClient!.PredictPolicyValueAsync([state.SerializeCompact()])
+            .GetAwaiter().GetResult();
         var densePolicy = prediction.PolicyProbabilities.Length == 1
             ? Array.ConvertAll(prediction.PolicyProbabilities[0], value => (double)value)
             : [];
-        var legalPolicy = _actionSerializer!.MaskAndNormalizeStage(densePolicy, legalIndices);
+        var legalPolicy = serializer.MaskAndNormalize(densePolicy, legalIndices);
 
         var bestIndex = 0;
         var bestScore = float.NegativeInfinity;
@@ -423,82 +420,6 @@ internal static class Program
         }
 
         return ApplyActionAndLog(state, actions[bestIndex], aiControlled: true);
-    }
-
-    /// <summary>
-    /// Evaluates all actions via the value (state) model and applies the
-    /// best one.  Used for main-game decisions.
-    /// </summary>
-    private static CatanState ExecuteNnValueStep(CatanState current, int startingPlayer)
-    {
-        var coreActions = current.Actions();
-        var actingPlayer = current.CurrentPlayer;
-
-        // Collect all resulting states for batch prediction.
-        var allStates = new List<string>();
-        var descriptors = new List<(int ActionIndex, int StartIndex, int Count, int[]? Weights)>();
-
-        for (var i = 0; i < coreActions.Length; i++)
-        {
-            var coreAction = coreActions[i];
-
-            if (coreAction.IsDeterministic)
-            {
-                var det = (CatanDeterministicAction)((CoreAction.Deterministic)coreAction).Item;
-                var resultState = (CatanState)det.State();
-                var idx = allStates.Count;
-                allStates.Add(resultState.SerializeCompact());
-                descriptors.Add((i, idx, 1, null));
-            }
-            else if (coreAction.IsStochastic)
-            {
-                var stoch = (CatanStochasticAction)((CoreAction.Stochastic)coreAction).Item;
-                var outcomes = stoch.Outcomes();
-                var idx = allStates.Count;
-                var weights = new int[outcomes.Length];
-                for (var j = 0; j < outcomes.Length; j++)
-                {
-                    weights[j] = outcomes[j].Item1;
-                    allStates.Add(((CatanState)outcomes[j].Item2).SerializeCompact());
-                }
-                descriptors.Add((i, idx, outcomes.Length, weights));
-            }
-        }
-
-        var playerValues = _nnClient!.PredictAsync(allStates).GetAwaiter().GetResult();
-
-        var bestActionIndex = 0;
-        var bestScore = float.NegativeInfinity;
-
-        foreach (var desc in descriptors)
-        {
-            float score;
-            if (desc.Weights is null)
-            {
-                score = playerValues[desc.StartIndex][actingPlayer - 1];
-            }
-            else
-            {
-                var totalWeight = 0;
-                var weightedSum = 0.0f;
-                for (var j = 0; j < desc.Count; j++)
-                {
-                    var w = desc.Weights[j];
-                    totalWeight += w;
-                    weightedSum += w * playerValues[desc.StartIndex + j][actingPlayer - 1];
-                }
-                score = totalWeight > 0 ? weightedSum / totalWeight : 0;
-            }
-
-            if (score > bestScore)
-            {
-                bestScore = score;
-                bestActionIndex = desc.ActionIndex;
-            }
-        }
-
-        var bestAction = UnwrapCoreAction(coreActions[bestActionIndex]);
-        return ApplyActionAndLog(current, bestAction, aiControlled: true);
     }
 
     private static CatanAction UnwrapCoreAction(CoreAction coreAction)
@@ -730,13 +651,8 @@ internal static class Program
     /// to the predicted win probability.  Returns null when the NN client is not
     /// connected.
     ///
-    /// During initial placement stages (settlement/road), the placement model is
-    /// preferred when available. Settlement candidates use vertex logits and road
-    /// candidates use direction logits from the current stage policy.
-    ///
-    /// Outside of placement stages — or when the placement model is not loaded —
-    /// the value (state) model is used instead.  If that endpoint is unavailable
-    /// (404) the method returns null so the UI simply omits annotations.
+    /// Uses the complete model's legal policy probabilities for spatial annotations.
+    /// If inference is unavailable, the UI simply omits annotations.
     /// </summary>
     private static Dictionary<int, float>? ComputeCandidateWinRates(
         CatanState state, CatanAction[] actions)
@@ -744,71 +660,19 @@ internal static class Program
         if (_nnClient is null || actions.Length == 0)
             return null;
 
-        var isPlacement = state.Stage is TurnStage.PlaceFirstSettlement
-                                       or TurnStage.PlaceFirstRoad
-                                       or TurnStage.PlaceSecondSettlement
-                                       or TurnStage.PlaceSecondRoad;
-
-        if (isPlacement && _actionSerializer is not null)
-        {
-            if (state.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement)
-                return ComputePlacementSettlementWinRates(state, actions);
-
-            return ComputePlacementRoadWinRates(state, actions);
-        }
-
-        return ComputeCandidateWinRatesViaStateModel(state, actions);
-    }
-
-    /// <summary>
-    /// Falls back to the value (state) model for candidate win rates.
-    /// Returns null if the endpoint is unavailable (e.g. 404).
-    /// </summary>
-    private static Dictionary<int, float>? ComputeCandidateWinRatesViaStateModel(
-        CatanState state, CatanAction[] actions)
-    {
         try
         {
-            var winRates = ComputeActionWinRates(state, actions);
-            var result = new Dictionary<int, float>(winRates.Count);
-            foreach (var (action, rate) in winRates)
-            {
-                result[action.TargetIndex] = rate;
-            }
-            return result;
-        }
-        catch (HttpRequestException)
-        {
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// Uses the placement model's vertex logits to score settlement candidates.
-    /// </summary>
-    private static Dictionary<int, float>? ComputePlacementSettlementWinRates(
-        CatanState state, CatanAction[] actions)
-    {
-        var placementState = state.SerializePlacementPhaseCompact();
-        var settlements = actions.OfType<PlaceSettlementAction>().ToArray();
-        if (settlements.Length == 0)
-            return null;
-
-        try
-        {
-            var prediction = _nnClient!.PredictPlacementAsync([placementState])
+            var serializer = new CatanPolicySerializer(state.Board.Topology, state.PlayerCount);
+            var prediction = _nnClient.PredictPolicyValueAsync([state.SerializeCompact()])
                 .GetAwaiter().GetResult();
-            var densePolicy = prediction.PolicyProbabilities.Length == 1
+            var dense = prediction.PolicyProbabilities.Length == 1
                 ? Array.ConvertAll(prediction.PolicyProbabilities[0], value => (double)value)
                 : [];
-            var legalPolicy = _actionSerializer!.MaskAndNormalizeStage(
-                densePolicy, settlements.Select(action => action.VertexIndex).ToArray());
+            var legalIndices = actions.Select(action => serializer.IndexOf(state, action)).ToArray();
+            var policy = serializer.MaskAndNormalize(dense, legalIndices);
             var result = new Dictionary<int, float>();
-            for (var i = 0; i < settlements.Length; i++)
-            {
-                var score = (float)legalPolicy[i];
-                result[settlements[i].VertexIndex] = score;
-            }
+            for (var i = 0; i < actions.Length; i++)
+                result[actions[i].TargetIndex] = (float)policy[i];
             return result;
         }
         catch (HttpRequestException)
@@ -816,48 +680,6 @@ internal static class Program
             return null;
         }
     }
-
-    /// <summary>
-    /// Uses the placement model to score road candidates during placement.
-    /// Each candidate road is indexed by direction from the pending settlement.
-    /// </summary>
-    private static Dictionary<int, float>? ComputePlacementRoadWinRates(
-        CatanState state, CatanAction[] actions)
-    {
-        if (state.PendingSettlementVertex is not { } settlementVertex)
-            return null;
-        var placementState = state.SerializePlacementPhaseCompact();
-        var roadActions = actions.OfType<PlaceRoadAction>().ToArray();
-
-        if (roadActions.Length == 0)
-            return null;
-
-        try
-        {
-            var prediction = _nnClient!.PredictPlacementAsync([placementState])
-                .GetAwaiter().GetResult();
-            var densePolicy = prediction.PolicyProbabilities.Length == 1
-                ? Array.ConvertAll(prediction.PolicyProbabilities[0], value => (double)value)
-                : [];
-            var legalPolicy = _actionSerializer!.MaskAndNormalizeStage(
-                densePolicy,
-                roadActions.Select(road => _actionSerializer.DirectionIndexOf(
-                    settlementVertex, road.EdgeIndex)).ToArray());
-
-            var result = new Dictionary<int, float>();
-            for (var i = 0; i < roadActions.Length; i++)
-            {
-                var score = (float)legalPolicy[i];
-                result[roadActions[i].EdgeIndex] = score;
-            }
-            return result;
-        }
-        catch (HttpRequestException)
-        {
-            return null;
-        }
-    }
-
 
     /// <summary>
     /// Annotates menu entry labels with NN win rate information.

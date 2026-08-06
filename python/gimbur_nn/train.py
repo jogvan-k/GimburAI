@@ -1,5 +1,5 @@
 """
-Training loop for GimburTransformer and GimburPlacementTransformer.
+Training loop for the complete Catan policy/value model.
 
 Reads data exported by ``gimbur simulate --export``, expands states via
 symmetry permutations and player rotation, and trains the model to predict
@@ -19,7 +19,7 @@ Usage::
         --model-config small \
         --out model.pt
 
-    # Train a placement model from a JSON config file
+    # Train from a JSON config file
     python -m gimbur_nn.train \
         --config train_config.json
 
@@ -43,15 +43,12 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from .data_loader import PlacementDataset, SimulationDataset, load_games, split_games
+from .data_loader import SimulationDataset, load_games, split_games
 from .game_config import CONFIGS_BY_NAME
 from .loss_config import masked_soft_target_cross_entropy, soft_target_cross_entropy
 from .transformer_model import (
     MODEL_CONFIGS_BY_NAME,
-    OUTPUT_MODES,
-    GimburPlacementTransformer,
     GimburTransformer,
-    _make_model_config,
 )
 
 # ── Config file helpers ──────────────────────────────────────────────
@@ -98,7 +95,6 @@ _CONFIG_KEYS: dict[str, str] = {
     "data": "data",
     "gameConfig": "game_config",
     "modelConfig": "model_config",
-    "modelType": "model_type",
     "out": "out",
     "resume": "resume",
     "epochs": "epochs",
@@ -109,12 +105,8 @@ _CONFIG_KEYS: dict[str, str] = {
     "testSplit": "test_split",
     "logInterval": "log_interval",
     "checkpointDir": "checkpoint_dir",
-    "target": "target",
-    "outputMode": "output_mode",
-    "advantage": "advantage",
     "valueLossWeight": "value_loss_weight",
     "policyLossWeight": "policy_loss_weight",
-    "policyTargetTemperature": "policy_target_temperature",
     "mctsValueWeightStart": "mcts_value_weight_start",
     "mctsValueWeightEnd": "mcts_value_weight_end",
     "victoryPointSamplingStatistic": "victory_point_sampling_statistic",
@@ -165,30 +157,8 @@ def _apply_config(args: argparse.Namespace, config: dict[str, object]) -> None:
 # ── Argument parsing ─────────────────────────────────────────────────
 
 
-def _build_dataset(
-    dataset_class: type,
-    games: list[dict],
-    game_cfg,
-    args: argparse.Namespace,
-):
-    """Construct a dataset, forwarding the placement-specific ``target`` arg
-    only when training a placement model. The state dataset doesn't accept a
-    ``target`` keyword.
-
-    When ``output_mode`` is ``"combined"``, the target is forced to
-    ``"combined"`` so the dataset returns both value and policy targets.
-    """
-    if args.model_type == "placement":
-        effective_target = "combined" if args.output_mode == "combined" else "winrate"
-        return dataset_class(
-            games,
-            game_cfg,
-            target=effective_target,
-            advantage=args.advantage,
-            mcts_value_weight_start=args.mcts_value_weight_start,
-            policy_target_temperature=args.policy_target_temperature,
-        )
-    return dataset_class(
+def _build_dataset(games: list[dict], game_cfg, args: argparse.Namespace) -> SimulationDataset:
+    return SimulationDataset(
         games,
         game_cfg,
         mcts_value_weight_start=args.mcts_value_weight_start,
@@ -226,40 +196,8 @@ def parse_args() -> argparse.Namespace:
         choices=sorted(MODEL_CONFIGS_BY_NAME),
         help="Model size preset.",
     )
-    parser.add_argument(
-        "--model-type",
-        type=str,
-        default="state",
-        choices=["state", "placement"],
-        help="Model type: 'state' (default) or 'placement'.",
-    )
-    parser.add_argument(
-        "--target",
-        type=str,
-        default="winrate",
-        choices=["winrate"],
-        help=(
-            "Compatibility option for placement value training. Combined mode "
-            "always uses dense value and policy targets."
-        ),
-    )
-    parser.add_argument(
-        "--output-mode",
-        type=str,
-        default="combined",
-        choices=sorted(OUTPUT_MODES),
-        help=(
-            "Output head topology. Full-state models require 'combined'."
-        ),
-    )
     parser.add_argument("--value-loss-weight", type=float, default=1.0)
     parser.add_argument("--policy-loss-weight", type=float, default=1.0)
-    parser.add_argument(
-        "--policy-target-temperature",
-        type=float,
-        default=1.0,
-        help="Placement policy target temperature; must be greater than zero.",
-    )
     parser.add_argument("--mcts-value-weight-start", type=float, default=0.9)
     parser.add_argument("--mcts-value-weight-end", type=float, default=0.1)
     parser.add_argument(
@@ -268,15 +206,6 @@ def parse_args() -> argparse.Namespace:
         default="median",
     )
     parser.add_argument("--victory-point-sampling-upper-percentage", type=float, default=0.10)
-    parser.add_argument(
-        "--advantage",
-        action="store_true",
-        default=False,
-        help=(
-            "Deprecated compatibility option; dense placement policy training "
-            "does not use advantage weighting."
-        ),
-    )
     parser.add_argument(
         "--out",
         type=Path,
@@ -339,7 +268,6 @@ _ARG_DEFAULTS: dict[str, object] = {
     "data": None,
     "game_config": None,
     "model_config": None,
-    "model_type": "state",
     "out": Path("model.pt"),
     "resume": None,
     "checkpoint_dir": None,
@@ -350,12 +278,8 @@ _ARG_DEFAULTS: dict[str, object] = {
     "val_split": 0.1,
     "test_split": 0.0,
     "log_interval": 50,
-    "target": "winrate",
-    "output_mode": "combined",
-    "advantage": False,
     "value_loss_weight": 1.0,
     "policy_loss_weight": 1.0,
-    "policy_target_temperature": 1.0,
     "mcts_value_weight_start": 0.9,
     "mcts_value_weight_end": 0.1,
     "victory_point_sampling_statistic": "median",
@@ -387,17 +311,11 @@ def _save_epoch_checkpoint(
     best_val_loss: float,
     epochs_without_improvement: int,
 ) -> None:
-    model_type = "placement" if isinstance(model, GimburPlacementTransformer) else "state"
-    architecture = (
-        "placement_stage_policy" if model_type == "placement" else "catan_policy_value_v1"
-    )
-    metadata = {"architecture": architecture}
-    if model_type == "state":
-        metadata["checkpoint_version"] = 5
     temporary = path.with_suffix(path.suffix + ".tmp")
     torch.save(
         {
-            **metadata,
+            "architecture": "catan_policy_value_v1",
+            "checkpoint_version": 5,
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
@@ -417,46 +335,32 @@ def _save_final_model(
     """Save the final/best model checkpoint with metadata.
 
     The on-disk format is a dict containing ``model_state_dict`` plus
-    metadata fields (``model_type``, ``model_config``, ``game_config``,
-    ``target``, ``output_mode``) that downstream consumers (training
-    resume, the inference server) need to interpret the model correctly.
-    Placement checkpoints identify the current-only architecture explicitly.
+    metadata fields that downstream consumers need to reconstruct the model.
     """
-    architecture = (
-        "placement_stage_policy" if args.model_type == "placement" else "catan_policy_value_v1"
-    )
-    metadata = {"architecture": architecture}
-    if args.model_type == "state":
-        metadata["checkpoint_version"] = 5
     temporary = path.with_suffix(path.suffix + ".tmp")
     torch.save(
         {
-            **metadata,
+            "architecture": "catan_policy_value_v1",
+            "checkpoint_version": 5,
             "model_state_dict": model.state_dict(),
-            "model_type": args.model_type,
             "model_config": args.model_config,
             "game_config": args.game_config,
-            "target": args.target,
-            "output_mode": args.output_mode,
         },
         temporary,
     )
     temporary.replace(path)
 
 
-def _load_model_state(path: Path, device: torch.device, model_type: str) -> dict:
+def _load_model_state(path: Path, device: torch.device) -> dict:
     """Load a player-value checkpoint and reject incompatible architectures."""
     raw = torch.load(path, map_location=device, weights_only=False)
-    architecture = (
-        "placement_stage_policy" if model_type == "placement" else "catan_policy_value_v1"
-    )
     if (
         not isinstance(raw, dict)
         or "model_state_dict" not in raw
-        or raw.get("architecture") != architecture
-        or (model_type == "state" and raw.get("checkpoint_version") != 5)
+        or raw.get("architecture") != "catan_policy_value_v1"
+        or raw.get("checkpoint_version") != 5
     ):
-        raise ValueError(f"incompatible checkpoint; expected architecture {architecture!r}")
+        raise ValueError("incompatible checkpoint; expected architecture 'catan_policy_value_v1'")
     return raw
 
 
@@ -491,8 +395,6 @@ def _run_epoch(
     log_interval: int,
     epoch: int,
     phase: str,
-    output_mode: str = "value",
-    advantage: bool = False,
     value_loss_weight: float = 1.0,
     policy_loss_weight: float = 1.0,
 ) -> float:
@@ -501,8 +403,8 @@ def _run_epoch(
     When *optimizer* is ``None`` the model runs in eval mode with no
     gradient updates (validation).
 
-    In combined mode each batch contains state tokens, a player value distribution,
-    a dense policy target, and a legal-action mask. Loss weights control
+    Each batch contains state tokens, a player value distribution, a dense policy
+    target, and a legal-action mask. Loss weights control
     the contribution of the value and masked soft-policy losses.
 
     Returns the mean loss over the epoch.
@@ -519,21 +421,14 @@ def _run_epoch(
 
             output = model(token_ids)
 
-            if output_mode == "combined":
-                value_targets = batch[1].to(device)
-                policy_targets = batch[2].to(device)
-                value_logits = output["value"]
-                policy_logits = output["policy"]
-                value_loss = soft_target_cross_entropy(value_logits, value_targets)
-                legal_mask = batch[3].to(device)
-                policy_loss = masked_soft_target_cross_entropy(
-                    policy_logits, policy_targets, legal_mask
-                )
-                loss = value_loss_weight * value_loss + policy_loss_weight * policy_loss
-            else:
-                targets = batch[1].to(device)
-                value_logits = output["value"] if isinstance(output, dict) else output
-                loss = soft_target_cross_entropy(value_logits, targets)
+            value_targets = batch[1].to(device)
+            policy_targets = batch[2].to(device)
+            value_loss = soft_target_cross_entropy(output["value"], value_targets)
+            legal_mask = batch[3].to(device)
+            policy_loss = masked_soft_target_cross_entropy(
+                output["policy"], policy_targets, legal_mask
+            )
+            loss = value_loss_weight * value_loss + policy_loss_weight * policy_loss
 
             if is_train:
                 assert optimizer is not None
@@ -573,42 +468,15 @@ def main() -> None:
         raise SystemExit("Error: --game-config is required (via CLI or config file).")
     if args.model_config is None:
         raise SystemExit("Error: --model-config is required (via CLI or config file).")
-    if args.model_type == "state" and args.output_mode != "combined":
-        raise SystemExit("Error: full-state models require --output-mode=combined.")
-    if args.model_type == "placement" and args.output_mode == "policy":
-        raise SystemExit("Error: placement models support only value or combined output modes.")
-    if args.model_type == "placement" and not args.policy_target_temperature > 0:
-        raise SystemExit("Error: --policy-target-temperature must be greater than zero.")
 
     game_cfg = CONFIGS_BY_NAME[args.game_config]
     model_cfg = MODEL_CONFIGS_BY_NAME[args.model_config]
-
-    # Apply output_mode to the model config.  The predefined presets
-    # default to "value"; override when the user requests a different
-    # output mode.
-    if args.output_mode != getattr(model_cfg, "output_mode", "value"):
-        model_cfg = _make_model_config(
-            d_model=model_cfg.d_model,
-            n_heads=model_cfg.n_heads,
-            n_layers=model_cfg.n_layers,
-            ffn_hidden_mult=model_cfg.ffn_hidden_mult,
-            dropout=model_cfg.dropout,
-            output_mode=args.output_mode,
-        )
-
-    # ── Select model and dataset class based on model type ───────────
-    if args.model_type == "placement":
-        model_class = GimburPlacementTransformer
-        dataset_class = PlacementDataset
-    else:
-        model_class = GimburTransformer
-        dataset_class = SimulationDataset
 
     # ── Device ───────────────────────────────────────────────────────
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # ── Model ────────────────────────────────────────────────────────
-    model = model_class(game_cfg, model_cfg)
+    model = GimburTransformer(game_cfg, model_cfg)
 
     # ── Resume handling ──────────────────────────────────────────────
     start_epoch = 0
@@ -626,16 +494,11 @@ def main() -> None:
                     f"Error: --resume directory {resume_path} contains no epoch_*.pt checkpoints."
                 )
             ckpt = torch.load(ckpt_file, map_location=device, weights_only=False)
-            architecture = (
-                "placement_stage_policy"
-                if args.model_type == "placement"
-                else "catan_policy_value_v1"
-            )
-            if ckpt.get("architecture") != architecture:
+            if ckpt.get("architecture") != "catan_policy_value_v1":
                 raise SystemExit(
-                    f"Error: incompatible checkpoint; expected architecture {architecture!r}"
+                    "Error: incompatible checkpoint; expected architecture 'catan_policy_value_v1'"
                 )
-            if args.model_type == "state" and ckpt.get("checkpoint_version") != 5:
+            if ckpt.get("checkpoint_version") != 5:
                 raise SystemExit("Error: incompatible checkpoint; expected version 5")
             model.load_state_dict(ckpt["model_state_dict"])
             resume_optimizer_state = ckpt["optimizer_state_dict"]
@@ -649,7 +512,7 @@ def main() -> None:
         else:
             # .pt file: load model weights only (handles both legacy and new format).
             try:
-                ckpt = _load_model_state(resume_path, device, args.model_type)
+                ckpt = _load_model_state(resume_path, device)
             except ValueError as exc:
                 raise SystemExit(f"Error: {exc}") from exc
             model.load_state_dict(ckpt["model_state_dict"])
@@ -659,7 +522,7 @@ def main() -> None:
 
     param_count = sum(p.numel() for p in model.parameters())
     print(
-        f"Model: {args.model_config} ({args.model_type}) for {args.game_config} "
+        f"Model: {args.model_config} for {args.game_config} "
         f"({param_count:,} parameters) on {device}"
     )
 
@@ -679,17 +542,17 @@ def main() -> None:
         all_games, val=args.val_split, test=args.test_split
     )
 
-    train_dataset = _build_dataset(dataset_class, train_games, game_cfg, args)
+    train_dataset = _build_dataset(train_games, game_cfg, args)
     print(f"Train: {len(train_games):,} games -> {len(train_dataset):,} samples")
 
-    val_dataset: SimulationDataset | PlacementDataset | None = None
+    val_dataset: SimulationDataset | None = None
     if val_games:
-        val_dataset = _build_dataset(dataset_class, val_games, game_cfg, args)
+        val_dataset = _build_dataset(val_games, game_cfg, args)
         print(f"Val:   {len(val_games):,} games -> {len(val_dataset):,} samples")
 
-    test_dataset: SimulationDataset | PlacementDataset | None = None
+    test_dataset: SimulationDataset | None = None
     if test_games:
-        test_dataset = _build_dataset(dataset_class, test_games, game_cfg, args)
+        test_dataset = _build_dataset(test_games, game_cfg, args)
         print(f"Test:  {len(test_games):,} games -> {len(test_dataset):,} samples")
 
     if len(train_dataset) == 0:
@@ -741,8 +604,6 @@ def main() -> None:
             args.log_interval,
             epoch,
             "train",
-            output_mode=args.output_mode,
-            advantage=args.advantage,
             value_loss_weight=args.value_loss_weight,
             policy_loss_weight=args.policy_loss_weight,
         )
@@ -761,8 +622,6 @@ def main() -> None:
                 0,
                 epoch,
                 "val",
-                output_mode=args.output_mode,
-                advantage=args.advantage,
                 value_loss_weight=args.value_loss_weight,
                 policy_loss_weight=args.policy_loss_weight,
             )
@@ -807,7 +666,7 @@ def main() -> None:
             shuffle=False,
         )
         # Reload best checkpoint for test evaluation (handles both legacy and new format).
-        ckpt = _load_model_state(args.out, device, args.model_type)
+        ckpt = _load_model_state(args.out, device)
         model.load_state_dict(ckpt["model_state_dict"])
         test_loss = _run_epoch(
             model,
@@ -817,8 +676,6 @@ def main() -> None:
             0,
             0,
             "test",
-            output_mode=args.output_mode,
-            advantage=args.advantage,
             value_loss_weight=args.value_loss_weight,
             policy_loss_weight=args.policy_loss_weight,
         )

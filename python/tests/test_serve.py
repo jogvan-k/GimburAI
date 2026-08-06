@@ -11,15 +11,11 @@ import torch
 from test_data_loader import MINI_BOARD, MINI_STATE_ONLY
 
 from gimbur_nn.game_config import MINI_2P
-from gimbur_nn.placement_tokenizer import PlacementTokenizer
 from gimbur_nn.serve import (
     LeafCancelRequest,
     LeafEnqueueRequest,
     LeafRequest,
     LeafResponseItem,
-    PlacementPriorRequest,
-    PredictPlacementRequest,
-    PredictPlacementResponse,
     PredictPlayerRequest,
     PredictResponse,
     PriorQueue,
@@ -31,55 +27,12 @@ from gimbur_nn.serve import (
 from gimbur_nn.state_tokenizer import StateTokenizer
 
 
-def test_placement_requests_are_state_only() -> None:
-    predict = PredictPlacementRequest(states=["state"])
-    prior = PlacementPriorRequest(id="node", state="state", priority=2)
-
-    assert predict.states == ["state"]
-    assert set(prior.model_dump()) == {"id", "state", "priority"}
-
-
 def test_prediction_responses_use_player_probabilities() -> None:
     state = PredictResponse(
         player_win_probabilities=[[0.25, 0.75]],
         policy_probabilities=[[0.4, 0.6]],
     )
-    placement = PredictPlacementResponse(
-        player_win_probabilities=[[0.25, 0.75]],
-        policy_probabilities=[[0.4, 0.6]],
-    )
-
     assert set(state.model_dump()) == {"player_win_probabilities", "policy_probabilities"}
-    assert set(placement.model_dump()) == {
-        "player_win_probabilities",
-        "policy_probabilities",
-    }
-
-
-def test_placement_predict_returns_fixed_policy_width() -> None:
-    class FixedPlacementModel(torch.nn.Module):
-        def forward(self, tokens: torch.Tensor) -> dict[str, torch.Tensor]:
-            batch_size = tokens.shape[0]
-            return {
-                "value": torch.zeros(batch_size, MINI_2P.player_count),
-                "policy": torch.zeros(batch_size, MINI_2P.placement_policy_size),
-            }
-
-    state = (
-        "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|a|"
-        "._._._._._._._._._._._._._._._._._._._._._._._._|"
-        "______________________________"
-    )
-    app = create_app(
-        placement_model=FixedPlacementModel(),
-        placement_device=torch.device("cpu"),
-        placement_game_cfg=MINI_2P,
-    )
-    predict = next(route.endpoint for route in app.routes if route.path == "/placement/predict")
-
-    response = asyncio.run(predict(PredictPlacementRequest(states=[state])))
-
-    assert len(response.policy_probabilities[0]) == PlacementTokenizer(MINI_2P).policy_size
 
 
 def test_prior_response_can_carry_full_player_distribution() -> None:
@@ -136,7 +89,6 @@ def test_state_predict_returns_complete_policy_and_canonical_value() -> None:
         state_model=FixedModel(),
         state_device=torch.device("cpu"),
         state_game_cfg=MINI_2P,
-        state_output_mode="combined",
     )
     predict = next(route.endpoint for route in app.routes if route.path == "/state/predict")
 
@@ -330,22 +282,20 @@ def test_full_state_prior_request_is_parent_state_only() -> None:
     assert set(request.model_dump()) == {"id", "parent_state", "priority"}
 
 
-@pytest.mark.parametrize("architecture", ["catan_policy_value_v1", "placement_stage_policy"])
-def test_load_checkpoint_accepts_current_architecture(tmp_path: Path, architecture: str) -> None:
+def test_load_checkpoint_accepts_current_architecture(tmp_path: Path) -> None:
     path = tmp_path / "model.pt"
     torch.save(
         {
             "model_state_dict": {},
-            **({"checkpoint_version": 5} if architecture == "catan_policy_value_v1" else {}),
-            "architecture": architecture,
-            "output_mode": "combined",
+            "checkpoint_version": 5,
+            "architecture": "catan_policy_value_v1",
         },
         path,
     )
 
-    checkpoint = _load_checkpoint(path, torch.device("cpu"), architecture)
+    checkpoint = _load_checkpoint(path, torch.device("cpu"))
 
-    assert checkpoint["architecture"] == architecture
+    assert checkpoint["architecture"] == "catan_policy_value_v1"
 
 
 @pytest.mark.parametrize(
@@ -366,4 +316,4 @@ def test_load_checkpoint_rejects_old_or_wrong_architecture(
     )
 
     with pytest.raises(ValueError, match="incompatible checkpoint"):
-        _load_checkpoint(path, torch.device("cpu"), "catan_policy_value_v1")
+        _load_checkpoint(path, torch.device("cpu"))

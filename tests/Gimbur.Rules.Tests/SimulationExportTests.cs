@@ -102,6 +102,7 @@ public class SimulationExportTests
                         new StateActionRecord
                         {
                             Action = "Roll",
+                            PolicyIndex = 77,
                             Wins = [3.0, 1.0],
                             Visits = 4,
                             WinRate = 0.75,
@@ -147,9 +148,8 @@ public class SimulationExportTests
                 SimulationRunner.DescribeAction(new RollDiceAction(state)),
                 Is.EqualTo("Roll"));
             Assert.That(
-                SimulationRunner.DescribeAction(new BankTradeAction(
-                    state, ResourceType.Wood, ResourceType.Brick)),
-                Is.EqualTo("BankTrade:Wood->Brick"));
+                SimulationRunner.DescribeAction(new ChooseBankTradeGiveAction(state, ResourceType.Wood)),
+                Is.EqualTo("ChooseBankTradeGive:Wood"));
         });
     }
 
@@ -292,7 +292,7 @@ public class SimulationExportTests
         Assert.Multiple(() =>
         {
             Assert.That(SimulationRouting.PriorModeFor(
-                ExportType.PlacementAndState, placementPhase: true), Is.EqualTo(PriorMode.Placement));
+                ExportType.PlacementAndState, placementPhase: true), Is.EqualTo(PriorMode.State));
             Assert.That(SimulationRouting.PriorModeFor(
                 ExportType.PlacementAndState, placementPhase: false), Is.EqualTo(PriorMode.State));
             Assert.That(SimulationRouting.PriorModeFor(

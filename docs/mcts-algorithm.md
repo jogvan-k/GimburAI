@@ -190,15 +190,14 @@ that action return `Horizon` without recursing into it.
 ## Phase 3 — Prior Request
 
 After expansion, if a prior client is configured, the search loop enqueues an
-asynchronous prior request for the newly expanded node. Full-state value models
-evaluate serialized action-result states. The new `placement_stage_policy` model
-and direct serving endpoint use fixed-width stage policies; placement PriorClient
-integration is intentionally deferred.
+asynchronous prior request for the newly expanded node. The complete full-state
+model evaluates the serialized parent decision state and returns its fixed-width
+policy and per-player value distribution.
 
 - **Win-rate prior** (legacy): each score is the predicted win probability of
   the corresponding result state for the acting player. Scores are independent
   per action and are not constrained to any particular sum.
-- **Placement policy prior**: the server softmaxes the model's raw dense policy
+- **Complete policy prior**: the server softmaxes the model's raw dense policy
   logits. C# applies authoritative legality masking and normalization.
 
 The prior client normalises legal scores before storing them on the parent node (see
@@ -502,8 +501,8 @@ next chance event.
 ## Asynchronous Neural Network Priors
 
 The search uses neural network priors to bias action selection toward promising
-moves. Full-state models evaluate action-result states. Placement models evaluate
-one parent placement state and return a dense canonical policy. Because NN inference is expensive relative to a single MCTS iteration,
+moves. The complete model evaluates one full parent decision state and returns a
+dense canonical policy. Because NN inference is expensive relative to a single MCTS iteration,
 prior requests are issued asynchronously — the search loop does not block while
 waiting for results.
 
@@ -524,8 +523,8 @@ MCTS Search Loop                   Prior Client                    Inference Ser
 expand(node)                              │                              │
   ├─ create child MCTSState(s)            │                              │
   ├─ requestPrior(                        │                              │
-  │    parentNode, state, depth) ────────►├─ POST /placement/prior-enqueue ► enqueue by depth
-  │   (non-blocking, fire & forget)       │   { id, state, priority }    │
+  │    parentNode, state, depth) ────────►├─ POST /state/prior-enqueue ► enqueue by depth
+  │   (non-blocking, fire & forget)       │   { id, parent_state, priority }
   │                                       │                              ├─ dequeue batch
   ├─ simulate(child)                      │                              │   (lowest depth first)
   ├─ backPropagate(path, outcome)         │                              ├─ GPU inference
@@ -551,18 +550,9 @@ edges from the root to the newly expanded node. This call is **non-blocking** �
 it enqueues the request and returns immediately. The MCTS iteration continues
 with rollout and backpropagation as normal.
 
-For state-model priors, the request contains serialized result states. The
-existing placement request contains only the parent placement state, but its C#
-response mapping is not yet compatible with `placement_stage_policy`.
-
-For **deterministic actions**, the resulting state is `action.State()`. For
-**stochastic actions**, each possible outcome is a separate state. A node with
-3 deterministic actions and 1 stochastic action with 4 outcomes sends 7 states
-total.
-
-The queued placement request contains:
+The queued request contains:
 - A client-side ID to correlate the response back to the parent `MCTSState`.
-- One compact placement state.
+- One compact full parent state.
 - The priority (depth from root; lower = more important).
 
 #### 2. Priority queuing on the server
@@ -591,8 +581,8 @@ After each backpropagation and terminal propagation step, the search loop calls
 completed prior responses. For each response:
 
 1. Look up the corresponding parent `MCTSState` by its ID.
-2. For placement, mask the fixed-width policy to legal vertex or direction
-   indices and normalize it in node-action order.
+2. Mask the complete fixed-width policy to legal action indices and normalize it
+   in node-action order.
 3. Store the prior on the parent node.
 
 If no responses are available, `collectPriors` returns immediately with no
@@ -611,10 +601,8 @@ relevant.
 
 ### Converting Prior Scores to Priors
 
-For state priors, the NN returns one score per action-result state. Direct
-placement inference now returns `max(V,6)` scores: settlement stages use vertex
-indices and road stages use `N, NE, SE, S, SW, NW`. The C# MCTS mapping for this
-contract is not part of this architecture change.
+The model returns one complete fixed-width policy over all Catan action segments.
+C# maps legal actions to policy indices and masks all other entries.
 
 For **stochastic actions** with multiple outcomes, the action's score is the
 probability-weighted average across its outcomes:
@@ -637,11 +625,6 @@ back to the uniform distribution `1 / number_of_actions`. The resulting prior
 policy is stored on the parent `MCTSState` node and used by `actionEvaluator`
 (see [Action Evaluation (PUCT)](#action-evaluation-puct)).
 
-#### Placement Stage Priors
-
-The placement prior client maps legal vertex logits at settlement nodes and legal
-direction logits at road nodes, masking and normalizing each stage independently.
-
 ### Prior Data Format
 
 #### Request (MCTS → server)
@@ -651,7 +634,7 @@ direction logits at road nodes, masking and normalizing each stage independently
     "requests": [
         {
             "id": "node-0x1a2b3c",
-            "state": "<compact_placement_state>",
+            "parent_state": "<compact_full_state>",
             "priority": 3
         }
     ]
@@ -659,7 +642,7 @@ direction logits at road nodes, masking and normalizing each stage independently
 ```
 
 - `id` — opaque string the server echoes back to correlate responses.
-- `state` — the serialized placement parent state.
+- `parent_state` — the serialized full parent decision state.
 - `priority` — depth from root (0 = root's children). Lower = serve first.
 
 #### Response (server → MCTS)
@@ -677,28 +660,26 @@ direction logits at road nodes, masking and normalizing each stage independently
 ```
 
 - `id` — matches the request ID.
-- `priors` — the direct fixed-width stage-policy shape is 24, 32, or 54 for mini,
-  small, or standard maps. Settlement stages index vertices; road stages use the
-  first six entries in `N, NE, SE, S, SW, NW` order.
+- `priors` — the complete fixed-width policy distribution.
 - `player_win_probabilities` — normalized per-player values from the value head.
 
 ### Server Endpoints
 
-#### `POST /placement/prior-enqueue`
+#### `POST /state/prior-enqueue`
 
 Accepts a batch of prior requests. Each request is inserted into the priority
 queue. Returns immediately with 202 Accepted (results are delivered
-asynchronously via `/placement/prior-collect`).
+asynchronously via `/state/prior-collect`).
 
-#### `POST /placement/prior-collect`
+#### `POST /state/prior-collect`
 
 Returns all completed inference results since the last call. The response body
 contains an array of prior responses. If no results are ready, returns an empty
 array immediately (non-blocking).
 
-#### `POST /placement/prior-flush`
+#### `POST /state/prior-flush`
 
-Administratively clears the placement priority queue and pending results. Normal
+Administratively clears the state priority queue and pending results. Normal
 per-search cleanup stays client-side so concurrent searches are not disrupted.
 
 ### MCTSState Changes
@@ -841,12 +822,8 @@ before send, late responses for in-flight cancellations are discarded, and trans
 or response-ID validation failures complete as invalid responses so MCTS can use its
 normal fallback instead of waiting for a timeout.
 
-Placement search reuses `ValueEstimates` already carried by an `IPriorClient`
-response when that response is available immediately after expansion. This avoids
-a duplicate placement-model request. It deliberately does not race a random
-rollout against a late placement value; absent an immediately collected value,
-placement retains the existing rollout path. Main-game values use the dedicated
-direct `/state/leaf-predict` batching endpoint.
+Full-state leaf values use the dedicated direct `/state/leaf-predict` batching
+endpoint.
 
 ## Logging
 

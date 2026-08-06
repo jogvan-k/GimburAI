@@ -161,6 +161,11 @@ an `outcomes` array with outcome-level statistics and the concrete sampled outco
 `selected`. Roll outcomes use `2` through `12`; development-card purchases use card names;
 robber steals use resource names when a resource was transferred.
 
+`policyIndex` is the action's stable global index in
+[complete-policy-value-model.md](complete-policy-value-model.md). `permutations`
+contains the same index transformed for each board symmetry. Tile, vertex, and edge
+segments transform geometrically; all other segments are invariant.
+
 Outcome `visits` count evaluations of that outcome state. For stochastic actions MCTS may
 evaluate every weighted outcome during one parent-edge simulation, so outcome visits do not
 form a partition of the aggregate action visits and may sum to more than the parent count.
@@ -209,7 +214,8 @@ Board symmetry permutations rearrange position-dependent data (tile indices, ver
 
 ## InitialPlacement Export Schema
 
-*Produces tree-level settlement and road training data for `placement_stage_policy`.*
+*Legacy export schema retained for simulation diagnostics. The Python trainer no
+longer consumes this placement-only format.*
 
 When `--export-type InitialPlacement` is specified, the game loop runs in placement-only mode. Each non-forced settlement and road decision is searched and exported as its own MCTS root. Forced roots are applied without search or export. The MCTS leaf boundary is the exact deterministic result of the final placement road (`turnNumber: 1`, `stage: "r"`/`PreRoll`).
 
@@ -332,7 +338,7 @@ improved visit shares.
 | `modelPrior` | float? | `root.Priors[actionIndex]`, or `null` when the root has no model prior. |
 | `permutations` | int[] | Transformed policy index under each state symmetry. |
 
-For unexplored actions, the action remains in the export with `wins: []`, `visits: 0`, and `winRate: 0`. Visit shares form the policy target; `policyTargetTemperature` transforms only positive shares and preserves the legal mask.
+For unexplored actions, the action remains in the export with `wins: []`, `visits: 0`, and `winRate: 0`. Visit shares form the policy target.
 
 ### Symmetry Permutations (InitialPlacement)
 

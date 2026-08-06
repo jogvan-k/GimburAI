@@ -35,12 +35,19 @@ public sealed class NnClient : IDisposable
     /// </returns>
     public async Task<float[][]> PredictAsync(IReadOnlyList<string> compactStates)
     {
+        return (await PredictPolicyValueAsync(compactStates)).PlayerWinProbabilities;
+    }
+
+    public async Task<PolicyValuePrediction> PredictPolicyValueAsync(
+        IReadOnlyList<string> compactStates)
+    {
         var request = new PredictRequest { States = compactStates };
         using var response = await SendWithRetryAsync(
             () => _http.PostAsJsonAsync("state/predict", request, JsonOptions));
         var result = await response.Content.ReadFromJsonAsync<PredictResponse>(JsonOptions);
-        return NormalizeDistributions(
-            result?.PlayerWinProbabilities ?? [], compactStates.Count);
+        return new PolicyValuePrediction(
+            NormalizeDistributions(result?.PlayerWinProbabilities ?? [], compactStates.Count),
+            result?.PolicyProbabilities ?? []);
     }
 
     /// <summary>
@@ -84,25 +91,7 @@ public sealed class NnClient : IDisposable
         return results.Length > 0 ? results[0] : 0f;
     }
 
-    /// <summary>
-    /// Sends compact placement states to <c>/placement/predict</c> and returns
-    /// player values plus one dense policy over the full action vocabulary.
-    /// </summary>
-    /// <param name="compactStates">Compact serialized placement phase states.</param>
-    public async Task<PlacementPrediction> PredictPlacementAsync(
-        IReadOnlyList<string> compactStates)
-    {
-        var request = new PredictPlacementRequest { States = compactStates };
-        using var response = await SendWithRetryAsync(
-            () => _http.PostAsJsonAsync("placement/predict", request, JsonOptions));
-        var result = await response.Content.ReadFromJsonAsync<PredictPlacementResponse>(JsonOptions);
-        return new PlacementPrediction(
-            NormalizeDistributions(
-                result?.PlayerWinProbabilities ?? [], compactStates.Count),
-            result?.PolicyProbabilities ?? []);
-    }
-
-    public sealed record PlacementPrediction(
+    public sealed record PolicyValuePrediction(
         float[][] PlayerWinProbabilities,
         float[][] PolicyProbabilities);
 
@@ -229,6 +218,9 @@ public sealed class NnClient : IDisposable
     {
         [JsonPropertyName("player_win_probabilities")]
         public float[][] PlayerWinProbabilities { get; init; } = [];
+
+        [JsonPropertyName("policy_probabilities")]
+        public float[][] PolicyProbabilities { get; init; } = [];
     }
 
     private sealed class PredictPlayerRequest
@@ -243,17 +235,4 @@ public sealed class NnClient : IDisposable
         public float[] WinProbabilities { get; init; } = [];
     }
 
-    private sealed class PredictPlacementRequest
-    {
-        public IReadOnlyList<string> States { get; init; } = [];
-    }
-
-    private sealed class PredictPlacementResponse
-    {
-        [JsonPropertyName("player_win_probabilities")]
-        public float[][] PlayerWinProbabilities { get; init; } = [];
-
-        [JsonPropertyName("policy_probabilities")]
-        public float[][] PolicyProbabilities { get; init; } = [];
-    }
 }

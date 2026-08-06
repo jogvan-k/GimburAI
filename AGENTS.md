@@ -46,18 +46,16 @@
   - `game_config.py` — map dimension constants and tensor size formulas for mini/small/standard maps.
   - `tokenizer.py` — legacy game-state tokenizer; parses 10-section serialized strings into PyTorch tensors.
   - `state_tokenizer.py` — game-state tokenizer class (`StateTokenizer`).
-  - `placement_tokenizer.py` — placement-phase tokenizer class (`PlacementTokenizer`); handles canonical 5-section placement states and exposes vertex/direction policy indices.
   - `data_loader.py` — loads JSONL training data exported by `gimbur simulate --export`, builds `SimulationDataset` for PyTorch `DataLoader`.
   - `model_config.py` — model hyperparameter configuration.
-  - `transformer_model.py` — transformer-based models. `GimburPlacementTransformer` always emits player-value `[B,N]` and stage-policy `[B,max(V,6)]` logits for `placement_stage_policy`.
+  - `transformer_model.py` — complete full-state `GimburTransformer` with player-value and complete-policy heads.
   - `pipeline.py` — training/evaluation pipeline utilities.
   - `train.py` — training loop; reads JSONL data exported by `gimbur simulate --export`.
-  - `serve.py` — HTTP inference server. `/placement/predict` accepts `states` and returns `player_win_probabilities` plus fixed-width stage `policy_probabilities`. Placement prior requests contain `id`, `state`, and `priority`; collect responses contain dense `priors` and per-player values. `/state/leaf-*` batches asynchronous MCTS leaf evaluations.
-- Placement models emit raw logits. Combined training masks policy loss using legal actions exported by C#; serving softmaxes the full vocabulary, and C# is authoritative for legality and masks/normalizes before MCTS use.
-- Placement stage policy uses vertex indices at settlement stages and direction indices in `N, NE, SE, S, SW, NW` order at road stages. Shared-root visits are policy targets; `simulations-per-action` rollout counts are not.
-- State checkpoints require `checkpoint_version: 4` and `state_player_value_v1`; placement checkpoints use current-only architecture `placement_stage_policy`.
+  - `serve.py` — state-only HTTP inference server. `/state/prior-*` serves parent policy/value requests and `/state/leaf-*` batches asynchronous MCTS leaf evaluations.
+- Training masks policy loss using legal actions exported by C#; serving softmaxes the full vocabulary, and C# is authoritative for legality and masks/normalizes before MCTS use.
+- Checkpoints require `checkpoint_version: 5` and architecture `catan_policy_value_v1`.
 - Tests live under `python/tests/` using pytest:
-  - `test_tokenizer.py` — tests for all tokenizer classes (game state, placement state, action vocab).
+  - `test_tokenizer.py` — tests full-state tokenization and the complete action vocabulary.
   - `test_data_loader.py` — tests for data loading, sample expansion, and dataset construction.
 - Style: Python 3.11+, `from __future__ import annotations`, ruff for formatting/linting.
 
@@ -112,8 +110,7 @@ python -m pytest python/tests/ -v
 python -m pytest python/tests/test_tokenizer.py -v
 
 # Run a specific test class or test
-python -m pytest python/tests/test_tokenizer.py::TestPlacementTokenizer -v
-python -m pytest python/tests/test_tokenizer.py::TestPlacementTokenizer::test_policy_size_matches_config -v
+python -m pytest python/tests/test_tokenizer.py::TestCompletePolicyVocabulary -v
 
 # Lint with ruff (from python/ directory)
 python -m ruff check python/
@@ -233,18 +230,18 @@ dotnet clean && dotnet restore && dotnet build
 - Production code lives in `python/gimbur_nn/` (the package).
 - Tests live in `python/tests/` with `test_` prefix (pytest convention).
 - Configuration constants (map sizes, vocab sizes, tensor formulas) belong in `game_config.py`.
-- Tokenizer classes are split by concern: `state_tokenizer.py` (game state), `placement_tokenizer.py` (placement phase), `tokenizer.py` (legacy/shared).
+- Full-state tokenization lives in `state_tokenizer.py`; `tokenizer.py` contains legacy/shared helpers.
 
 ### Naming Conventions
-- **Modules**: snake_case (`game_config.py`, `placement_tokenizer.py`).
-- **Classes**: PascalCase (`PlacementTokenizer`, `StateTokenizer`, `SimulationDataset`).
+- **Modules**: snake_case (`game_config.py`, `state_tokenizer.py`).
+- **Classes**: PascalCase (`StateTokenizer`, `SimulationDataset`).
 - **Functions/methods**: snake_case (`tokenize_state`, `decode_action`, `load_games`).
 - **Constants**: UPPER_SNAKE_CASE for module-level constants (`MINI_TILES`, `RESOURCE_CHARS`), or lowercase for config dict keys.
 - **Type aliases**: PascalCase when using `TypeAlias` or similar.
 
 ### Testing Conventions
 - Use pytest (no unittest subclassing required, but grouping with classes is fine).
-- Test classes use `Test` prefix: `TestPlacementTokenizer`, `TestVocab`, `TestMiniMap`.
+- Test classes use `Test` prefix: `TestCompletePolicyVocabulary`, `TestVocab`, `TestMiniMap`.
 - Test methods use `test_` prefix with descriptive snake_case names.
 - Use `pytest.raises` for expected exceptions.
 - Keep test data inline when small; use helper functions for repeated setup.

@@ -26,7 +26,6 @@ Player-count-independent (player info is embedded in vertex/edge tokens).
 
 from __future__ import annotations
 
-from enum import Enum
 from typing import NamedTuple
 
 
@@ -42,16 +41,6 @@ class PolicyOffsets(NamedTuple):
     victims: int
     controls: int
     size: int
-
-
-class ModelType(Enum):
-    """Which neural network model will consume the serialized state."""
-
-    GAME_STATE = "game_state"
-    """GimburStateEvaluator — full game state during normal play."""
-
-    PLACEMENT = "placement"
-    """State-only placement evaluator with dense action outputs."""
 
 
 class GameConfig:
@@ -83,15 +72,6 @@ class GameConfig:
     # ── Derived token sizes ──────────────────────────────────────────
     state_token_size: int
     """Compact-form token sequence length for game state serialization."""
-
-    placement_token_size: int
-    """Compact-form token sequence length for placement phase state."""
-
-    placement_policy_size: int
-    """Placement policy width: max(vertex count, six road directions)."""
-
-    placement_vocab_size: int
-    """Placement state input embedding table size."""
 
     policy_offsets: PolicyOffsets
     """Complete policy segment offsets and total width."""
@@ -129,19 +109,7 @@ def _state_token_size(t: int, v: int, e: int, p: int, n: int) -> int:
     knights (N) + devCards (5*N) + newDevCards (5) + devCardResolution (2) +
     remainingDevDeck (5) + winner (1).
     """
-    return (3 * t + 2 * v + e + p + 5) + 11 * n + 5 + 2 + 5 + 1
-
-
-def _placement_token_size(t: int, v: int, e: int, p: int) -> int:
-    """Compute compact-form placement phase state token sequence length."""
-    return 3 * t + p + 1 + 2 * v + e
-
-
-def _placement_state_vocab_size(player_count: int) -> int:
-    """Number of unique state characters in placement phase vocabulary."""
-    # 22 base chars (resource, port, pip, side, placement/stage minus overlap)
-    # plus (player_count + 1) player-id characters (_-+*^).
-    return player_count + 23
+    return (3 * t + 2 * v + e + p + 5) + 11 * n + 5 + 5 + 5 + 1
 
 
 def _policy_offsets(t: int, v: int, e: int, n: int) -> PolicyOffsets:
@@ -195,11 +163,6 @@ def _make_config(
     cfg.state_token_size = _state_token_size(
         tile_count, vertex_count, edge_count, port_count, player_count
     )
-    cfg.placement_token_size = _placement_token_size(
-        tile_count, vertex_count, edge_count, port_count
-    )
-    cfg.placement_policy_size = max(vertex_count, 6)
-    cfg.placement_vocab_size = _placement_state_vocab_size(player_count)
     cfg.policy_offsets = _policy_offsets(tile_count, vertex_count, edge_count, player_count)
     cfg.policy_size = cfg.policy_offsets.size
     cfg.victory_points_to_win = victory_points_to_win

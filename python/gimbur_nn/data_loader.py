@@ -37,7 +37,6 @@ from typing import TYPE_CHECKING
 import torch
 from torch.utils.data import Dataset
 
-from .placement_tokenizer import PlacementTokenizer
 from .state_tokenizer import StateTokenizer
 
 if TYPE_CHECKING:
@@ -121,7 +120,7 @@ def _select_state_entries(
     for game_index, game in enumerate(games):
         states = game["states"]
         # Adaptive VP sampling requires authoritative score metadata. Older
-        # exports may still feed placement replay, but not state replay.
+        # exports without scores are excluded from current full-state replay.
         if any(not (state.get("scores") or []) for state in states):
             continue
         if states:
@@ -379,7 +378,6 @@ def _process_game(
                     if variant_idx == 0
                     else action["permutations"][variant_idx - 1]
                 )
-                policy_index = tokenizer.rotate_policy_index(policy_index, player_turn)
                 tokenizer.validate_stage_policy_index(state_entry["stage"], policy_index)
                 legal_indices.append(policy_index)
                 if total_visits:
@@ -452,183 +450,3 @@ class SimulationDataset(Dataset[tuple[torch.Tensor, ...]]):
             self._policy_targets[idx],
             self._legal_masks[idx],
         )
-
-
-# ── Placement phase sample expansion ─────────────────────────────────
-
-
-def expand_placement_games(
-    games: list[dict],
-    cfg: GameConfig,
-    *,
-    tokenizer: PlacementTokenizer | None = None,
-    target: str = "winrate",
-    advantage: bool = False,
-    mcts_value_weight_start: float = 0.9,
-    policy_target_temperature: float = 1.0,
-) -> list:
-    """Emit one state sample per exported state and symmetry permutation.
-
-    ``target`` and ``advantage`` remain accepted for config compatibility.
-    ``target="combined"`` emits dense policy targets and legal masks;
-    all other supported target values emit value-only samples.
-    """
-    if tokenizer is None:
-        tokenizer = PlacementTokenizer(cfg)
-    if target not in ("winrate", "combined"):
-        raise ValueError("Placement target must be 'winrate' or 'combined'.")
-    if not policy_target_temperature > 0:
-        raise ValueError("Placement policy target temperature must be greater than zero.")
-    samples: list = []
-    for game in games:
-        _process_placement_game(
-            game,
-            cfg.player_count,
-            samples,
-            tokenizer,
-            target,
-            mcts_value_weight_start,
-            policy_target_temperature,
-        )
-    return samples
-
-
-def _process_placement_game(
-    game: dict,
-    player_count: int,
-    samples: list,
-    tokenizer: PlacementTokenizer,
-    target: str = "winrate",
-    mcts_value_weight_start: float = 0.9,
-    policy_target_temperature: float = 1.0,
-) -> None:
-    """Expand one placement game into state-level value/policy samples."""
-    for state_entry in game.get("placementStates", game.get("states", [])):
-        state_serialized: str = state_entry["serializedState"]
-        state_permutations: list[str] = state_entry["permutations"]
-        stage = state_entry.get("stage")
-        if stage not in ("a", "e", "f", "i"):
-            raise ValueError(f"invalid placement stage: {stage}")
-        all_variants = [state_serialized, *state_permutations]
-        for variant in all_variants:
-            sections = variant.split("|")
-            if len(sections) != 5 or sections[2] != stage:
-                raise ValueError("placement state stage does not match serialized state")
-            pending_count = sections[3][::2].count("p")
-            if stage in ("e", "i") and pending_count != 1:
-                raise ValueError("road placement state must contain exactly one pending marker")
-            if stage in ("a", "f") and pending_count != 0:
-                raise ValueError("settlement placement state must not contain a pending marker")
-        actions = state_entry["actions"]
-        if not actions:
-            continue
-        visits = [max(0, int(action.get("visits", 0))) for action in actions]
-        total_visits = sum(visits)
-        model_priors = [action.get("modelPrior") for action in actions]
-        bootstrap_targets = [prior == 1 for prior in model_priors]
-        bootstrap_policy = (
-            sum(bootstrap_targets) == 1
-            and all(prior in (0, 1) for prior in model_priors)
-        )
-        if target == "combined" and total_visits == 0 and not bootstrap_policy:
-            continue
-        weighted_value = torch.zeros(player_count, dtype=torch.float32)
-        value_weight = 0
-        for action, visit_count in zip(actions, visits):
-            if visit_count <= 0:
-                continue
-            wins = action.get("wins", action.get("Wins", []))
-            action_value = _normalize_wins(wins, player_count)
-            if action_value is not None:
-                weighted_value += action_value * visit_count
-                value_weight += visit_count
-        mcts_wins = (weighted_value / value_weight).tolist() if value_weight > 0 else []
-        value_target = _value_target(
-            mcts_wins, game.get("winner"), player_count, mcts_value_weight_start
-        )
-        if value_target is None:
-            continue
-        value_target = rotate_player_target(value_target, state_entry["playerTurn"])
-
-        for variant_idx, state_str in enumerate(all_variants):
-            token_ids = tokenizer.tokenize_state(_compact(state_str))
-            if target != "combined":
-                samples.append((token_ids, value_target))
-                continue
-
-            policy = torch.zeros(tokenizer.policy_size, dtype=torch.float32)
-            legal_mask = torch.zeros(tokenizer.policy_size, dtype=torch.bool)
-            for action_position, (action_entry, visit_count) in enumerate(zip(actions, visits)):
-                action_idx = int(
-                    action_entry["policyIndex"]
-                    if variant_idx == 0
-                    else action_entry["permutations"][variant_idx - 1]
-                )
-                if stage in ("a", "f"):
-                    try:
-                        tokenizer.vertex_action_index(action_idx)
-                    except ValueError as exc:
-                        raise ValueError(
-                            f"policy index {action_idx} is invalid for stage {stage}"
-                        ) from exc
-                elif not 0 <= action_idx < 6:
-                    raise ValueError(f"policy index {action_idx} is invalid for stage {stage}")
-                policy[action_idx] += (
-                    1.0 if bootstrap_targets[action_position] else 0.0
-                ) if bootstrap_policy else visit_count / total_visits
-                legal_mask[action_idx] = True
-            if policy_target_temperature != 1.0:
-                positive = policy > 0
-                log_weights = policy[positive].double().log()
-                weights = ((log_weights - log_weights.max()) / policy_target_temperature).exp()
-                policy[positive] = (weights / weights.sum()).float()
-            samples.append((token_ids, value_target, policy, legal_mask))
-
-
-# ── Placement Dataset ────────────────────────────────────────────────
-
-
-class PlacementDataset(Dataset[tuple[torch.Tensor, ...]]):
-    """In-memory placement dataset with one sample per state/permutation."""
-
-    def __init__(
-        self,
-        games: list[dict],
-        cfg: GameConfig,
-        *,
-        target: str = "winrate",
-        advantage: bool = False,
-        mcts_value_weight_start: float = 0.9,
-        policy_target_temperature: float = 1.0,
-    ) -> None:
-        tok = PlacementTokenizer(cfg)
-        raw = expand_placement_games(
-            games,
-            cfg,
-            tokenizer=tok,
-            target=target,
-            advantage=advantage,
-            mcts_value_weight_start=mcts_value_weight_start,
-            policy_target_temperature=policy_target_temperature,
-        )
-        self._combined = target == "combined"
-        self._tokens = [t[0] for t in raw]
-        if self._combined:
-            self._value_targets = [t[1] for t in raw]
-            self._policy_targets = [t[2] for t in raw]
-            self._legal_masks = [t[3] for t in raw]
-        else:
-            self._targets = [t[1] for t in raw]
-
-    def __len__(self) -> int:
-        return len(self._tokens)
-
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, ...]:
-        if self._combined:
-            return (
-                self._tokens[idx],
-                self._value_targets[idx],
-                self._policy_targets[idx],
-                self._legal_masks[idx],
-            )
-        return self._tokens[idx], self._targets[idx]
