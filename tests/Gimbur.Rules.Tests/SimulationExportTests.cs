@@ -131,6 +131,49 @@ public class SimulationExportTests
     }
 
     [Test]
+    public void GameStateExport_IncludesExactValueTarget()
+    {
+        var game = new GameResult
+        {
+            Seed = 42,
+            Map = "mini",
+            Players = 2,
+            Winner = 2,
+            Turns = 3,
+            SearchTimeMs = 1,
+            MaxSimulations = 1,
+            MaxRolloutDepth = 1,
+            ActionRolloutLimit = 1,
+            BoardSerialized = "board",
+            States =
+            [
+                new StateRecord
+                {
+                    PlayerTurn = 1,
+                    TurnNumber = 3,
+                    Stage = "t",
+                    SerializedState = "state",
+                    Scores = [3.0, 5.0],
+                    Wins = [4.0, 6.0],
+                    ValueTarget = [0.25, 0.75],
+                    Actions = [],
+                    ReachedTerminal = true,
+                },
+            ],
+        };
+
+        var json = JsonSerializer.Serialize(
+            SimulationRunner.BuildGameJsonObject(game, ImmutableArray<SymmetryPermutation>.Empty),
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        using var document = JsonDocument.Parse(json);
+
+        Assert.That(
+            document.RootElement.GetProperty("states")[0].GetProperty("valueTarget")
+                .EnumerateArray().Select(value => value.GetDouble()),
+            Is.EqualTo(new[] { 0.25, 0.75 }));
+    }
+
+    [Test]
     public void PlacementExport_IncludesWinner()
     {
         var game = new PlacementGameResult

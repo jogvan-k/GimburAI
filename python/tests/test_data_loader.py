@@ -506,10 +506,20 @@ class TestExpandGames:
         game = _simple_game([25.0, 75.0])
         game["winner"] = 1
         game["states"][0]["reachedTerminal"] = True
+        game["states"][0]["valueTarget"] = [0.25, 0.75]
 
         samples = expand_games([game], MINI_2P, mcts_value_weight_start=0.1)
 
         torch.testing.assert_close(samples[0][1], torch.tensor([0.25, 0.75]))
+
+    def test_reached_terminal_without_exact_target_still_blends_rollouts(self) -> None:
+        game = _simple_game([25.0, 75.0])
+        game["winner"] = 1
+        game["states"][0]["reachedTerminal"] = True
+
+        samples = expand_games([game], MINI_2P, mcts_value_weight_start=0.1)
+
+        torch.testing.assert_close(samples[0][1], torch.tensor([0.925, 0.075]))
 
     def test_uses_root_mcts_win_probability(self) -> None:
         game = _make_game(

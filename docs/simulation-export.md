@@ -97,11 +97,12 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
   "playerTurn": 1,
   "turnNumber": 1,
   "stage": "r",
-  "serializedState": "4|-t|__|._._._._._._v-._._._._v+._._._._._._._._._|_____-_______+________________|21010/00130|0/0|00000/00000",
+  "serializedState": "...",
   "simulations": 5000,
   "elapsedMs": 1000,
   "winRate": 0.64,
   "wins": [3200.0, 1800.0],
+  "valueTarget": null,
   "scores": [2.0, 3.0],
   "actions": [
     {
@@ -129,13 +130,14 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
 | `playerTurn` | int | 1-based player index of the acting player. |
 | `turnNumber` | int | Current game turn number. Initial placement is turn 0; normal play starts at turn 1. |
 | `stage` | string | Encoded turn stage. `r` is `PreRoll`; `turnNumber: 1` with `stage: "r"` identifies the exact post-placement state. |
-| `serializedState` | string | State-only serialization (8 pipe-delimited sections: robber through devCards). See [state-action-serialization.md](state-action-serialization.md) Part I sections 3-10. |
+| `serializedState` | string | State-only serialization (12 pipe-delimited sections: robber through winner). See [state-action-serialization.md](state-action-serialization.md) Part I sections 3-14. |
 | `simulations` | int | Total MCTS rollouts performed for this decision. |
 | `elapsedMs` | int | Wall-clock time spent on MCTS search (milliseconds). |
 | `winRate` | float | Acting player's win rate at the MCTS root (wins / rollouts). |
 | `wins` | float[] | Raw MCTS win counts at the root, 0-indexed (index 0 = player 1). |
+| `valueTarget` | float[]? | Exact resolved value distribution when available. Training prefers this over accumulated `wins`. |
 | `scores` | float[] | Authoritative victory-point scores from `CatanState.Scores()`, indexed by player. |
-| `actions` | Action[] | Every legal action at the root with MCTS edge diagnostics. Empty for forced or terminal states. |
+| `actions` | Action[] | Every legal action at the root with MCTS edge diagnostics. Forced states contain their sole selected action with zero visits; terminal states are empty. |
 | `reachedTerminal` | bool | Whether MCTS fully resolved the tree (all root actions are Terminal). |
 | `priorsRequested` | int | Number of NN prior requests sent during this search. |
 | `priorsApplied` | int | Number of NN prior responses applied to tree nodes. |
@@ -160,9 +162,10 @@ its cap independently. Placement datasets are unaffected.
 Candidate result states are not exported or trained unless they naturally become a
 later searched root.
 
-States with exactly one legal action are advanced without MCTS and are not exported as
-training roots. They contain no policy decision and searching them would spend the full
-per-decision budget without changing game play.
+States with exactly one legal action are exported for value-model coverage and advanced
+without MCTS. Their sole action is included for diagnostics with zero visits. Terminal
+states are also exported with an exact one-hot `valueTarget`; forced stochastic roots whose
+outcomes are all terminal carry the probability-weighted resolved distribution.
 
 The iterative pipeline replays the current and recent generations (three by default)
 when training a state model. Configure `train.replayGenerations` to bound this window;

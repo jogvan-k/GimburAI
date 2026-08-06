@@ -231,6 +231,9 @@ internal record StateRecord
     /// </summary>
     public required double[] Wins { get; init; }
 
+    /// <summary>Exact resolved value distribution when available.</summary>
+    public double[]? ValueTarget { get; init; }
+
     /// <summary>Per-action MCTS diagnostics at this root.</summary>
     public required List<StateActionRecord> Actions { get; init; }
 
@@ -1073,6 +1076,9 @@ internal class SimulationRunner
         var winRate = mctsRoot.Rollouts > 0 && playerIndex < winCounts.Length
             ? winCounts[playerIndex] / mctsRoot.Rollouts
             : 0.0;
+        var resolvedTarget = tryResolveState(mctsRoot) is { } resolved
+            ? (double[])resolved.Value.Clone()
+            : null;
 
         return new StateRecord
         {
@@ -1085,6 +1091,7 @@ internal class SimulationRunner
             ElapsedMs = (int)logInfo.elapsedTime.TotalMilliseconds,
             WinRate = winRate,
             Wins = winCounts,
+            ValueTarget = resolvedTarget,
             Actions = state.Actions()
                 .Select((action, index) => CreateStateActionRecord(
                     mctsRoot, action, index, playerIndex, index == selectedActionIndex))
@@ -1127,6 +1134,20 @@ internal class SimulationRunner
             }
         }
         var resolved = wins.Sum() > 0.0;
+        var actions = new List<StateActionRecord>();
+        if (forcedAction is not null)
+        {
+            var coreAction = UnwrapCoreAction(forcedAction);
+            actions.Add(new StateActionRecord
+            {
+                Action = $"{coreAction.TypeTag}:{coreAction.Arg1}:{coreAction.Arg2}",
+                Wins = resolved ? (double[])wins.Clone() : [],
+                Visits = 0,
+                WinRate = resolved ? wins[state.CurrentPlayer - 1] : 0.0,
+                ModelPrior = null,
+                Selected = true,
+            });
+        }
         return new StateRecord
         {
             PlayerTurn = state.CurrentPlayer,
@@ -1136,9 +1157,10 @@ internal class SimulationRunner
             Scores = state.Scores(),
             Simulations = 0,
             ElapsedMs = 0,
-            WinRate = state.WinnerPlayer == state.CurrentPlayer ? 1.0 : 0.0,
+            WinRate = resolved ? wins[state.CurrentPlayer - 1] : 0.0,
             Wins = wins,
-            Actions = [],
+            ValueTarget = resolved ? (double[])wins.Clone() : null,
+            Actions = actions,
             ReachedTerminal = resolved,
         };
     }
@@ -1745,7 +1767,8 @@ internal class SimulationRunner
                 s.Simulations,
                 s.ElapsedMs,
                  s.WinRate,
-                 s.Wins,
+                s.Wins,
+                s.ValueTarget,
                  actions = s.Actions.Select(a => new
                  {
                      a.Action,
@@ -1926,6 +1949,7 @@ internal class SimulationRunner
                 s.ElapsedMs,
                  s.WinRate,
                  s.Wins,
+                 s.ValueTarget,
                  actions = s.Actions.Select(a => new
                  {
                      a.Action,

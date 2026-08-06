@@ -335,7 +335,8 @@ def _process_game(
     board_permutations: list[str] = game["board"]["permutations"]
 
     for state_entry in state_entries:
-        wins: list[float] = state_entry.get("wins") or []
+        exact_value = state_entry.get("valueTarget")
+        wins: list[float] = exact_value or state_entry.get("wins") or []
         state_serialized: str = state_entry["serializedState"]
         state_permutations: list[str] = state_entry["permutations"]
 
@@ -345,7 +346,7 @@ def _process_game(
 
         weight = (
             1.0
-            if state_entry.get("reachedTerminal", False)
+            if exact_value is not None
             else _scheduled_mcts_value_weight(
                 state_entry["turnNumber"],
                 game.get("turns", 0),
