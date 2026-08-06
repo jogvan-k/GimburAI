@@ -14,6 +14,7 @@ type MCTSState(state: ICoreState) =
     let mutable _actionStats = _actions |> Array.map (fun _ -> ActionStats(state.NumberOfPlayers))
     let mutable _priors: float[] option = None
     let mutable _densePriors: float[] option = None
+    let mutable _flattenedPriors: float[] option = None
     let mutable _valueEstimates: float[] option = None
     /// Unique identifier for this node, used to correlate prior responses.
     member _.NodeId = _nodeId
@@ -40,6 +41,10 @@ type MCTSState(state: ICoreState) =
     member _.DensePriors
       with get () = _densePriors
       and set value = _densePriors <- value
+    /// Raw child-state prior scores in collectActionStates order, retained for diagnostics.
+    member _.FlattenedPriors
+      with get () = _flattenedPriors
+      and set value = _flattenedPriors <- value
     /// Optional normalized NN value distribution for this node's state,
     /// indexed by Player enum value.
     member _.ValueEstimates

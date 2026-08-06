@@ -712,6 +712,7 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                     match layoutReg.TryGetValue(resp.NodeId) with
                     | true, (layout, outcomeWeights) ->
                         if resp.Priors.Length > 0 then
+                            node.FlattenedPriors <- Some (Array.copy resp.Priors)
                             let policy = computePriorPolicy resp.Priors layout outcomeWeights
                             node.Priors <- Some policy
                             priorStats.priorActionsApplied <- priorStats.priorActionsApplied + resp.Priors.Length

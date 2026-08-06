@@ -297,6 +297,17 @@ internal record StateActionRecord
     public double WinRate { get; init; }
     public double? ModelPrior { get; init; }
     public bool Selected { get; init; }
+    public List<StateActionOutcomeRecord> Outcomes { get; init; } = [];
+}
+
+internal record StateActionOutcomeRecord
+{
+    public required string Outcome { get; init; }
+    public required double[] Wins { get; init; }
+    public int Visits { get; init; }
+    public double WinRate { get; init; }
+    public double? ModelPrior { get; init; }
+    public bool Selected { get; init; }
 }
 
 /// <summary>
@@ -954,13 +965,48 @@ internal class SimulationRunner
         CoreAction action,
         int actionIndex,
         int playerIndex,
-        bool selected)
+        bool selected,
+        CatanState? selectedResult,
+        int flattenedPriorOffset)
     {
         var (wins, winRate, visits) = GetActionWinData(mctsRoot, actionIndex, playerIndex);
         var coreAction = UnwrapCoreAction(action);
+        var outcomes = new List<StateActionOutcomeRecord>();
+        if (coreAction is CatanStochasticAction stochastic)
+        {
+            var ruleOutcomes = stochastic.Outcomes();
+            var treeOutcomes = mctsRoot.Actions[actionIndex].IsStochasticAction
+                ? ((Kjarni.MCTS.Types.Action.StochasticAction)mctsRoot.Actions[actionIndex]).Item
+                : [];
+            for (var outcomeIndex = 0; outcomeIndex < ruleOutcomes.Length; outcomeIndex++)
+            {
+                var outcomeState = (CatanState)ruleOutcomes[outcomeIndex].Item2;
+                var treeState = outcomeIndex < treeOutcomes.Length
+                    ? treeOutcomes[outcomeIndex].State
+                    : null;
+                var outcomeVisits = treeState?.Rollouts ?? 0;
+                var outcomeWins = outcomeVisits > 0 && treeState is not null
+                    ? (double[])treeState.WinCounts.Clone()
+                    : [];
+                outcomes.Add(new StateActionOutcomeRecord
+                {
+                    Outcome = DescribeOutcome(stochastic, outcomeState, outcomeIndex),
+                    Wins = outcomeWins,
+                    Visits = outcomeVisits,
+                    WinRate = outcomeVisits > 0 && playerIndex < outcomeWins.Length
+                        ? outcomeWins[playerIndex] / outcomeVisits
+                        : 0.0,
+                    ModelPrior = mctsRoot.FlattenedPriors is { } flattened
+                        && flattenedPriorOffset + outcomeIndex < flattened.Value.Length
+                            ? flattened.Value[flattenedPriorOffset + outcomeIndex]
+                            : null,
+                    Selected = selected && selectedResult is not null && outcomeState.Equals(selectedResult),
+                });
+            }
+        }
         return new StateActionRecord
         {
-            Action = $"{coreAction.TypeTag}:{coreAction.Arg1}:{coreAction.Arg2}",
+            Action = DescribeAction(coreAction),
             Wins = wins,
             Visits = visits,
             WinRate = winRate,
@@ -970,8 +1016,59 @@ internal class SimulationRunner
                     ? priors.Value[actionIndex]
                     : null,
             Selected = selected,
+            Outcomes = outcomes,
         };
     }
+
+    internal static string DescribeAction(CatanAction action) => action switch
+    {
+        PlaceSettlementAction settlement => $"PlaceSettlement:{settlement.VertexIndex}",
+        PlaceRoadAction road => $"PlaceRoad:{road.EdgeIndex}",
+        RollDiceAction => "Roll",
+        ChooseRobberTileAction robber => $"ChooseRobberTile:{robber.TileIndex}",
+        ChooseRobberVictimAction victim => $"ChooseRobberVictim:Player{victim.VictimPlayer}",
+        BuildCityAction city => $"BuildCity:{city.VertexIndex}",
+        BankTradeAction trade => $"BankTrade:{trade.Give}->{trade.Receive}",
+        BuyDevCardAction => "BuyDevCard",
+        PlayKnightAction => "PlayKnight",
+        PlayRoadBuildingAction => "PlayRoadBuilding",
+        PlayMonopolyAction monopoly => $"PlayMonopoly:{monopoly.Resource}",
+        PlayYearOfPlentyAction plenty => $"PlayYearOfPlenty:{plenty.First}+{plenty.Second}",
+        EndTurnAction => "EndTurn",
+        _ => action.GetType().Name,
+    };
+
+    private static string DescribeOutcome(
+        CatanStochasticAction action,
+        CatanState outcome,
+        int outcomeIndex)
+    {
+        if (action is RollDiceAction)
+            return outcome.LastDiceRoll.ToString();
+        if (action is BuyDevCardAction)
+        {
+            foreach (var type in Enum.GetValues<DevCardType>())
+            {
+                if (outcome.DevCardsInHand(action.OriginState.CurrentPlayer, type)
+                    > action.OriginState.DevCardsInHand(action.OriginState.CurrentPlayer, type))
+                    return type.ToString();
+            }
+        }
+        if (action is ChooseRobberTileAction or ChooseRobberVictimAction)
+        {
+            for (var resource = ResourceType.Wood; resource <= ResourceType.Ore; resource++)
+            {
+                if (outcome.ResourceCountFor(action.OriginState.CurrentPlayer, resource)
+                    > action.OriginState.ResourceCountFor(action.OriginState.CurrentPlayer, resource))
+                    return resource.ToString();
+            }
+            return "NoSteal";
+        }
+        return RuleOutcomeLabel(action, outcomeIndex);
+    }
+
+    private static string RuleOutcomeLabel(CatanStochasticAction action, int outcomeIndex) =>
+        action is PlayKnightAction ? "RobberPlacement" : $"Outcome{outcomeIndex}";
 
     private static double[]? ComputePlacementValueTarget(IReadOnlyList<PlacementActionRecord> actions)
     {
@@ -1067,7 +1164,8 @@ internal class SimulationRunner
         string serialized,
         Kjarni.MCTS.Types.MCTSState mctsRoot,
         Kjarni.MCTS.Types.LogInfo logInfo,
-        int selectedActionIndex)
+        int selectedActionIndex,
+        CatanState? selectedResult)
     {
         var winCounts = mctsRoot.WinCounts is { Length: > 0 }
             ? (double[])mctsRoot.WinCounts.Clone()
@@ -1092,10 +1190,8 @@ internal class SimulationRunner
             WinRate = winRate,
             Wins = winCounts,
             ValueTarget = resolvedTarget,
-            Actions = state.Actions()
-                .Select((action, index) => CreateStateActionRecord(
-                    mctsRoot, action, index, playerIndex, index == selectedActionIndex))
-                .ToList(),
+            Actions = CreateStateActionRecords(
+                state.Actions(), mctsRoot, playerIndex, selectedActionIndex, selectedResult),
             ReachedTerminal = logInfo.reachedTerminal,
             PriorNodesRequested = logInfo.priorNodesRequested,
             PriorResponsesOrphaned = logInfo.priorResponsesOrphaned,
@@ -1112,9 +1208,37 @@ internal class SimulationRunner
         };
     }
 
+    private static List<StateActionRecord> CreateStateActionRecords(
+        CoreAction[] actions,
+        Kjarni.MCTS.Types.MCTSState mctsRoot,
+        int playerIndex,
+        int selectedActionIndex,
+        CatanState? selectedResult)
+    {
+        var result = new List<StateActionRecord>(actions.Length);
+        var flattenedPriorOffset = 0;
+        for (var actionIndex = 0; actionIndex < actions.Length; actionIndex++)
+        {
+            result.Add(CreateStateActionRecord(
+                mctsRoot,
+                actions[actionIndex],
+                actionIndex,
+                playerIndex,
+                actionIndex == selectedActionIndex,
+                selectedResult,
+                flattenedPriorOffset));
+            var action = UnwrapCoreAction(actions[actionIndex]);
+            flattenedPriorOffset += action is CatanStochasticAction stochastic
+                ? stochastic.Outcomes().Length
+                : 1;
+        }
+        return result;
+    }
+
     private static StateRecord CreateUnsearchedStateRecord(
         CatanState state,
-        CoreAction? forcedAction = null)
+        CoreAction? forcedAction = null,
+        CatanState? selectedResult = null)
     {
         var wins = new double[state.PlayerCount];
         if (state.WinnerPlayer > 0)
@@ -1138,14 +1262,36 @@ internal class SimulationRunner
         if (forcedAction is not null)
         {
             var coreAction = UnwrapCoreAction(forcedAction);
+            var outcomes = new List<StateActionOutcomeRecord>();
+            if (coreAction is CatanStochasticAction stochastic)
+            {
+                var ruleOutcomes = stochastic.Outcomes();
+                for (var outcomeIndex = 0; outcomeIndex < ruleOutcomes.Length; outcomeIndex++)
+                {
+                    var outcomeState = (CatanState)ruleOutcomes[outcomeIndex].Item2;
+                    var outcomeWins = new double[state.PlayerCount];
+                    if (outcomeState.WinnerPlayer > 0)
+                        outcomeWins[outcomeState.WinnerPlayer - 1] = 1.0;
+                    outcomes.Add(new StateActionOutcomeRecord
+                    {
+                        Outcome = DescribeOutcome(stochastic, outcomeState, outcomeIndex),
+                        Wins = outcomeWins.Sum() > 0 ? outcomeWins : [],
+                        Visits = 0,
+                        WinRate = outcomeWins[state.CurrentPlayer - 1],
+                        ModelPrior = null,
+                        Selected = selectedResult is not null && outcomeState.Equals(selectedResult),
+                    });
+                }
+            }
             actions.Add(new StateActionRecord
             {
-                Action = $"{coreAction.TypeTag}:{coreAction.Arg1}:{coreAction.Arg2}",
+                Action = DescribeAction(coreAction),
                 Wins = resolved ? (double[])wins.Clone() : [],
                 Visits = 0,
                 WinRate = resolved ? wins[state.CurrentPlayer - 1] : 0.0,
                 ModelPrior = null,
                 Selected = true,
+                Outcomes = outcomes,
             });
         }
         return new StateRecord
@@ -1268,9 +1414,10 @@ internal class SimulationRunner
                 // A forced transition cannot benefit from search and used to consume
                 // the full per-decision MCTS budget. It is also not a useful policy
                 // training root because no action choice exists.
+                var selectedResult = (CatanState)UnwrapCoreAction(actions[0]).DoCoreAction();
                 if (!isPlacementPhase)
-                    states.Add(CreateUnsearchedStateRecord(state, actions[0]));
-                state = (CatanState)UnwrapCoreAction(actions[0]).DoCoreAction();
+                    states.Add(CreateUnsearchedStateRecord(state, actions[0], selectedResult));
+                state = selectedResult;
                 mctsRoot = AdvanceMctsRoot(mctsRoot, 0, (ICoreState)state);
             }
             else
@@ -1295,12 +1442,17 @@ internal class SimulationRunner
                 var logInfo = mcts.LatestLogInfo();
                 evaluationDiagnostics.Add(logInfo);
 
+                CatanState? selectedResult = null;
+                if (!bestPath.IsEmpty && bestPath.Head < actions.Length)
+                    selectedResult = (CatanState)UnwrapCoreAction(actions[bestPath.Head]).DoCoreAction();
+
                 states.Add(CreateStateRecord(
                     state,
                     serialized,
                     mctsRoot,
                     logInfo,
-                    bestPath.IsEmpty ? -1 : bestPath.Head));
+                    bestPath.IsEmpty ? -1 : bestPath.Head,
+                    selectedResult));
 
                 if (isPlacementPhase
                     && state.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceFirstRoad
@@ -1318,7 +1470,7 @@ internal class SimulationRunner
                     if (mctsRoot.Actions[bestPath.Head].IsHorizonAction && !combined)
                         break;
 
-                    state = (CatanState)UnwrapCoreAction(actions[bestPath.Head]).DoCoreAction();
+                    state = selectedResult!;
                     mctsRoot = AdvanceMctsRoot(mctsRoot, bestPath.Head, (ICoreState)state);
                 }
                 else
@@ -1777,6 +1929,15 @@ internal class SimulationRunner
                      a.WinRate,
                      a.ModelPrior,
                      a.Selected,
+                     outcomes = a.Outcomes.Select(outcome => new
+                     {
+                         outcome.Outcome,
+                         outcome.Wins,
+                         outcome.Visits,
+                         outcome.WinRate,
+                         outcome.ModelPrior,
+                         outcome.Selected,
+                     }).ToArray(),
                  }).ToArray(),
                  s.ReachedTerminal,
                 s.PriorNodesRequested,
@@ -1958,7 +2119,16 @@ internal class SimulationRunner
                      a.WinRate,
                      a.ModelPrior,
                      a.Selected,
-                 }).ToArray(),
+                     outcomes = a.Outcomes.Select(outcome => new
+                     {
+                         outcome.Outcome,
+                         outcome.Wins,
+                         outcome.Visits,
+                         outcome.WinRate,
+                         outcome.ModelPrior,
+                         outcome.Selected,
+                     }).ToArray(),
+                  }).ToArray(),
                  s.ReachedTerminal,
                 s.PriorNodesRequested,
                 s.PriorActionsApplied,

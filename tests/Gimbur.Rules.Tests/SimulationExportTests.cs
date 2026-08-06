@@ -101,7 +101,7 @@ public class SimulationExportTests
                     [
                         new StateActionRecord
                         {
-                            Action = "2:0:0",
+                            Action = "Roll",
                             Wins = [3.0, 1.0],
                             Visits = 4,
                             WinRate = 0.75,
@@ -121,12 +121,35 @@ public class SimulationExportTests
 
         Assert.Multiple(() =>
         {
-            Assert.That(action.GetProperty("action").GetString(), Is.EqualTo("2:0:0"));
+            Assert.That(action.GetProperty("action").GetString(), Is.EqualTo("Roll"));
             Assert.That(action.GetProperty("wins")[0].GetDouble(), Is.EqualTo(3.0));
             Assert.That(action.GetProperty("visits").GetInt32(), Is.EqualTo(4));
             Assert.That(action.GetProperty("winRate").GetDouble(), Is.EqualTo(0.75));
             Assert.That(action.GetProperty("modelPrior").GetDouble(), Is.EqualTo(0.6));
             Assert.That(action.GetProperty("selected").GetBoolean(), Is.True);
+        });
+    }
+
+    [Test]
+    public void GameStateActions_UseDescriptiveDomainNames()
+    {
+        var state = new CatanState(GameConfig.Mini, 2, new Random(42));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(
+                SimulationRunner.DescribeAction(new PlaceSettlementAction(state, 9)),
+                Is.EqualTo("PlaceSettlement:9"));
+            Assert.That(
+                SimulationRunner.DescribeAction(new PlaceRoadAction(state, 14)),
+                Is.EqualTo("PlaceRoad:14"));
+            Assert.That(
+                SimulationRunner.DescribeAction(new RollDiceAction(state)),
+                Is.EqualTo("Roll"));
+            Assert.That(
+                SimulationRunner.DescribeAction(new BankTradeAction(
+                    state, ResourceType.Wood, ResourceType.Brick)),
+                Is.EqualTo("BankTrade:Wood->Brick"));
         });
     }
 

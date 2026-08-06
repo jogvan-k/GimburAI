@@ -106,12 +106,22 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
   "scores": [2.0, 3.0],
   "actions": [
     {
-      "action": "2:0:0",
+      "action": "Roll",
       "wins": [120.0, 80.0],
       "visits": 200,
       "winRate": 0.6,
       "modelPrior": 0.4,
-      "selected": true
+      "selected": true,
+      "outcomes": [
+        {
+          "outcome": "6",
+          "wins": [15.0, 10.0],
+          "visits": 25,
+          "winRate": 0.6,
+          "modelPrior": 0.568,
+          "selected": false
+        }
+      ]
     }
   ],
   "reachedTerminal": false,
@@ -144,9 +154,12 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
 | `priorStatesEvaluated` | int | Number of individual states evaluated by the NN server. |
 | `permutations` | string[] | `serializedState` under each non-trivial symmetry permutation. Same order as `board.permutations`. |
 
-Each `actions` entry contains `action` (stable `typeTag:arg1:arg2` identity), `wins`, `visits`,
-`winRate`, nullable `modelPrior`, and `selected`, which identifies the action played in the
-recorded game.
+Each `actions` entry contains a descriptive domain action such as `Roll`,
+`PlaceSettlement:9`, `PlaceRoad:14`, `BuildCity:5`, or `BankTrade:Wood->Brick`, plus
+`wins`, `visits`, `winRate`, nullable `modelPrior`, and `selected`. Stochastic actions add
+an `outcomes` array with outcome-level statistics and the concrete sampled outcome marked
+`selected`. Roll outcomes use `2` through `12`; development-card purchases use card names;
+robber steals use resource names when a resource was transferred.
 
 State-value training blends each root's normalized per-player MCTS wins with the
 one-hot final game winner. The MCTS weight decreases linearly from
