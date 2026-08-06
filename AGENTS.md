@@ -55,7 +55,7 @@
   - `serve.py` — HTTP inference server. `/placement/predict` accepts `states` and returns `player_win_probabilities` plus fixed-width stage `policy_probabilities`. Placement prior requests contain `id`, `state`, and `priority`; collect responses contain dense `priors` and per-player values. `/state/leaf-*` batches asynchronous MCTS leaf evaluations.
 - Placement models emit raw logits. Combined training masks policy loss using legal actions exported by C#; serving softmaxes the full vocabulary, and C# is authoritative for legality and masks/normalizes before MCTS use.
 - Placement stage policy uses vertex indices at settlement stages and direction indices in `N, NE, SE, S, SW, NW` order at road stages. Shared-root visits are policy targets; `simulations-per-action` rollout counts are not.
-- State checkpoints require `checkpoint_version: 3` and `state_player_value_v1`; placement checkpoints use current-only architecture `placement_stage_policy`.
+- State checkpoints require `checkpoint_version: 4` and `state_player_value_v1`; placement checkpoints use current-only architecture `placement_stage_policy`.
 - Tests live under `python/tests/` using pytest:
   - `test_tokenizer.py` — tests for all tokenizer classes (game state, placement state, action vocab).
   - `test_data_loader.py` — tests for data loading, sample expansion, and dataset construction.

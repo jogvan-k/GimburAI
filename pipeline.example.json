@@ -26,6 +26,8 @@
     "searchTimeMs": 500,
     "maxSimulations": 200,
     "maxRolloutDepth": 500,
+    "greedyPrior": true,
+    "greedyPriorUniformMix": 0.25,
     // "actionRolloutLimit": 50,  // uncomment to cap per-action rollouts
     "symmetries": true,
     "verbosity": "quiet",
@@ -90,6 +92,28 @@
     "logLevel": "warning"
   },
 
+  // Optional champion/challenger lifecycle. Generation 0 is promoted as the
+  // bootstrap champion. Later challengers must pass both gates; failed gates
+  // append additional self-play games and retrain from the current champion.
+  "promotion": {
+    "enabled": true,
+    "additionalTrainingGames": 500,
+    "maxRetries": 2,
+    "direct": {
+      "games": 10000,
+      "ai": "nn-placement-state",
+      "minimumImprovementVsGreedy": 0.0,
+      "minimumImprovementVsChampion": 0.0
+    },
+    "hybrid": {
+      "games": 1000,
+      "ai": "nn-mcts-placement-state",
+      "searchTimeMs": 1000,
+      "minimumImprovementVsGreedy": 0.0,
+      "minimumImprovementVsChampion": 0.0
+    }
+  },
+
   // Benchmark configurations. Each entry runs independently after training.
   "benchmarks": [
     {
@@ -109,7 +133,7 @@
     },
     {
       "name": "nn-mcts-placement-state-vs-greedy",
-      "games": 10000,
+      "games": 1000,
       "ai": ["nn-mcts-placement-state", "greedy"],
       "searchTimeMs": 1000
     }

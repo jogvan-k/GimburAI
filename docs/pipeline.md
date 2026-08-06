@@ -18,7 +18,7 @@ to your hardware and goals.
 ## Generation Flow
 
 ```
-Gen 0 (no NN prior — greedy rollouts)
+Gen 0 (no NN prior; greedy placement policy labels, stochastic rollout values)
   1. Simulate  →  pipeline/data/gen0/*.json
   2. Train     →  pipeline/models/gen0.pt
   3. Benchmark →  pipeline/results/gen0/{name}.json
@@ -88,6 +88,8 @@ maps them to Python `snake_case` internally.
 | `maxDiscardRate` | float | `0.05` | Stop when discarded/attempted exceeds this rate. |
 | `minimumAttemptsForDiscardRate` | int | `50` | Minimum attempts before applying the discard rate. |
 | `maxConsecutiveDiscards` | int | `5` | Stop after this completion-order discard streak is exceeded. |
+| `greedyPrior` | bool | `true` | Generation 0 only: use the greedy AI as the local policy source for placement and state PUCT. |
+| `greedyPriorUniformMix` | float | `0.25` | Uniform exploration mixed into the one-hot greedy policy before PUCT; the exported `modelPrior` remains raw `1/0`. |
 
 Hard errors are leaf evaluation timeouts, invalid responses, and orphan responses.
 Deadline cancellation and rollout fallback are reported separately. Accepted games are
@@ -121,13 +123,13 @@ so `oversample` remains useful only for terminating long-tail in-flight work ear
 
 ## Placement Architecture
 
-Placement checkpoints use the current-only `architecture: "placement_stage_policy"`; state checkpoints retain version 3 and `architecture: "state_player_value_v1"`. Placement models always emit value logits `[B,N]` and one policy head `[B,max(V,6)]`. Settlement stages use the first `V` coordinates and road stages use the first six in `N, NE, SE, S, SW, NW` order.
+Placement checkpoints use the current-only `architecture: "placement_stage_policy"`; state checkpoints require version 4 and `architecture: "state_player_value_v1"`. Version 4 adds exact development-deck and winner tokens. Placement models always emit value logits `[B,N]` and one policy head `[B,max(V,6)]`. Settlement stages use the first `V` coordinates and road stages use the first six in `N, NE, SE, S, SW, NW` order.
 
 Value labels blend normalized per-player MCTS values with the game's one-hot final winner. For full states, the MCTS weight is `start + (end - start) * clamp(turnNumber / max(1, game.turns), 0, 1)`; placement states use `mctsValueWeightStart`. Placement values are built from root action value sums weighted by completed visits. If either source is invalid or has no positive evidence, the available source is used alone; samples with neither source are skipped.
 
 Full-state sampling runs independently inside each dataset after the game-level train/validation/test split and before symmetry or player rotation. States from all games in that split are grouped by `floor(sum(player victory points))`. The median (default) or average bucket size is computed before augmentation, and the cap is `ceil(reference * (1 + victoryPointSamplingUpperPercentage))`. Buckets at or below the cap, including short high-VP tails, are retained fully; oversized buckets are sampled deterministically from dataset/game seeds and the total-VP bucket. The exact first normal-play state (`turnNumber: 1`, `stage: "r"`) and final exported root of every game are mandatory, even when they exceed the cap. This per-split policy means train, validation, and test can have different adaptive caps. Legacy games without per-state `scores` remain usable for placement replay but are excluded from state replay. Placement datasets do not use this sampling policy.
 
-The loader emits one sample for each exported state and symmetry. It validates stage and pending markers, maps settlement vertex or road direction `policyIndex` values directly, and builds policy targets from root-edge visit shares. `policyTargetTemperature` transforms positive shares by exponent `1 / temperature` and renormalizes them. The model emits raw fixed-width stage-policy logits; legality masking remains external.
+The loader emits one sample for each exported state and symmetry. It validates stage and pending markers and maps settlement vertex or road direction `policyIndex` values directly. Generation 0 exports the raw one-hot greedy `modelPrior`; MCTS mixes it with `greedyPriorUniformMix` uniform support so regular PUCT can still explore alternatives. Training uses the raw one-hot prior for the bootstrap policy target. Later generations export soft neural `modelPrior` values but train policy from improved root-edge visit shares. `policyTargetTemperature` transforms positive shares by exponent `1 / temperature` and renormalizes them. The model emits raw fixed-width stage-policy logits; legality masking remains external.
 
 Old action-conditioned and bucket-value checkpoints cannot be resumed or served; retrain them as version 3 checkpoints.
 
@@ -196,6 +198,34 @@ and one NN URL routes calls to `/placement/predict` and `/state/predict`. Benchm
 `summary.json`, and progress-chart error bars preserve `confidence95Margin` at the
 observed rate and `worstCaseConfidence95Margin`.
 
+### `promotion` Section
+
+Promotion is optional and requires `trainingMode: "placement-and-state"`. Generation 0
+is promoted as the bootstrap champion. Every later generation trains an isolated
+challenger from the current champion and must pass both direct and MCTS hybrid gates.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `false` | Enable champion/challenger lifecycle. |
+| `additionalTrainingGames` | `500` | Accepted self-play games appended after each failed attempt. |
+| `maxRetries` | `2` | Additional train-and-gate attempts after the first failure. |
+| `direct.games` | `10000` | Games per direct challenger comparison. |
+| `direct.ai` | `nn-placement-state` | Direct policy/value player. |
+| `hybrid.games` | `1000` | Games per MCTS hybrid comparison. |
+| `hybrid.ai` | `nn-mcts-placement-state` | MCTS-guided player. |
+| `minimumImprovementVsGreedy` | `0.0` | Required score above 50% against greedy. |
+| `minimumImprovementVsChampion` | `0.0` | Required score above 50% head-to-head against champion. |
+
+Each enabled gate runs challenger-versus-greedy and challenger-versus-champion. Draws
+count as half a win, and the benchmark must complete exactly the configured number of
+games. All enabled comparisons must pass. A failed gate grows the same generation corpus,
+restarts training from the unchanged champion, and retries. Exhausted retries write a
+terminal `rejected` decision and leave the champion unchanged for the next generation.
+
+Candidates live under `models/candidates/genN/attemptK/`; immutable promoted copies live
+under `models/champions/genN/`; `models/champion.json` is the authoritative active model
+pair. Resume uses attempt and generation decisions under `results/promotion/genN/`.
+
 ### Example Config
 
 ```json
@@ -214,7 +244,7 @@ observed rate and `worstCaseConfidence95Margin`.
     { "name": "placement", "games": 10000, "ai": ["nn-placement", "greedy"] },
     { "name": "state", "games": 10000, "ai": ["nn-state", "greedy"] },
     { "name": "hybrid", "games": 10000, "ai": ["nn-placement-state", "greedy"] },
-    { "name": "mcts-hybrid", "games": 10000, "ai": ["nn-mcts-placement-state", "greedy"] }
+    { "name": "mcts-hybrid", "games": 1000, "ai": ["nn-mcts-placement-state", "greedy"] }
   ]
 }
 ```

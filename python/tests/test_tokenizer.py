@@ -31,7 +31,7 @@ MINI_STATE = (
     "|21010/00130"
     "|0/0"
     "|00000/00000"
-    "|00000|0_"
+    "|00000|0_|72111|_"
 )
 
 SMALL_STATE = (
@@ -45,7 +45,7 @@ SMALL_STATE = (
     "|10010/00100"
     "|0/0"
     "|00000/00000"
-    "|00000|0_"
+    "|00000|0_|A3111|_"
 )
 
 STANDARD_STATE = (
@@ -59,7 +59,7 @@ STANDARD_STATE = (
     "|31201/02143/10320"
     "|2/0/1"
     "|10000/01010/00100"
-    "|00000|0_"
+    "|00000|0_|E5222|_"
 )
 
 # fmt: off
@@ -80,6 +80,7 @@ MINI_EXPECTED = [
     7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
     7, 7, 7, 7, 7,
     7, 19,
+    31, 9, 8, 8, 8, 19,
 ]
 
 SMALL_EXPECTED = [
@@ -95,6 +96,7 @@ SMALL_EXPECTED = [
     7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
     7, 7, 7, 7, 7,
     7, 19,
+    34, 10, 8, 8, 8, 19,
 ]
 
 STANDARD_EXPECTED = [
@@ -110,6 +112,7 @@ STANDARD_EXPECTED = [
     8, 7, 7, 7, 7, 7, 8, 7, 8, 7, 7, 7, 8, 7, 7,
     7, 7, 7, 7, 7,
     7, 19,
+    39, 12, 9, 9, 9, 19,
 ]
 
 # fmt: on
@@ -163,7 +166,7 @@ class TestMiniMap:
     def test_full_tensor(self) -> None:
         tok = StateTokenizer(MINI_2P)
         t = tok.tokenize(MINI_STATE)
-        assert t.shape == (139,)
+        assert t.shape == (145,)
         assert t.dtype == torch.int32
         assert t.tolist() == MINI_EXPECTED
 
@@ -172,7 +175,7 @@ class TestSmallMap:
     def test_full_tensor(self) -> None:
         tok = StateTokenizer(SMALL_2P)
         t = tok.tokenize(SMALL_STATE)
-        assert t.shape == (175,)
+        assert t.shape == (181,)
         assert t.dtype == torch.int32
         assert t.tolist() == SMALL_EXPECTED
 
@@ -181,7 +184,7 @@ class TestStandardMap:
     def test_full_tensor(self) -> None:
         tok = StateTokenizer(STANDARD_3P)
         t = tok.tokenize(STANDARD_STATE)
-        assert t.shape == (291,)
+        assert t.shape == (297,)
         assert t.dtype == torch.int32
         assert t.tolist() == STANDARD_EXPECTED
 
@@ -210,7 +213,7 @@ class TestBatch:
     def test_same_map_batch(self) -> None:
         tok = StateTokenizer(MINI_2P)
         t = tok.tokenize_batch([MINI_STATE, MINI_STATE])
-        assert t.shape == (2, 139)
+        assert t.shape == (2, 145)
         assert t.dtype == torch.int32
 
     def test_batch_matches_single(self) -> None:
@@ -337,13 +340,13 @@ class TestRotatePlayerState:
             "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|-t|__|"
             "._._._._._._v-._._._._._._._v+._._._._._._._._._|"
             "_____-_______+________________|"
-            "21010/00130|0/0|00000/00000|00000|0_"
+            "21010/00130|0/0|00000/00000|00000|0_|72111|_"
         )
         expected_hr = (
             "w5lb3ls4lW3hd0nW4ho2l|gsgbgw|4|+t|__|"
             "._._._._._._v+._._._._._._._v-._._._._._._._._._|"
             "_____+_______-________________|"
-            "00130/21010|0/0|00000/00000|00000|0_"
+            "00130/21010|0/0|00000/00000|00000|0_|72111|_"
         )
         original = original_hr.translate(_STRIP)
         expected = expected_hr.translate(_STRIP)

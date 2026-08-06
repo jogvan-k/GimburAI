@@ -295,13 +295,6 @@ internal static class Program
     }
 
     /// <summary>
-    /// When a settlement stage selects a (settlement, road) pair via the
-    /// placement model, the chosen road edge index is stored here and
-    /// consumed on the following road stage.
-    /// </summary>
-    private static int _pendingRoadEdge = -1;
-
-    /// <summary>
     /// Runs a single NN AI step.  Forced single-action states are applied
     /// immediately.  When a real decision is needed, actions are evaluated
     /// via the NN inference server and the best action is chosen.
@@ -387,10 +380,7 @@ internal static class Program
     }
 
     /// <summary>
-    /// Handles one placement decision using the placement model.
-    /// For settlement stages, enumerates all (settlement, road) composite
-    /// actions and picks the best via the placement model.  For road stages,
-    /// applies the road chosen during the preceding settlement stage.
+    /// Handles one settlement or road decision using the placement model's stage policy.
     /// </summary>
     private static CatanState ExecuteNnPlacementStep(CatanState state)
     {
@@ -402,70 +392,22 @@ internal static class Program
                 : state;
         }
 
-        // Road stage: apply the road selected during the preceding settlement stage.
-        if (state.Stage is TurnStage.PlaceFirstRoad or TurnStage.PlaceSecondRoad)
-        {
-            if (_pendingRoadEdge >= 0)
-            {
-                foreach (var ca in coreActions)
-                {
-                    var action = UnwrapCoreAction(ca);
-                    if (action is PlaceRoadAction road && road.EdgeIndex == _pendingRoadEdge)
-                    {
-                        _pendingRoadEdge = -1;
-                        return ApplyActionAndLog(state, road, aiControlled: true);
-                    }
-                }
-            }
-
-            // Fallback: pick randomly if pending road not found.
-            _pendingRoadEdge = -1;
-            var roll = UiRng.Next(coreActions.Length);
-            return ApplyActionAndLog(state, UnwrapCoreAction(coreActions[roll]), aiControlled: true);
-        }
-
-        // Settlement stage: evaluate all (settlement, road) composite actions.
         var placementState = state.SerializePlacementPhaseCompact();
-        var compositeActions = new List<(int SettlementActionIndex, int RoadEdge, string ActionString)>();
-
-        for (var i = 0; i < coreActions.Length; i++)
-        {
-            var settlementAction = UnwrapCoreAction(coreActions[i]);
-            if (settlementAction is not PlaceSettlementAction placeSettlement)
-                continue;
-
-            var afterSettlement = (CatanState)placeSettlement.DoCoreAction();
-            var roadActions = afterSettlement.Actions();
-
-            foreach (var roadCoreAction in roadActions)
-            {
-                var roadAction = UnwrapCoreAction(roadCoreAction);
-                if (roadAction is not PlaceRoadAction placeRoad)
-                    continue;
-
-                var actionString = _actionSerializer!.Serialize(
-                    placeSettlement.VertexIndex, placeRoad.EdgeIndex);
-                compositeActions.Add((i, placeRoad.EdgeIndex, actionString));
-            }
-        }
-
-        if (compositeActions.Count == 0)
-        {
-            var roll = UiRng.Next(coreActions.Length);
-            return ApplyActionAndLog(state, UnwrapCoreAction(coreActions[roll]), aiControlled: true);
-        }
+        var actions = coreActions.Select(UnwrapCoreAction).ToArray();
+        var legalIndices = state.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceSecondSettlement
+            ? actions.Cast<PlaceSettlementAction>().Select(action => action.VertexIndex).ToArray()
+            : actions.Cast<PlaceRoadAction>().Select(action => _actionSerializer!.DirectionIndexOf(
+                state.PendingSettlementVertex!.Value, action.EdgeIndex)).ToArray();
 
         var prediction = _nnClient!.PredictPlacementAsync([placementState]).GetAwaiter().GetResult();
         var densePolicy = prediction.PolicyProbabilities.Length == 1
             ? Array.ConvertAll(prediction.PolicyProbabilities[0], value => (double)value)
             : [];
-        var legalPolicy = _actionSerializer!.MaskAndNormalize(
-            densePolicy,
-            compositeActions.Select(action => _actionSerializer.IndexOf(action.ActionString)).ToArray());
+        var legalPolicy = _actionSerializer!.MaskAndNormalizeStage(densePolicy, legalIndices);
 
         var bestIndex = 0;
         var bestScore = float.NegativeInfinity;
-        for (var j = 0; j < compositeActions.Count; j++)
+        for (var j = 0; j < actions.Length; j++)
         {
             var score = (float)legalPolicy[j];
             if (score > bestScore)
@@ -475,10 +417,7 @@ internal static class Program
             }
         }
 
-        var (bestSettlementIdx, bestRoadEdge, _) = compositeActions[bestIndex];
-        _pendingRoadEdge = bestRoadEdge;
-
-        return ApplyActionAndLog(state, UnwrapCoreAction(coreActions[bestSettlementIdx]), aiControlled: true);
+        return ApplyActionAndLog(state, actions[bestIndex], aiControlled: true);
     }
 
     /// <summary>
@@ -787,10 +726,8 @@ internal static class Program
     /// connected.
     ///
     /// During initial placement stages (settlement/road), the placement model is
-    /// preferred when available.  For settlement stages each candidate is scored
-    /// by enumerating all (settlement, road) composites and taking the best road
-    /// score.  For road stages the already-placed settlement is inferred and each
-    /// road is evaluated as a composite action.
+    /// preferred when available. Settlement candidates use vertex logits and road
+    /// candidates use direction logits from the current stage policy.
     ///
     /// Outside of placement stages — or when the placement model is not loaded —
     /// the value (state) model is used instead.  If that endpoint is unavailable
@@ -842,46 +779,15 @@ internal static class Program
     }
 
     /// <summary>
-    /// Uses the placement model to score settlement candidates.  For each
-    /// candidate settlement vertex, all legal follow-up roads are enumerated
-    /// and the best composite score is used as the vertex's win rate.
+    /// Uses the placement model's vertex logits to score settlement candidates.
     /// </summary>
     private static Dictionary<int, float>? ComputePlacementSettlementWinRates(
         CatanState state, CatanAction[] actions)
     {
         var placementState = state.SerializePlacementPhaseCompact();
-        var composites = new List<(int VertexIndex, string ActionString)>();
-
-        foreach (var action in actions)
-        {
-            if (action is not PlaceSettlementAction placeSettlement)
-                continue;
-
-            var afterSettlement = (CatanState)placeSettlement.DoCoreAction();
-            var roadActions = afterSettlement.Actions();
-
-            foreach (var roadCoreAction in roadActions)
-            {
-                var roadAction = roadCoreAction.IsDeterministic
-                    ? (CatanAction)((CoreAction.Deterministic)roadCoreAction).Item
-                    : (CatanAction)((CoreAction.Stochastic)roadCoreAction).Item;
-                if (roadAction is not PlaceRoadAction placeRoad)
-                    continue;
-
-                var actionString = _actionSerializer!.Serialize(
-                    placeSettlement.VertexIndex, placeRoad.EdgeIndex);
-                composites.Add((placeSettlement.VertexIndex, actionString));
-            }
-        }
-
-        if (composites.Count == 0)
+        var settlements = actions.OfType<PlaceSettlementAction>().ToArray();
+        if (settlements.Length == 0)
             return null;
-
-        var actionStrings = new List<string>(composites.Count);
-        foreach (var (_, actionString) in composites)
-        {
-            actionStrings.Add(actionString);
-        }
 
         try
         {
@@ -890,18 +796,13 @@ internal static class Program
             var densePolicy = prediction.PolicyProbabilities.Length == 1
                 ? Array.ConvertAll(prediction.PolicyProbabilities[0], value => (double)value)
                 : [];
-            var legalPolicy = _actionSerializer!.MaskAndNormalize(
-                densePolicy,
-                actionStrings.Select(_actionSerializer.IndexOf).ToArray());
-
-            // Aggregate: best score per settlement vertex.
+            var legalPolicy = _actionSerializer!.MaskAndNormalizeStage(
+                densePolicy, settlements.Select(action => action.VertexIndex).ToArray());
             var result = new Dictionary<int, float>();
-            for (var i = 0; i < composites.Count; i++)
+            for (var i = 0; i < settlements.Length; i++)
             {
                 var score = (float)legalPolicy[i];
-                var vertex = composites[i].VertexIndex;
-                if (!result.TryGetValue(vertex, out var existing) || score > existing)
-                    result[vertex] = score;
+                result[settlements[i].VertexIndex] = score;
             }
             return result;
         }
@@ -913,46 +814,13 @@ internal static class Program
 
     /// <summary>
     /// Uses the placement model to score road candidates during placement.
-    /// The just-placed settlement vertex is inferred from the board (settlement
-    /// with no adjacent road for the current player).  Each candidate road is
-    /// evaluated as a (settlement, road) composite action.
+    /// Each candidate road is indexed by direction from the pending settlement.
     /// </summary>
     private static Dictionary<int, float>? ComputePlacementRoadWinRates(
         CatanState state, CatanAction[] actions)
     {
-        // Infer the settlement vertex that was just placed (no road yet).
-        var topology = state.Board.Topology;
-        int? settlementVertex = null;
-        for (var vi = 0; vi < topology.VertexCount; vi++)
-        {
-            var occ = state.Board.VertexOccupancy[vi];
-            if (occ.Building != BuildingType.Settlement || occ.Player != state.CurrentPlayer)
-                continue;
-
-            var hasOwnRoad = false;
-            foreach (var edge in topology.VertexEdges[vi])
-            {
-                if (state.Board.EdgeOccupancy[edge].Player == state.CurrentPlayer)
-                {
-                    hasOwnRoad = true;
-                    break;
-                }
-            }
-
-            if (!hasOwnRoad)
-            {
-                settlementVertex = vi;
-                break;
-            }
-        }
-
-        if (settlementVertex is null)
+        if (state.PendingSettlementVertex is not { } settlementVertex)
             return null;
-
-        // The placement model expects the state before the composite action.
-        // Here the settlement is already placed, so the serialized state
-        // differs slightly from training data.  In practice the scores are
-        // still useful for ranking road candidates.
         var placementState = state.SerializePlacementPhaseCompact();
         var roadActions = actions.OfType<PlaceRoadAction>().ToArray();
 
@@ -966,10 +834,10 @@ internal static class Program
             var densePolicy = prediction.PolicyProbabilities.Length == 1
                 ? Array.ConvertAll(prediction.PolicyProbabilities[0], value => (double)value)
                 : [];
-            var legalPolicy = _actionSerializer!.MaskAndNormalize(
+            var legalPolicy = _actionSerializer!.MaskAndNormalizeStage(
                 densePolicy,
-                roadActions.Select(road => _actionSerializer.IndexOf(
-                    settlementVertex.Value, road.EdgeIndex)).ToArray());
+                roadActions.Select(road => _actionSerializer.DirectionIndexOf(
+                    settlementVertex, road.EdgeIndex)).ToArray());
 
             var result = new Dictionary<int, float>();
             for (var i = 0; i < roadActions.Length; i++)

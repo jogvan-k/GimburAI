@@ -33,8 +33,9 @@ type IEvaluator =
 
 /// A completed prior response from the inference server.
 /// NodeId is an opaque identifier used to correlate the response back to the
-/// parent MCTSState. Priors contains per-action prior policy weights in the
-/// same order as the node's actions. ValueEstimates optionally contains a
+/// parent MCTSState. Priors contains flattened child-state scores in the order
+/// supplied to RequestPrior; deterministic actions contribute one entry and
+/// stochastic actions contribute one per outcome. ValueEstimates optionally contains a
 /// normalized per-player value distribution indexed by Player enum value.
 /// DensePriors optionally carries a client-specific dense policy for export.
 type PriorResponse =
@@ -68,11 +69,8 @@ type IPriorClient =
     ///          for serialization.
     /// actingPlayer — the player whose turn it is at the parent node.
     /// depth — depth from root (lower = higher priority).
-    /// Returns the number of (state, action) inference pairs actually sent to
-    /// the model. In state mode this equals states.Length; in placement mode
-    /// it is the total number of (settlement, road) composite actions enqueued
-    /// across all child states. Returns 0 when the implementation declines
-    /// to send a request (e.g. non-placement stage in placement mode).
+    /// Returns the number of child-state inference entries sent to the model.
+    /// Returns 0 when the implementation declines to send a request.
     abstract RequestPrior : nodeId: int64 * parentState: ICoreState * states: ICoreState[] * actingPlayer: int * depth: int -> int
 
     /// Collect completed prior responses matching the given set of node IDs.

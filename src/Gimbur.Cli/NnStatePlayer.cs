@@ -72,54 +72,69 @@ internal sealed class NnStatePlayer : IBenchmarkPlayer, INnStatsProvider
             {
                 var deterministicAction = (CatanDeterministicAction)((CoreAction.Deterministic)coreAction).Item;
                 var resultState = (CatanState)deterministicAction.State();
+                if (resultState.WinnerPlayer != 0)
+                {
+                    actionDescriptors.Add(new ActionDescriptor(
+                        i, [], [1], [resultState.WinnerPlayer == actingPlayer ? 1.0f : 0.0f]));
+                    continue;
+                }
                 var stateIndex = allStates.Count;
                 allStates.Add(resultState.SerializeCompact());
-                actionDescriptors.Add(new ActionDescriptor(i, stateIndex, 1, null));
+                actionDescriptors.Add(new ActionDescriptor(i, [stateIndex], [1], [float.NaN]));
             }
             else if (coreAction.IsStochastic)
             {
                 var stochasticAction = (CatanStochasticAction)((CoreAction.Stochastic)coreAction).Item;
                 var outcomes = stochasticAction.Outcomes();
-                var stateIndex = allStates.Count;
                 var weights = new int[outcomes.Length];
+                var stateIndices = new int[outcomes.Length];
+                var exactScores = new float[outcomes.Length];
                 for (var j = 0; j < outcomes.Length; j++)
                 {
                     weights[j] = outcomes[j].Item1;
                     var outcomeState = (CatanState)outcomes[j].Item2;
-                    allStates.Add(outcomeState.SerializeCompact());
+                    if (outcomeState.WinnerPlayer != 0)
+                    {
+                        stateIndices[j] = -1;
+                        exactScores[j] = outcomeState.WinnerPlayer == actingPlayer ? 1.0f : 0.0f;
+                    }
+                    else
+                    {
+                        stateIndices[j] = allStates.Count;
+                        exactScores[j] = float.NaN;
+                        allStates.Add(outcomeState.SerializeCompact());
+                    }
                 }
 
-                actionDescriptors.Add(new ActionDescriptor(i, stateIndex, outcomes.Length, weights));
+                actionDescriptors.Add(new ActionDescriptor(i, stateIndices, weights, exactScores));
             }
         }
 
-        var playerValues = _client.PredictAsync(allStates).GetAwaiter().GetResult();
-        TotalNnRequests++;
-        TotalNnStatesEvaluated += allStates.Count;
+        var playerValues = allStates.Count > 0
+            ? _client.PredictAsync(allStates).GetAwaiter().GetResult()
+            : [];
+        if (allStates.Count > 0)
+        {
+            TotalNnRequests++;
+            TotalNnStatesEvaluated += allStates.Count;
+        }
 
         var bestActionIndex = 0;
         var bestScore = float.NegativeInfinity;
 
         foreach (var desc in actionDescriptors)
         {
-            float score;
-            if (desc.Weights is null)
+            var totalWeight = 0;
+            var weightedSum = 0.0f;
+            for (var j = 0; j < desc.Weights.Length; j++)
             {
-                score = playerValues[desc.StartIndex][actingPlayer - 1];
+                var value = float.IsNaN(desc.ExactScores[j])
+                    ? playerValues[desc.StateIndices[j]][actingPlayer - 1]
+                    : desc.ExactScores[j];
+                totalWeight += desc.Weights[j];
+                weightedSum += desc.Weights[j] * value;
             }
-            else
-            {
-                var totalWeight = 0;
-                var weightedSum = 0.0f;
-                for (var j = 0; j < desc.Count; j++)
-                {
-                    var w = desc.Weights[j];
-                    totalWeight += w;
-                    weightedSum += w * playerValues[desc.StartIndex + j][actingPlayer - 1];
-                }
-
-                score = totalWeight > 0 ? weightedSum / totalWeight : 0;
-            }
+            var score = totalWeight > 0 ? weightedSum / totalWeight : 0;
 
             if (score > bestScore)
             {
@@ -142,7 +157,7 @@ internal sealed class NnStatePlayer : IBenchmarkPlayer, INnStatsProvider
 
     private readonly record struct ActionDescriptor(
         int ActionIndex,
-        int StartIndex,
-        int Count,
-        int[]? Weights);
+        int[] StateIndices,
+        int[] Weights,
+        float[] ExactScores);
 }

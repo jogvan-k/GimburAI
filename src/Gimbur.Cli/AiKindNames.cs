@@ -16,6 +16,7 @@ internal static class AiKindNames
         AiKind.MctsPlacement => "mcts-placement",
         AiKind.MctsPlacementRandom => "mcts-placement-random",
         AiKind.NnMctsPlacementState => "nn-mcts-placement-state",
+        AiKind.NnMctsState => "nn-mcts-state",
         _ => kind.ToString().ToLowerInvariant(),
     };
 }

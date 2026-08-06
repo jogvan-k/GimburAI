@@ -103,6 +103,16 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
   "winRate": 0.64,
   "wins": [3200.0, 1800.0],
   "scores": [2.0, 3.0],
+  "actions": [
+    {
+      "action": "2:0:0",
+      "wins": [120.0, 80.0],
+      "visits": 200,
+      "winRate": 0.6,
+      "modelPrior": 0.4,
+      "selected": true
+    }
+  ],
   "reachedTerminal": false,
   "priorsRequested": 0,
   "priorsApplied": 0,
@@ -125,11 +135,16 @@ Each game is exported as a single JSON object. In JSONL format, each line is one
 | `winRate` | float | Acting player's win rate at the MCTS root (wins / rollouts). |
 | `wins` | float[] | Raw MCTS win counts at the root, 0-indexed (index 0 = player 1). |
 | `scores` | float[] | Authoritative victory-point scores from `CatanState.Scores()`, indexed by player. |
+| `actions` | Action[] | Every legal action at the root with MCTS edge diagnostics. Empty for forced or terminal states. |
 | `reachedTerminal` | bool | Whether MCTS fully resolved the tree (all root actions are Terminal). |
 | `priorsRequested` | int | Number of NN prior requests sent during this search. |
 | `priorsApplied` | int | Number of NN prior responses applied to tree nodes. |
 | `priorStatesEvaluated` | int | Number of individual states evaluated by the NN server. |
 | `permutations` | string[] | `serializedState` under each non-trivial symmetry permutation. Same order as `board.permutations`. |
+
+Each `actions` entry contains `action` (stable `typeTag:arg1:arg2` identity), `wins`, `visits`,
+`winRate`, nullable `modelPrior`, and `selected`, which identifies the action played in the
+recorded game.
 
 State-value training blends each root's normalized per-player MCTS wins with the
 one-hot final game winner. The MCTS weight decreases linearly from
@@ -269,6 +284,13 @@ The `turns` field is omitted. After recording placement decisions, simulation co
 ### Action Object
 
 `policyIndex` is the settlement vertex at stages `a`/`f`, and the road direction index `0..5` from the pending settlement at stages `e`/`i`. Direction order is `N, NE, SE, S, SW, NW`.
+
+Generation-0 MCTS uses a local greedy one-hot prior. The selected action exports
+`modelPrior: 1`; every other action exports `modelPrior: 0`. The same field holds
+soft neural priors in later generations. Before PUCT, the greedy prior is mixed with
+configurable uniform support, so other actions remain explorable. MCTS `visits` and
+`wins` remain stochastic rollout evidence; later-generation policy targets use the
+improved visit shares.
 
 ```json
 {

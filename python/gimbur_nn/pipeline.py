@@ -2,7 +2,7 @@
 Self-play training pipeline orchestrator.
 
 Drives the AlphaZero-style loop: simulate → train → benchmark → repeat.
-Each iteration is called a "generation". Generation 0 uses greedy rollouts
+Each iteration is called a "generation". Generation 0 uses local greedy PUCT priors
 (no NN prior); subsequent generations use the previous generation's model
 as the MCTS prior evaluator.
 
@@ -28,7 +28,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +65,8 @@ class SimulateConfig:
     max_discard_rate: float = 0.05
     minimum_attempts_for_discard_rate: int = 50
     max_consecutive_discards: int = 5
+    greedy_prior: bool = True
+    greedy_prior_uniform_mix: float = 0.25
 
 
 @dataclass
@@ -138,6 +140,37 @@ class BenchmarkConfig:
 
 
 @dataclass
+class PromotionGateConfig:
+    """One direct or MCTS promotion gate."""
+
+    enabled: bool = True
+    games: int = 10_000
+    ai: str = "nn-placement-state"
+    minimum_improvement_vs_greedy: float = 0.0
+    minimum_improvement_vs_champion: float = 0.0
+    search_time_ms: int | None = None
+    server_max_prior_depth: int | None = None
+    parallelism: int | None = None
+
+
+@dataclass
+class PromotionConfig:
+    """Champion/challenger promotion and failed-gate retry policy."""
+
+    enabled: bool = False
+    additional_training_games: int = 500
+    max_retries: int = 2
+    direct: PromotionGateConfig = field(default_factory=PromotionGateConfig)
+    hybrid: PromotionGateConfig = field(
+        default_factory=lambda: PromotionGateConfig(
+            games=1_000,
+            ai="nn-mcts-placement-state",
+            search_time_ms=1_000,
+        )
+    )
+
+
+@dataclass
 class BaselineBenchmarkConfig:
     """A reference benchmark used as a horizontal line on the progress chart.
 
@@ -180,6 +213,9 @@ class PipelineConfig:
     # How many generations to run.
     generations: int = 10
 
+    # Optional larger bootstrap dataset for generation 0.
+    gen0_games: int | None = None
+
     # Skip generations before this threshold (treat them as complete).
     skip_until_gen: int | None = None
 
@@ -202,6 +238,7 @@ class PipelineConfig:
         ]
     )
     baselines: list[BaselineBenchmarkConfig] = field(default_factory=list)
+    promotion: PromotionConfig = field(default_factory=PromotionConfig)
 
 
 def _strip_json_comments(text: str) -> str:
@@ -250,6 +287,7 @@ def _load_config(path: Path) -> PipelineConfig:
         "model_dir",
         "results_dir",
         "generations",
+        "gen0_games",
         "dotnet_project",
         "python_module",
         "skip_until_gen",
@@ -277,8 +315,38 @@ def _load_config(path: Path) -> PipelineConfig:
         cfg.benchmarks = [_load_section(BenchmarkConfig, b) for b in raw["benchmarks"]]
     if "baselines" in raw:
         cfg.baselines = [_load_section(BaselineBenchmarkConfig, b) for b in raw["baselines"]]
+    if "promotion" in raw:
+        promotion_raw = raw["promotion"]
+        scalar_raw = {
+            key: value for key, value in promotion_raw.items() if key not in ("direct", "hybrid")
+        }
+        cfg.promotion = _load_section(PromotionConfig, scalar_raw)
+        if "direct" in promotion_raw:
+            cfg.promotion.direct = _load_section(PromotionGateConfig, promotion_raw["direct"])
+        if "hybrid" in promotion_raw:
+            cfg.promotion.hybrid = _load_section(PromotionGateConfig, promotion_raw["hybrid"])
 
+    _validate_promotion_config(cfg)
     return cfg
+
+
+def _validate_promotion_config(cfg: PipelineConfig) -> None:
+    promotion = cfg.promotion
+    if not promotion.enabled:
+        return
+    if cfg.training_mode != "placement-and-state":
+        raise ValueError("promotion.enabled requires trainingMode 'placement-and-state'.")
+    if promotion.additional_training_games < 0 or promotion.max_retries < 0:
+        raise ValueError("Promotion additional games and retry count must be non-negative.")
+    if cfg.serve.port >= 65535:
+        raise ValueError("Promotion requires serve.port + 1 for the champion server.")
+    for name, gate in (("direct", promotion.direct), ("hybrid", promotion.hybrid)):
+        if gate.enabled and gate.games <= 0:
+            raise ValueError(f"Promotion {name} gate games must be positive.")
+        if gate.minimum_improvement_vs_greedy < -0.5:
+            raise ValueError(f"Promotion {name} greedy improvement is below -0.5.")
+        if gate.minimum_improvement_vs_champion < -0.5:
+            raise ValueError(f"Promotion {name} champion improvement is below -0.5.")
 
 
 def _to_camel(snake: str) -> str:
@@ -343,6 +411,45 @@ def _model_path(cfg: PipelineConfig, gen: int, model_type: str | None = None) ->
 
 def _results_path(cfg: PipelineConfig, gen: int, name: str) -> Path:
     return Path(cfg.results_dir) / f"gen{gen}" / f"{name}.json"
+
+
+def _candidate_model_path(cfg: PipelineConfig, gen: int, attempt: int, model_type: str) -> Path:
+    return (
+        Path(cfg.model_dir)
+        / "candidates"
+        / f"gen{gen}"
+        / f"attempt{attempt}"
+        / f"{model_type}.pt"
+    )
+
+
+def _champion_model_path(cfg: PipelineConfig, gen: int, model_type: str) -> Path:
+    return Path(cfg.model_dir) / "champions" / f"gen{gen}" / f"{model_type}.pt"
+
+
+def _champion_manifest_path(cfg: PipelineConfig) -> Path:
+    return Path(cfg.model_dir) / "champion.json"
+
+
+def _promotion_attempt_path(cfg: PipelineConfig, gen: int, attempt: int) -> Path:
+    return Path(cfg.results_dir) / "promotion" / f"gen{gen}" / f"attempt{attempt}"
+
+
+def _promotion_generation_path(cfg: PipelineConfig, gen: int) -> Path:
+    return Path(cfg.results_dir) / "promotion" / f"gen{gen}" / "generation.json"
+
+
+def _write_json_atomic(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as handle:
+        handle.write(json.dumps(data, indent=2) + "\n")
+        temporary = Path(handle.name)
+    os.replace(temporary, path)
+
+
+def _load_champion(cfg: PipelineConfig) -> dict[str, Any] | None:
+    path = _champion_manifest_path(cfg)
+    return json.loads(path.read_text()) if path.is_file() else None
 
 
 def _baseline_path(cfg: PipelineConfig, name: str) -> Path:
@@ -438,6 +545,12 @@ def _benchmark_complete(cfg: PipelineConfig, gen: int, phase: str | None = None)
 
 def _generation_complete(cfg: PipelineConfig, gen: int) -> bool:
     """True if simulate, train, and benchmark are all done for a generation."""
+    if cfg.promotion.enabled:
+        decision_path = _promotion_generation_path(cfg, gen)
+        if not decision_path.is_file():
+            return False
+        decision = json.loads(decision_path.read_text())
+        return decision.get("status") == "rejected" or _benchmark_complete(cfg, gen)
     if cfg.training_mode == "placement-and-state":
         return (
             _simulation_complete(cfg, gen)
@@ -599,7 +712,11 @@ class _ServerProcess:
 
         # Wait for health check.
         url = f"http://{serve_cfg.host}:{serve_cfg.port}/health"
-        self._wait_for_health(url, timeout=60)
+        try:
+            self._wait_for_health(url, timeout=60)
+        except Exception:
+            self.stop()
+            raise
 
     def stop(self) -> None:
         if self._proc is None:
@@ -846,6 +963,7 @@ _SERVER_AI_KINDS = frozenset(
         "nn-mcts-placement",
         "nn-mcts-placement-random",
         "nn-mcts-placement-state",
+        "nn-mcts-state",
         "mcts-placement",
         "mcts-placement-random",
     }
@@ -869,6 +987,9 @@ def _step_simulate(
     nn_url: str | None,
     model_type: str | None = None,
     sim_override: SimulateConfig | None = None,
+    target_games_override: int | None = None,
+    seed_offset: int = 0,
+    config_suffix: str = "",
 ) -> None:
     """Run self-play simulation for a generation.
 
@@ -890,7 +1011,8 @@ def _step_simulate(
         return
 
     sim = sim_override or _effective_simulate(cfg, model_type)
-    target_games = sim.games
+    configured_games = cfg.gen0_games if gen == 0 and cfg.gen0_games is not None else sim.games
+    target_games = target_games_override or configured_games
     existing = _count_json_files(out_dir)
 
     if existing >= target_games:
@@ -933,12 +1055,14 @@ def _step_simulate(
     sim_config["maxDiscardRate"] = sim.max_discard_rate
     sim_config["minimumAttemptsForDiscardRate"] = sim.minimum_attempts_for_discard_rate
     sim_config["maxConsecutiveDiscards"] = sim.max_consecutive_discards
+    sim_config["greedyPrior"] = gen == 0 and sim.greedy_prior
+    sim_config["greedyPriorUniformMix"] = sim.greedy_prior_uniform_mix
     if not sim.symmetries:
         sim_config["noSymmetries"] = True
     if sim.verbosity:
         sim_config["verbosity"] = sim.verbosity
     if cfg.seed is not None:
-        sim_config["seed"] = cfg.seed + gen
+        sim_config["seed"] = cfg.seed + gen + seed_offset
     if nn_url is not None:
         sim_config["prior"] = True
         sim_config["nnUrl"] = nn_url
@@ -948,7 +1072,7 @@ def _step_simulate(
     if cfg.training_mode == "placement-and-state":
         sim_config["exportType"] = "PlacementAndState"
 
-    config_path = _write_config(cfg, f"simulate_gen{gen}", sim_config)
+    config_path = _write_config(cfg, f"simulate_gen{gen}{config_suffix}", sim_config)
 
     args = [
         "dotnet",
@@ -989,7 +1113,9 @@ def _step_simulate(
     proc = subprocess.Popen(
         args,
         cwd=project_root,
-        stderr=subprocess.PIPE,
+        # Do not buffer stderr in a pipe: the simulation is monitored while it
+        # runs, so an undrained pipe could fill and deadlock the child process.
+        stderr=None,
         start_new_session=True,
     )
     try:
@@ -1020,17 +1146,7 @@ def _step_simulate(
 
         # Process exited on its own — check exit code.
         if proc.returncode != 0:
-            stderr_msg = ""
-            if proc.stderr is not None:
-                stderr_bytes = proc.stderr.read()
-                if isinstance(stderr_bytes, bytes):
-                    stderr_msg = stderr_bytes.decode(errors="replace").strip()
-                else:
-                    stderr_msg = stderr_bytes.strip()
-            detail = f"{label} failed with exit code {proc.returncode}"
-            if stderr_msg:
-                detail += f"\nstderr:\n{stderr_msg}"
-            raise RuntimeError(detail)
+            raise RuntimeError(f"{label} failed with exit code {proc.returncode}")
 
         # Verify we got enough games even though process exited normally.
         count = _count_json_files(out_dir)
@@ -1080,9 +1196,13 @@ def _step_train(
     project_root: Path,
     model_type: str | None = None,
     sim_override: SimulateConfig | None = None,
+    out_path_override: Path | None = None,
+    resume_path_override: Path | None = None,
+    checkpoint_path_override: Path | None = None,
+    config_suffix: str = "",
 ) -> None:
     """Train the model for a generation. Skips if the checkpoint already exists."""
-    out_path = _model_path(cfg, gen, model_type)
+    out_path = out_path_override or _model_path(cfg, gen, model_type)
     if out_path.is_file():
         print(f"  Train: Model already exists at {out_path}, skipping.")
         return
@@ -1149,17 +1269,21 @@ def _step_train(
 
     # Enable per-epoch checkpointing if configured.
     if tr.checkpoint_dir:
-        ckpt_dir = _checkpoint_path(cfg, gen, model_type)
+        ckpt_dir = checkpoint_path_override or _checkpoint_path(cfg, gen, model_type)
         train_config["checkpointDir"] = str(ckpt_dir)
 
     # Resume from previous generation's model if available.
-    if tr.resume_from_previous and gen > 0:
+    if resume_path_override is not None:
+        train_config["resume"] = str(resume_path_override)
+    elif tr.resume_from_previous and gen > 0:
         prev_model = _model_path(cfg, gen - 1, model_type)
         if prev_model.exists():
             train_config["resume"] = str(prev_model)
 
     type_suffix = f"_{model_type}" if model_type else ""
-    config_path = _write_config(cfg, f"train_gen{gen}{type_suffix}", train_config)
+    config_path = _write_config(
+        cfg, f"train_gen{gen}{type_suffix}{config_suffix}", train_config
+    )
 
     args = [
         sys.executable,
@@ -1298,13 +1422,16 @@ def _step_benchmark(
             )
 
             # Parse results.
-            if out_path.exists():
-                results = json.loads(out_path.read_text())
-                gen_results[bench.name] = results
-                if all_results is not None:
-                    all_results.setdefault(gen, {})[bench.name] = results
-                    _save_summary(cfg, all_results)
-                    _save_progress_chart(cfg, all_results)
+            if not out_path.exists():
+                raise RuntimeError(
+                    f"Benchmark '{bench.name}' completed without writing {out_path}."
+                )
+            results = json.loads(out_path.read_text())
+            gen_results[bench.name] = results
+            if all_results is not None:
+                all_results.setdefault(gen, {})[bench.name] = results
+                _save_summary(cfg, all_results)
+                _save_progress_chart(cfg, all_results)
 
     finally:
         # Always stop the Gimbur.Server if we started it, even on error.
@@ -1312,6 +1439,408 @@ def _step_benchmark(
             gimbur_server.stop()
 
     return gen_results
+
+
+def _benchmark_score(result: dict[str, Any], label: str, expected_games: int) -> float:
+    total_games = int(result.get("totalGames", 0))
+    if total_games != expected_games:
+        raise RuntimeError(
+            f"Promotion benchmark completed {total_games}/{expected_games} required games."
+        )
+    entry = next(
+        (item for item in result.get("winRates", []) if item.get("label") == label), None
+    )
+    if entry is None:
+        raise RuntimeError(f"Promotion benchmark has no win rate for label '{label}'.")
+    draws = int(result.get("draws", 0))
+    return (int(entry.get("wins", 0)) + 0.5 * draws) / total_games
+
+
+def _run_promotion_match(
+    cfg: PipelineConfig,
+    gen: int,
+    attempt: int,
+    project_root: Path,
+    *,
+    name: str,
+    gate: PromotionGateConfig,
+    opponent_ai: str,
+    challenger_url: str,
+    opponent_url: str,
+    gimbur_server: _GimburServerProcess,
+) -> tuple[dict[str, Any], float]:
+    out_path = _promotion_attempt_path(cfg, gen, attempt) / f"{name}.json"
+    if out_path.is_file():
+        try:
+            result = json.loads(out_path.read_text())
+            if int(result.get("totalGames", 0)) == gate.games:
+                return result, _benchmark_score(result, "challenger", gate.games)
+        except (json.JSONDecodeError, RuntimeError):
+            pass
+        out_path.unlink()
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    bench_config: dict[str, Any] = {
+        "games": gate.games,
+        "ai": [gate.ai, opponent_ai],
+        "playerLabels": ["challenger", "opponent"],
+        "nnUrls": [challenger_url, opponent_url],
+        "mapConfig": cfg.map_config,
+        "output": str(out_path),
+        "verbosity": "quiet",
+    }
+    if cfg.seed is not None:
+        bench_config["seed"] = cfg.seed + gen * 100_000 + attempt * 10_000
+    if gate.search_time_ms is not None:
+        bench_config["searchTimeMs"] = gate.search_time_ms
+    if gate.server_max_prior_depth is not None:
+        bench_config["serverMaxPriorDepth"] = gate.server_max_prior_depth
+    if gate.parallelism is not None:
+        bench_config["parallelism"] = gate.parallelism
+    if gate.ai in _SERVER_AI_KINDS:
+        gs = cfg.gimbur_server
+        bench_config["serverUrl"] = f"http://{gs.host}:{gs.port}"
+        gimbur_server.start(gimbur_server_cfg=cfg.gimbur_server, cwd=project_root)
+
+    config_path = _write_config(
+        cfg, f"promotion_gen{gen}_attempt{attempt}_{name}", bench_config
+    )
+    try:
+        _run(
+            [
+                "dotnet",
+                "run",
+                "--project",
+                cfg.dotnet_project,
+                "--",
+                "benchmark",
+                "--config",
+                str(config_path),
+            ],
+            label=f"Gen {gen} attempt {attempt}: promotion {name} ({gate.games} games)",
+            cwd=project_root,
+        )
+    finally:
+        if gate.ai in _SERVER_AI_KINDS:
+            gimbur_server.stop()
+
+    result = json.loads(out_path.read_text())
+    return result, _benchmark_score(result, "challenger", gate.games)
+
+
+def _evaluate_promotion_gate(
+    gate: PromotionGateConfig, greedy_score: float, champion_score: float
+) -> dict[str, Any]:
+    greedy_required = 0.5 + gate.minimum_improvement_vs_greedy
+    champion_required = 0.5 + gate.minimum_improvement_vs_champion
+    passed_greedy = greedy_score >= greedy_required
+    passed_champion = champion_score >= champion_required
+    return {
+        "games": gate.games,
+        "ai": gate.ai,
+        "greedyScore": greedy_score,
+        "greedyRequired": greedy_required,
+        "championScore": champion_score,
+        "championRequired": champion_required,
+        "passedGreedy": passed_greedy,
+        "passedChampion": passed_champion,
+        "passed": passed_greedy and passed_champion,
+    }
+
+
+def _promote_candidate(cfg: PipelineConfig, gen: int, attempt: int) -> dict[str, Any]:
+    models: dict[str, str] = {}
+    for model_type in ("placement", "state"):
+        source = _candidate_model_path(cfg, gen, attempt, model_type)
+        destination = _champion_model_path(cfg, gen, model_type)
+        if not source.is_file():
+            raise FileNotFoundError(f"Candidate {model_type} model not found at {source}.")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        legacy = _model_path(cfg, gen, model_type)
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, legacy)
+        models[f"{model_type}Model"] = str(destination)
+    manifest: dict[str, Any] = {"generation": gen, "attempt": attempt, **models}
+    _write_json_atomic(_champion_manifest_path(cfg), manifest)
+    return manifest
+
+
+def _train_promotion_candidate(
+    cfg: PipelineConfig,
+    gen: int,
+    attempt: int,
+    project_root: Path,
+    champion: dict[str, Any] | None,
+) -> None:
+    for model_type in ("placement", "state"):
+        train_cfg = (
+            cfg.placement_train or cfg.train
+            if model_type == "placement"
+            else cfg.state_train or cfg.train
+        )
+        destination = _candidate_model_path(cfg, gen, attempt, model_type)
+        checkpoint_dir = destination.parent / f"{model_type}_checkpoints"
+        resume = (
+            checkpoint_dir
+            if checkpoint_dir.is_dir() and any(checkpoint_dir.glob("epoch_*.pt"))
+            else Path(champion[f"{model_type}Model"])
+            if champion is not None
+            else None
+        )
+        if train_cfg.enabled:
+            _step_train(
+                cfg,
+                gen,
+                project_root,
+                model_type=model_type,
+                out_path_override=destination,
+                resume_path_override=resume,
+                checkpoint_path_override=checkpoint_dir,
+                config_suffix=f"_attempt{attempt}",
+            )
+        elif champion is not None and not destination.exists():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(Path(champion[f"{model_type}Model"]), destination)
+        elif not destination.exists():
+            raise FileNotFoundError(
+                f"Cannot freeze {model_type} in bootstrap generation without a champion model."
+            )
+
+
+def _start_model_pair_server(
+    server: _ServerProcess,
+    cfg: PipelineConfig,
+    serve_cfg: ServeConfig,
+    placement_model: Path,
+    state_model: Path,
+    project_root: Path,
+) -> str:
+    server.start(
+        serve_cfg=serve_cfg,
+        game_config=cfg.game_config,
+        python_module=cfg.python_module,
+        placement_model_path=placement_model,
+        placement_model_config=cfg.placement_model_config or cfg.model_config,
+        state_model_path=state_model,
+        state_model_config=cfg.state_model_config or cfg.model_config,
+        cwd=project_root,
+    )
+    return f"http://{serve_cfg.host}:{serve_cfg.port}"
+
+
+def _run_promotion_gates(
+    cfg: PipelineConfig,
+    gen: int,
+    attempt: int,
+    project_root: Path,
+    champion: dict[str, Any],
+    gimbur_server: _GimburServerProcess,
+) -> dict[str, Any]:
+    challenger_server = _ServerProcess()
+    champion_server = _ServerProcess()
+    challenger_cfg = cfg.serve
+    champion_cfg = replace(cfg.serve, port=cfg.serve.port + 1)
+    gate_results: dict[str, Any] = {}
+    try:
+        challenger_url = _start_model_pair_server(
+            challenger_server,
+            cfg,
+            challenger_cfg,
+            _candidate_model_path(cfg, gen, attempt, "placement"),
+            _candidate_model_path(cfg, gen, attempt, "state"),
+            project_root,
+        )
+        champion_url = _start_model_pair_server(
+            champion_server,
+            cfg,
+            champion_cfg,
+            Path(champion["placementModel"]),
+            Path(champion["stateModel"]),
+            project_root,
+        )
+        for name, gate in (("direct", cfg.promotion.direct), ("hybrid", cfg.promotion.hybrid)):
+            if not gate.enabled:
+                continue
+            _, greedy_score = _run_promotion_match(
+                cfg,
+                gen,
+                attempt,
+                project_root,
+                name=f"{name}-challenger-vs-greedy",
+                gate=gate,
+                opponent_ai="greedy",
+                challenger_url=challenger_url,
+                opponent_url=champion_url,
+                gimbur_server=gimbur_server,
+            )
+            _, champion_score = _run_promotion_match(
+                cfg,
+                gen,
+                attempt,
+                project_root,
+                name=f"{name}-challenger-vs-champion",
+                gate=gate,
+                opponent_ai=gate.ai,
+                challenger_url=challenger_url,
+                opponent_url=champion_url,
+                gimbur_server=gimbur_server,
+            )
+            gate_results[name] = _evaluate_promotion_gate(
+                gate, greedy_score, champion_score
+            )
+    finally:
+        challenger_server.stop()
+        champion_server.stop()
+    return gate_results
+
+
+def _run_promoted_placement_and_state_generation(
+    cfg: PipelineConfig,
+    gen: int,
+    project_root: Path,
+    gimbur_server: _GimburServerProcess,
+) -> None:
+    if cfg.training_mode != "placement-and-state":
+        raise ValueError("Promotion currently requires trainingMode 'placement-and-state'.")
+    generation_path = _promotion_generation_path(cfg, gen)
+    if generation_path.is_file():
+        return
+
+    champion = _load_champion(cfg)
+    base_games = cfg.gen0_games if gen == 0 and cfg.gen0_games is not None else cfg.simulate.games
+    for attempt in range(cfg.promotion.max_retries + 1):
+        attempt_path = _promotion_attempt_path(cfg, gen, attempt)
+        decision_path = attempt_path / "decision.json"
+        if decision_path.is_file():
+            decision = json.loads(decision_path.read_text())
+            if decision.get("passed"):
+                active = _load_champion(cfg)
+                if active is None or active.get("generation") != gen:
+                    active = _promote_candidate(cfg, gen, attempt)
+                _write_json_atomic(
+                    generation_path,
+                    {
+                        "generation": gen,
+                        "status": "promoted",
+                        "attempt": attempt,
+                        "trainingGames": decision["trainingGames"],
+                        "championGenerationAfter": active["generation"],
+                    },
+                )
+                return
+            continue
+
+        target_games = base_games + attempt * cfg.promotion.additional_training_games
+        simulation_server = _ServerProcess()
+        simulation_url: str | None = None
+        try:
+            if champion is not None:
+                simulation_url = _start_model_pair_server(
+                    simulation_server,
+                    cfg,
+                    cfg.serve,
+                    Path(champion["placementModel"]),
+                    Path(champion["stateModel"]),
+                    project_root,
+                )
+            _step_simulate(
+                cfg,
+                gen,
+                project_root,
+                simulation_url,
+                target_games_override=target_games,
+                seed_offset=attempt * 100_000,
+                config_suffix=f"_attempt{attempt}",
+            )
+        finally:
+            simulation_server.stop()
+
+        _train_promotion_candidate(cfg, gen, attempt, project_root, champion)
+        if champion is None:
+            decision = {"passed": True, "bootstrap": True, "gates": {}}
+        else:
+            gates = _run_promotion_gates(
+                cfg, gen, attempt, project_root, champion, gimbur_server
+            )
+            passed = all(gate["passed"] for gate in gates.values())
+            decision = {"passed": passed, "bootstrap": False, "gates": gates}
+
+        decision.update({"generation": gen, "attempt": attempt, "trainingGames": target_games})
+        _write_json_atomic(decision_path, decision)
+        if decision["passed"]:
+            promoted = _promote_candidate(cfg, gen, attempt)
+            _write_json_atomic(
+                generation_path,
+                {
+                    "generation": gen,
+                    "status": "promoted",
+                    "attempt": attempt,
+                    "trainingGames": target_games,
+                    "championGenerationAfter": promoted["generation"],
+                },
+            )
+            return
+
+    _write_json_atomic(
+        generation_path,
+        {
+            "generation": gen,
+            "status": "rejected",
+            "attempt": cfg.promotion.max_retries,
+            "trainingGames": base_games
+            + cfg.promotion.max_retries * cfg.promotion.additional_training_games,
+            "championGenerationAfter": champion["generation"] if champion else None,
+        },
+    )
+
+
+def _run_promoted_benchmarks(
+    cfg: PipelineConfig,
+    gen: int,
+    project_root: Path,
+    server: _ServerProcess,
+    gimbur_server: _GimburServerProcess,
+    all_results: dict[int, dict[str, Any]],
+) -> None:
+    decision_path = _promotion_generation_path(cfg, gen)
+    if not decision_path.is_file():
+        return
+    decision = json.loads(decision_path.read_text())
+    if decision.get("status") != "promoted" or _benchmark_complete(cfg, gen):
+        return
+
+    placement_model = _champion_model_path(cfg, gen, "placement")
+    state_model = _champion_model_path(cfg, gen, "state")
+    missing = [path for path in (placement_model, state_model) if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "Promoted model files are missing: " + ", ".join(str(path) for path in missing)
+        )
+
+    nn_url = _start_model_pair_server(
+        server,
+        cfg,
+        cfg.serve,
+        placement_model,
+        state_model,
+        project_root,
+    )
+    try:
+        results = _step_benchmark(
+            cfg,
+            gen,
+            project_root,
+            nn_url,
+            gimbur_server=gimbur_server,
+            all_results=all_results,
+        )
+        if results:
+            all_results.setdefault(gen, {}).update(results)
+            _save_summary(cfg, all_results)
+            _save_progress_chart(cfg, all_results)
+    finally:
+        server.stop()
 
 
 def _step_baselines(
@@ -1458,7 +1987,7 @@ def _normalize_win_rates(data: dict[str, Any]) -> dict[str, float]:
     """
     raw = data.get("winRates", {})
     if isinstance(raw, list):
-        return {wr["ai"]: wr["rate"] for wr in raw}
+        return {wr.get("label", wr["ai"]): wr["rate"] for wr in raw}
     # Already a dict (loaded from summary.json).
     return dict(raw)
 
@@ -1467,7 +1996,7 @@ def _normalize_confidence(data: dict[str, Any], field: str) -> dict[str, float]:
     """Extract per-AI confidence margins from raw or normalized results."""
     raw = data.get("winRates", {})
     if isinstance(raw, list):
-        return {wr["ai"]: wr[field] for wr in raw if field in wr}
+        return {wr.get("label", wr["ai"]): wr[field] for wr in raw if field in wr}
     confidence = data.get(field, {})
     return dict(confidence) if isinstance(confidence, dict) else {}
 
@@ -1936,7 +2465,7 @@ def _run_single_generation(
     )
 
     # --- Simulate ---
-    # Gen 0: no NN prior (greedy rollouts only).
+    # Gen 0: no NN model; local greedy one-hot priors steer placement and state PUCT.
     # Gen N>0: start server with gen N-1 model for prior evaluation.
     sim_already_done = _simulation_complete(cfg, gen)
     gen_nn_url: str | None = None
@@ -2079,7 +2608,22 @@ def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> Non
             print(f"  GENERATION {gen}")
             print(f"{'#' * 60}\n")
 
-            if is_placement_and_state:
+            if cfg.promotion.enabled:
+                _run_promoted_placement_and_state_generation(
+                    cfg,
+                    gen,
+                    project_root,
+                    gimbur_server,
+                )
+                _run_promoted_benchmarks(
+                    cfg,
+                    gen,
+                    project_root,
+                    server,
+                    gimbur_server,
+                    all_results,
+                )
+            elif is_placement_and_state:
                 _run_placement_and_state_generation(
                     cfg,
                     gen,

@@ -7,10 +7,13 @@ import pytest
 from gimbur_nn.pipeline import (
     BenchmarkConfig,
     PipelineConfig,
+    PromotionGateConfig,
     SimulateConfig,
     TrainConfig,
+    _benchmark_score,
     _count_json_files,
     _discard_stop_reason,
+    _evaluate_promotion_gate,
     _generation_complete,
     _load_config,
     _load_section,
@@ -52,6 +55,76 @@ def test_pipeline_config_loads_per_model_training_enabled(tmp_path) -> None:
     assert not config.placement_train.enabled
     assert config.state_train is not None
     assert config.state_train.enabled
+
+
+def test_pipeline_config_loads_nested_promotion_defaults_and_overrides(tmp_path) -> None:
+    path = tmp_path / "pipeline.json"
+    path.write_text(
+        json.dumps(
+            {
+                "trainingMode": "placement-and-state",
+                "promotion": {
+                    "enabled": True,
+                    "additionalTrainingGames": 250,
+                    "direct": {"minimumImprovementVsGreedy": 0.02},
+                }
+            }
+        )
+    )
+
+    config = _load_config(path)
+
+    assert config.promotion.enabled
+    assert config.promotion.additional_training_games == 250
+    assert config.promotion.direct.games == 10_000
+    assert config.promotion.direct.minimum_improvement_vs_greedy == 0.02
+    assert config.promotion.hybrid.games == 1_000
+
+
+def test_promotion_gate_requires_both_thresholds() -> None:
+    gate = PromotionGateConfig(
+        minimum_improvement_vs_greedy=0.02,
+        minimum_improvement_vs_champion=0.01,
+    )
+
+    assert _evaluate_promotion_gate(gate, 0.52, 0.51)["passed"]
+    assert not _evaluate_promotion_gate(gate, 0.519, 0.60)["passed"]
+    assert not _evaluate_promotion_gate(gate, 0.60, 0.509)["passed"]
+
+
+def test_promotion_benchmark_score_counts_draws_and_requires_exact_games() -> None:
+    result = {
+        "totalGames": 10,
+        "draws": 2,
+        "winRates": [{"label": "challenger", "wins": 5, "rate": 0.5}],
+    }
+
+    assert _benchmark_score(result, "challenger", 10) == 0.6
+    with pytest.raises(RuntimeError, match="10/11"):
+        _benchmark_score(result, "challenger", 11)
+
+
+def test_promotion_generation_completion_uses_terminal_decision(tmp_path) -> None:
+    cfg = PipelineConfig(
+        training_mode="placement-and-state",
+        model_dir=str(tmp_path / "models"),
+        results_dir=str(tmp_path / "results"),
+    )
+    cfg.promotion.enabled = True
+
+    assert not _generation_complete(cfg, 2)
+    decision = tmp_path / "results/promotion/gen2/generation.json"
+    decision.parent.mkdir(parents=True)
+    decision.write_text('{"status":"rejected"}')
+    assert _generation_complete(cfg, 2)
+
+
+def test_pipeline_rejects_promotion_for_single_model_mode(tmp_path) -> None:
+    path = tmp_path / "pipeline.json"
+    path.write_text(json.dumps({"promotion": {"enabled": True}}))
+
+    with pytest.raises(ValueError, match="placement-and-state"):
+        _load_config(path)
 
 
 def test_train_config_loads_policy_target_temperature() -> None:
@@ -152,6 +225,7 @@ def test_step_simulate_writes_discard_policy_config(tmp_path, monkeypatch) -> No
     assert config["maxErrorsPerGame"] == 3
     assert config["discardGamesWithFallbacks"] is True
     assert config["maxDiscardRate"] == 0.1
+    assert config["greedyPrior"] is True
 
 
 def test_step_train_passes_value_blending_and_state_sampling(tmp_path, monkeypatch) -> None:

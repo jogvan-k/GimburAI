@@ -395,7 +395,8 @@ def _save_epoch_checkpoint(
     )
     metadata = {"architecture": architecture}
     if model_type == "state":
-        metadata["checkpoint_version"] = 3
+        metadata["checkpoint_version"] = 4
+    temporary = path.with_suffix(path.suffix + ".tmp")
     torch.save(
         {
             **metadata,
@@ -405,8 +406,9 @@ def _save_epoch_checkpoint(
             "best_val_loss": best_val_loss,
             "epochs_without_improvement": epochs_without_improvement,
         },
-        path,
+        temporary,
     )
+    temporary.replace(path)
 
 
 def _save_final_model(
@@ -427,7 +429,8 @@ def _save_final_model(
     )
     metadata = {"architecture": architecture}
     if args.model_type == "state":
-        metadata["checkpoint_version"] = 3
+        metadata["checkpoint_version"] = 4
+    temporary = path.with_suffix(path.suffix + ".tmp")
     torch.save(
         {
             **metadata,
@@ -438,8 +441,9 @@ def _save_final_model(
             "target": args.target,
             "output_mode": args.output_mode,
         },
-        path,
+        temporary,
     )
+    temporary.replace(path)
 
 
 def _load_model_state(path: Path, device: torch.device, model_type: str) -> dict:
@@ -452,7 +456,7 @@ def _load_model_state(path: Path, device: torch.device, model_type: str) -> dict
         not isinstance(raw, dict)
         or "model_state_dict" not in raw
         or raw.get("architecture") != architecture
-        or (model_type == "state" and raw.get("checkpoint_version") != 3)
+        or (model_type == "state" and raw.get("checkpoint_version") != 4)
     ):
         raise ValueError(f"incompatible checkpoint; expected architecture {architecture!r}")
     return raw
@@ -636,7 +640,7 @@ def main() -> None:
                 raise SystemExit(
                     f"Error: incompatible checkpoint; expected architecture {architecture!r}"
                 )
-            if args.model_type == "state" and ckpt.get("checkpoint_version") != 3:
+            if args.model_type == "state" and ckpt.get("checkpoint_version") != 4:
                 raise SystemExit("Error: incompatible state checkpoint; expected version 3")
             model.load_state_dict(ckpt["model_state_dict"])
             resume_optimizer_state = ckpt["optimizer_state_dict"]

@@ -11,6 +11,7 @@ internal sealed class BenchmarkRunnerTests
     [TestCase("nn-placement-state", AiKind.NnPlacementState)]
     [TestCase("nn-mcts-placement-state", AiKind.NnMctsPlacementState)]
     [TestCase("nn-state", AiKind.NnState)]
+    [TestCase("nn-mcts-state", AiKind.NnMctsState)]
     public void ParsesStableAiNames(string name, AiKind expected)
     {
         Assert.That(RootCommandFactory.TryParseAiKind(name, out var actual), Is.True);
@@ -67,6 +68,52 @@ internal sealed class BenchmarkRunnerTests
         };
 
         Assert.That(options.Parallelism, Is.EqualTo(8));
+    }
+
+    [Test]
+    public void BenchmarkCompetitorMetadataResolvesPerPlayer()
+    {
+        var options = new BenchmarkOptions
+        {
+            NumberOfGames = 10,
+            Players = [AiKind.NnPlacementState, AiKind.NnPlacementState],
+            NnUrls = ["http://localhost:8000", "http://localhost:8001"],
+            PlayerLabels = ["challenger", "champion"],
+        };
+
+        Assert.That(BenchmarkRunner.ResolveNnUrls(options), Is.EqualTo(options.NnUrls));
+        Assert.That(BenchmarkRunner.ResolvePlayerLabels(options), Is.EqualTo(options.PlayerLabels));
+    }
+
+    [Test]
+    public void BenchmarkCompetitorMetadataRejectsMismatchedLengths()
+    {
+        var options = new BenchmarkOptions
+        {
+            NumberOfGames = 10,
+            Players = [AiKind.Nn, AiKind.Greedy],
+            NnUrls = ["http://localhost:8000"],
+        };
+
+        Assert.That(() => BenchmarkRunner.ResolveNnUrls(options), Throws.ArgumentException);
+    }
+
+    [Test]
+    public void EmptyCompetitorMetadataUsesLegacyDefaults()
+    {
+        var options = new BenchmarkOptions
+        {
+            NumberOfGames = 10,
+            Players = [AiKind.Nn, AiKind.Greedy],
+            NnUrl = "http://localhost:8123",
+            NnUrls = [],
+            PlayerLabels = [],
+        };
+
+        Assert.That(BenchmarkRunner.ResolveNnUrls(options),
+            Is.EqualTo(new[] { "http://localhost:8123", "http://localhost:8123" }));
+        Assert.That(BenchmarkRunner.ResolvePlayerLabels(options),
+            Is.EqualTo(new[] { "nn", "greedy" }));
     }
 
     private static CatanAction Unwrap(CoreAction action) => action.IsDeterministic

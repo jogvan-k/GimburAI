@@ -512,8 +512,8 @@ public partial class BoardSymmetryTests
         {
             var permuted = BoardSymmetry.PermuteState(stateStr, perm);
             var sections = permuted.Split('|');
-            Assert.That(sections.Length, Is.EqualTo(10),
-                $"Permuted state should have 10 sections for {perm.Label}");
+            Assert.That(sections.Length, Is.EqualTo(12),
+                $"Permuted state should have 12 sections for {perm.Label}");
         }
     }
 
@@ -576,8 +576,8 @@ public partial class BoardSymmetryTests
         {
             var permuted = BoardSymmetry.PermuteState(stateStr, perm);
             var sections = permuted.Split('|');
-            Assert.That(sections.Length, Is.EqualTo(10),
-                $"Permuted state should have 10 sections for {perm.Label}");
+            Assert.That(sections.Length, Is.EqualTo(12),
+                $"Permuted state should have 12 sections for {perm.Label}");
         }
     }
 
@@ -621,8 +621,7 @@ public partial class BoardSymmetryTests
         var config = GameConfig.Mini;
         var state = CreateTestState(config, playerCount: 2);
 
-        // Serialize the full human-readable state (all 11 sections).
-        // Section order: tiles[0]|ports[1]|robber[2]|playerStage[3]|longestLargest[4]|vertices[5]|edges[6]|resources[7]|knights[8]|devCards[9]|newDevCards[10]
+        // Serialize the full human-readable state (14 sections).
         var fullStr = state.SerializeHumanReadable();
         var fullSections = fullStr.Split('|');
 
@@ -635,28 +634,11 @@ public partial class BoardSymmetryTests
             var permBoard = BoardSymmetry.PermuteBoard(boardStr, perm);
             var permBoardSections = permBoard.Split('|');
 
-            // Permute state-only part (sections 2-10 → mapped to state-only sections 0-8).
-            var stateOnlyStr = string.Join('|',
-                fullSections[2], fullSections[3], fullSections[4],
-                fullSections[5], fullSections[6],
-                fullSections[7], fullSections[8], fullSections[9],
-                fullSections[10]);
+            var stateOnlyStr = string.Join('|', fullSections.Skip(2));
             var permState = BoardSymmetry.PermuteState(stateOnlyStr, perm);
             var permStateSections = permState.Split('|');
 
-            // Reassemble full permuted string in 11-section format.
-            var permFull = string.Join('|',
-                permBoardSections[0],   // tiles
-                permBoardSections[1],   // ports
-                permStateSections[0],   // robber
-                permStateSections[1],   // playerStage
-                permStateSections[2],   // longestLargest
-                permStateSections[3],   // vertices
-                permStateSections[4],   // edges
-                permStateSections[5],   // resources
-                permStateSections[6],   // knights
-                permStateSections[7],   // devCards
-                permStateSections[8]);  // newDevCards
+            var permFull = string.Join('|', permBoardSections.Concat(permStateSections));
 
             // This should deserialize without error.
             Assert.DoesNotThrow(() =>
@@ -682,26 +664,11 @@ public partial class BoardSymmetryTests
             var permBoard = BoardSymmetry.PermuteBoard(boardStr, perm);
             var permBoardSections = permBoard.Split('|');
 
-            var stateOnlyStr = string.Join('|',
-                fullSections[2], fullSections[3], fullSections[4],
-                fullSections[5], fullSections[6],
-                fullSections[7], fullSections[8], fullSections[9],
-                fullSections[10]);
+            var stateOnlyStr = string.Join('|', fullSections.Skip(2));
             var permState = BoardSymmetry.PermuteState(stateOnlyStr, perm);
             var permStateSections = permState.Split('|');
 
-            var permFull = string.Join('|',
-                permBoardSections[0],
-                permBoardSections[1],
-                permStateSections[0],
-                permStateSections[1],
-                permStateSections[2],
-                permStateSections[3],
-                permStateSections[4],
-                permStateSections[5],
-                permStateSections[6],
-                permStateSections[7],
-                permStateSections[8]);
+            var permFull = string.Join('|', permBoardSections.Concat(permStateSections));
 
             Assert.DoesNotThrow(() =>
             {

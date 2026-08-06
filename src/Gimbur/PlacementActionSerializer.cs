@@ -35,6 +35,9 @@ public sealed class PlacementActionSerializer
 
     public int VocabularySize => Vocabulary.Length;
 
+    /// <summary>Number of vertices, and therefore the placement model policy width.</summary>
+    public int StagePolicySize => Vocabulary.Max(entry => entry.Vertex) + 1;
+
     /// <summary>
     /// Stable string key identifying this serializer's underlying topology,
     /// suitable for use as a pool/dictionary key. Distinguishes the three
@@ -111,6 +114,34 @@ public sealed class PlacementActionSerializer
         {
             for (var i = 0; i < result.Length; i++)
                 result[i] = policy[legalVocabularyIndices[i]];
+        }
+
+        NormalizeOrUniform(result);
+        return result;
+    }
+
+    /// <summary>
+    /// Masks the fixed-width stage policy to legal vertex or direction indices.
+    /// Invalid or zero-mass policies produce a uniform legal policy.
+    /// </summary>
+    public double[] MaskAndNormalizeStage(
+        IReadOnlyList<double> policy,
+        IReadOnlyList<int> legalStageIndices)
+    {
+        var result = new double[legalStageIndices.Count];
+        if (result.Length == 0)
+            return result;
+
+        if (policy.Count == StagePolicySize
+            && policy.All(value => double.IsFinite(value) && value >= 0.0))
+        {
+            for (var i = 0; i < result.Length; i++)
+            {
+                var index = legalStageIndices[i];
+                if (index < 0 || index >= policy.Count)
+                    return Enumerable.Repeat(1.0 / result.Length, result.Length).ToArray();
+                result[i] = policy[index];
+            }
         }
 
         NormalizeOrUniform(result);

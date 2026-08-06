@@ -276,6 +276,11 @@ class StateTokenizer:
         # Knights: N blocks of 1.
         next_start = _rotate_blocks(next_start, 1)
         # Dev cards: N blocks of 5.
-        _rotate_blocks(next_start, 5)
+        next_start = _rotate_blocks(next_start, 5)
+
+        # New dev cards (5), resolution state (2), and remaining deck (5)
+        # are relative/global rather than absolute player blocks.
+        winner_pos = next_start + 5 + 2 + 5
+        chars[winner_pos] = _rotate_player_char(chars[winner_pos], rotation, n)
 
         return "".join(chars)

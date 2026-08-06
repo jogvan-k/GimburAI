@@ -71,6 +71,8 @@ internal record SimulationOptions
     public FileInfo? ExportPath { get; init; }
     public ExportFormat ExportFormat { get; init; } = ExportFormat.Jsonl;
     public ExportType ExportType { get; init; } = ExportType.GameState;
+    public bool GreedyPrior { get; init; }
+    public double GreedyPriorUniformMix { get; init; } = 0.25;
     public string Verbosity { get; init; } = "normal";
 
     /// <summary>
@@ -229,6 +231,9 @@ internal record StateRecord
     /// </summary>
     public required double[] Wins { get; init; }
 
+    /// <summary>Per-action MCTS diagnostics at this root.</summary>
+    public required List<StateActionRecord> Actions { get; init; }
+
     /// <summary>
     /// Whether the MCTS search fully resolved the tree via terminal propagation.
     /// When true, all root actions are Terminal and the win estimates are exact.
@@ -280,6 +285,17 @@ internal record StateRecord
     public int PriorResponsesOrphaned { get; set; }
 }
 
+/// <summary>Per-action diagnostics at a full-game MCTS root.</summary>
+internal record StateActionRecord
+{
+    public required string Action { get; init; }
+    public required double[] Wins { get; init; }
+    public int Visits { get; init; }
+    public double WinRate { get; init; }
+    public double? ModelPrior { get; init; }
+    public bool Selected { get; init; }
+}
+
 /// <summary>
 /// Per-action statistics at a placement-stage MCTS root.
 /// </summary>
@@ -309,6 +325,10 @@ internal record PlacementActionRecord
     /// NN probability aligned with this root action.
     /// </summary>
     public double? ModelPrior { get; init; }
+
+    /// <summary>Whether this action was selected for the played game.</summary>
+    public bool Selected { get; init; }
+
 }
 
 /// <summary>
@@ -584,8 +604,8 @@ internal class SimulationRunner
         var targetGames = checked((int)_options.NumberOfGames);
 
         // Create shared PriorClient when prior evaluation is enabled.
-        PriorClient? priorClient = null;
-        PriorClient? placementPriorClient = null;
+        IPriorClient? priorClient = null;
+        IPriorClient? placementPriorClient = null;
         if (_options.Prior)
         {
             var priorMode = SimulationRouting.PriorModeFor(_options.ExportType, placementPhase: true);
@@ -604,6 +624,11 @@ internal class SimulationRunner
                 // can starve the shared leaf queue.
                 priorClient = null;
             }
+        }
+        else if (_options.GreedyPrior)
+        {
+            priorClient = new GreedyPriorClient(_options.GreedyPriorUniformMix);
+            placementPriorClient = isCombinedExport ? priorClient : null;
         }
 
         try
@@ -734,9 +759,11 @@ internal class SimulationRunner
         finally
         {
             exportWriter?.Dispose();
-            priorClient?.Dispose();
-            if (!ReferenceEquals(placementPriorClient, priorClient))
-                placementPriorClient?.Dispose();
+            if (priorClient is IDisposable priorDisposable)
+                priorDisposable.Dispose();
+            if (!ReferenceEquals(placementPriorClient, priorClient)
+                && placementPriorClient is IDisposable placementDisposable)
+                placementDisposable.Dispose();
         }
 
         totalStopwatch.Stop();
@@ -919,6 +946,30 @@ internal class SimulationRunner
         return (wins, rate, stats.CompletedVisits);
     }
 
+    private static StateActionRecord CreateStateActionRecord(
+        Kjarni.MCTS.Types.MCTSState mctsRoot,
+        CoreAction action,
+        int actionIndex,
+        int playerIndex,
+        bool selected)
+    {
+        var (wins, winRate, visits) = GetActionWinData(mctsRoot, actionIndex, playerIndex);
+        var coreAction = UnwrapCoreAction(action);
+        return new StateActionRecord
+        {
+            Action = $"{coreAction.TypeTag}:{coreAction.Arg1}:{coreAction.Arg2}",
+            Wins = wins,
+            Visits = visits,
+            WinRate = winRate,
+            ModelPrior = mctsRoot.DensePriors is { } dense && actionIndex < dense.Value.Length
+                ? dense.Value[actionIndex]
+                : mctsRoot.Priors is { } priors && actionIndex < priors.Value.Length
+                    ? priors.Value[actionIndex]
+                    : null,
+            Selected = selected,
+        };
+    }
+
     private static double[]? ComputePlacementValueTarget(IReadOnlyList<PlacementActionRecord> actions)
     {
         var totalVisits = actions.Sum(action => action.Visits);
@@ -946,7 +997,8 @@ internal class SimulationRunner
         CoreAction[] actions,
         Kjarni.MCTS.Types.MCTSState mctsRoot,
         Kjarni.MCTS.Types.LogInfo logInfo,
-        PlacementActionSerializer actionSerializer)
+        PlacementActionSerializer actionSerializer,
+        int selectedActionIndex = -1)
     {
         var playerIndex = (int)state.PlayerTurn;
         var stageActions = new List<PlacementActionRecord>(actions.Length);
@@ -973,10 +1025,13 @@ internal class SimulationRunner
                 RoadEdge = roadEdge,
                 Wins = wins,
                 Visits = visits,
-                WinRate = winRate,
-                ModelPrior = mctsRoot.Priors is { } priors && actionIndex < priors.Value.Length
-                    ? priors.Value[actionIndex]
-                    : null,
+                 WinRate = winRate,
+                 ModelPrior = mctsRoot.DensePriors is { } dense && actionIndex < dense.Value.Length
+                    ? dense.Value[actionIndex]
+                    : mctsRoot.Priors is { } priors && actionIndex < priors.Value.Length
+                         ? priors.Value[actionIndex]
+                         : null,
+                Selected = actionIndex == selectedActionIndex,
             });
         }
 
@@ -1008,7 +1063,8 @@ internal class SimulationRunner
         CatanState state,
         string serialized,
         Kjarni.MCTS.Types.MCTSState mctsRoot,
-        Kjarni.MCTS.Types.LogInfo logInfo)
+        Kjarni.MCTS.Types.LogInfo logInfo,
+        int selectedActionIndex)
     {
         var winCounts = mctsRoot.WinCounts is { Length: > 0 }
             ? (double[])mctsRoot.WinCounts.Clone()
@@ -1029,6 +1085,10 @@ internal class SimulationRunner
             ElapsedMs = (int)logInfo.elapsedTime.TotalMilliseconds,
             WinRate = winRate,
             Wins = winCounts,
+            Actions = state.Actions()
+                .Select((action, index) => CreateStateActionRecord(
+                    mctsRoot, action, index, playerIndex, index == selectedActionIndex))
+                .ToList(),
             ReachedTerminal = logInfo.reachedTerminal,
             PriorNodesRequested = logInfo.priorNodesRequested,
             PriorResponsesOrphaned = logInfo.priorResponsesOrphaned,
@@ -1045,13 +1105,51 @@ internal class SimulationRunner
         };
     }
 
+    private static StateRecord CreateUnsearchedStateRecord(
+        CatanState state,
+        CoreAction? forcedAction = null)
+    {
+        var wins = new double[state.PlayerCount];
+        if (state.WinnerPlayer > 0)
+            wins[state.WinnerPlayer - 1] = 1.0;
+        else if (forcedAction is { IsStochastic: true })
+        {
+            var stochastic = (CatanStochasticAction)((CoreAction.Stochastic)forcedAction).Item;
+            var outcomes = stochastic.Outcomes();
+            if (outcomes.Length > 0 && outcomes.All(outcome => ((CatanState)outcome.Item2).WinnerPlayer > 0))
+            {
+                var totalWeight = outcomes.Sum(outcome => outcome.Item1);
+                foreach (var outcome in outcomes)
+                {
+                    var winner = ((CatanState)outcome.Item2).WinnerPlayer;
+                    wins[winner - 1] += outcome.Item1 / (double)totalWeight;
+                }
+            }
+        }
+        var resolved = wins.Sum() > 0.0;
+        return new StateRecord
+        {
+            PlayerTurn = state.CurrentPlayer,
+            TurnNumber = state.TurnNumber,
+            Stage = StateToken.EncodeTurnStage(state.Stage).ToString(),
+            SerializedState = state.SerializeStateOnly(),
+            Scores = state.Scores(),
+            Simulations = 0,
+            ElapsedMs = 0,
+            WinRate = state.WinnerPlayer == state.CurrentPlayer ? 1.0 : 0.0,
+            Wins = wins,
+            Actions = [],
+            ReachedTerminal = resolved,
+        };
+    }
+
     private GameResult RunSingleGame(
         GameConfig config,
         int playerCount,
         Random rng,
         int gameSeed,
         int gameNumber,
-        PriorClient? priorClient)
+        IPriorClient? priorClient)
         => RunGame(config, playerCount, rng, gameSeed, gameNumber, priorClient, null, null);
 
     private CombinedGameResult RunSingleCombinedGame(
@@ -1060,8 +1158,8 @@ internal class SimulationRunner
         Random rng,
         int gameSeed,
         int gameNumber,
-        PriorClient? placementPriorClient,
-        PriorClient? statePriorClient)
+        IPriorClient? placementPriorClient,
+        IPriorClient? statePriorClient)
     {
         var placementStates = new List<PlacementStateRecord>();
         var game = RunGame(config, playerCount, rng, gameSeed, gameNumber, statePriorClient,
@@ -1081,8 +1179,8 @@ internal class SimulationRunner
         Random rng,
         int gameSeed,
         int gameNumber,
-        PriorClient? statePriorClient,
-        PriorClient? placementPriorClient,
+        IPriorClient? statePriorClient,
+        IPriorClient? placementPriorClient,
         List<PlacementStateRecord>? placementStates)
     {
         var state = new CatanState(config, playerCount, rng);
@@ -1091,6 +1189,8 @@ internal class SimulationRunner
             ? Microsoft.FSharp.Core.FSharpOption<Microsoft.FSharp.Core.FSharpFunc<Kjarni.ICoreState, bool>>.Some(
                 Microsoft.FSharp.Core.FuncConvert.FromFunc<Kjarni.ICoreState, bool>(IsPlacementLeafBoundary))
             : null;
+        Microsoft.FSharp.Core.FSharpOption<IPriorClient>? PriorOption(IPriorClient? client) =>
+            client is null ? null : Microsoft.FSharp.Core.FSharpOption<IPriorClient>.Some(client);
 
         Kjarni.MCTSConfig CreateMctsConfig(bool placement) => new(
             searchTime.NewMilliSeconds(combined
@@ -1100,7 +1200,7 @@ internal class SimulationRunner
             _options.MaxRolloutDepth,
             System.Math.Sqrt(2.0),
             _options.ActionRolloutLimit,
-            placement ? placementPriorClient : combined ? null : statePriorClient,
+            PriorOption(placement ? placementPriorClient : statePriorClient),
             _options.Prior && _options.ExportType != ExportType.InitialPlacement
                 ? CatanStateLeafEvaluatorPool.Get(_options.NnUrl)
                 : null,
@@ -1146,6 +1246,8 @@ internal class SimulationRunner
                 // A forced transition cannot benefit from search and used to consume
                 // the full per-decision MCTS budget. It is also not a useful policy
                 // training root because no action choice exists.
+                if (!isPlacementPhase)
+                    states.Add(CreateUnsearchedStateRecord(state, actions[0]));
                 state = (CatanState)UnwrapCoreAction(actions[0]).DoCoreAction();
                 mctsRoot = AdvanceMctsRoot(mctsRoot, 0, (ICoreState)state);
             }
@@ -1171,14 +1273,19 @@ internal class SimulationRunner
                 var logInfo = mcts.LatestLogInfo();
                 evaluationDiagnostics.Add(logInfo);
 
-                states.Add(CreateStateRecord(state, serialized, mctsRoot, logInfo));
+                states.Add(CreateStateRecord(
+                    state,
+                    serialized,
+                    mctsRoot,
+                    logInfo,
+                    bestPath.IsEmpty ? -1 : bestPath.Head));
 
                 if (isPlacementPhase
                     && state.Stage is TurnStage.PlaceFirstSettlement or TurnStage.PlaceFirstRoad
                         or TurnStage.PlaceSecondSettlement or TurnStage.PlaceSecondRoad)
                 {
                     placementStates!.Add(CreatePlacementStateRecord(
-                        state, actions, mctsRoot, logInfo, placementActionSerializer!));
+                        state, actions, mctsRoot, logInfo, placementActionSerializer!, bestPath.Head));
                 }
 
                 // Apply the best action from MCTS and advance the tree.
@@ -1206,6 +1313,9 @@ internal class SimulationRunner
                 break;
             }
         }
+
+        if (state.WinnerPlayer != 0)
+            states.Add(CreateUnsearchedStateRecord(state));
 
         // Aggregate per-depth prior stats across all MCTS decisions.
         Dictionary<int, int>? priorActionsPerDepth = null;
@@ -1260,11 +1370,14 @@ internal class SimulationRunner
         Random rng,
         int gameSeed,
         int gameNumber,
-        PriorClient? priorClient)
+        IPriorClient? priorClient)
     {
         var state = new CatanState(config, playerCount, rng);
         var leafBoundary = Microsoft.FSharp.Core.FSharpOption<Microsoft.FSharp.Core.FSharpFunc<Kjarni.ICoreState, bool>>.Some(
             Microsoft.FSharp.Core.FuncConvert.FromFunc<Kjarni.ICoreState, bool>(IsPlacementLeafBoundary));
+        var priorOption = priorClient is null
+            ? null
+            : Microsoft.FSharp.Core.FSharpOption<IPriorClient>.Some(priorClient);
 
         var mctsConfig = new Kjarni.MCTSConfig(
             searchTime.NewMilliSeconds(_options.SearchTimeMs),
@@ -1272,7 +1385,7 @@ internal class SimulationRunner
             _options.MaxRolloutDepth,
             System.Math.Sqrt(2.0),
             _options.ActionRolloutLimit,
-            priorClient,
+            priorOption,
             null,
             leafBoundary,
             _options.MaxPriorDepth,
@@ -1312,7 +1425,7 @@ internal class SimulationRunner
                 var logInfo = mcts.LatestLogInfo();
                 evaluationDiagnostics.Add(logInfo);
                 placementStates.Add(CreatePlacementStateRecord(
-                    state, actions, mctsRoot, logInfo, actionSerializer));
+                    state, actions, mctsRoot, logInfo, actionSerializer, bestPath.Head));
 
                 // Apply the best action and advance.
                 if (!bestPath.IsEmpty && bestPath.Head < actions.Length)
@@ -1631,9 +1744,18 @@ internal class SimulationRunner
                 s.Scores,
                 s.Simulations,
                 s.ElapsedMs,
-                s.WinRate,
-                s.Wins,
-                s.ReachedTerminal,
+                 s.WinRate,
+                 s.Wins,
+                 actions = s.Actions.Select(a => new
+                 {
+                     a.Action,
+                     a.Wins,
+                     a.Visits,
+                     a.WinRate,
+                     a.ModelPrior,
+                     a.Selected,
+                 }).ToArray(),
+                 s.ReachedTerminal,
                 s.PriorNodesRequested,
                 s.PriorActionsApplied,
                 s.PriorActionsRequested,
@@ -1710,9 +1832,10 @@ internal class SimulationRunner
                     a.PolicyIndex,
                     a.Wins,
                     a.Visits,
-                    a.WinRate,
-                    a.ModelPrior,
-                    permutations = symmetryPerms.Length > 0
+                     a.WinRate,
+                     a.ModelPrior,
+                     a.Selected,
+                     permutations = symmetryPerms.Length > 0
                         ? symmetryPerms.Select(p => TransformPlacementPolicyIndex(s, a, p, actionSerializer)).ToArray()
                         : Array.Empty<int>(),
                 }).ToArray(),
@@ -1783,9 +1906,10 @@ internal class SimulationRunner
                     a.PolicyIndex,
                     a.Wins,
                     a.Visits,
-                    a.WinRate,
-                    a.ModelPrior,
-                    permutations = symmetryPerms.Select(p =>
+                     a.WinRate,
+                     a.ModelPrior,
+                     a.Selected,
+                     permutations = symmetryPerms.Select(p =>
                         TransformPlacementPolicyIndex(s, a, p, actionSerializer)).ToArray(),
                 }).ToArray(),
                 permutations = symmetryPerms.Select(p =>
@@ -1800,9 +1924,18 @@ internal class SimulationRunner
                 s.Scores,
                 s.Simulations,
                 s.ElapsedMs,
-                s.WinRate,
-                s.Wins,
-                s.ReachedTerminal,
+                 s.WinRate,
+                 s.Wins,
+                 actions = s.Actions.Select(a => new
+                 {
+                     a.Action,
+                     a.Wins,
+                     a.Visits,
+                     a.WinRate,
+                     a.ModelPrior,
+                     a.Selected,
+                 }).ToArray(),
+                 s.ReachedTerminal,
                 s.PriorNodesRequested,
                 s.PriorActionsApplied,
                 s.PriorActionsRequested,

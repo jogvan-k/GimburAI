@@ -176,7 +176,6 @@ internal static class RootCommandFactory
             Description = "Base URL of the NN inference server (e.g. http://localhost:8000)",
             DefaultValueFactory = _ => "http://localhost:8000",
         };
-
         var serverUrlOption = new Option<string>("--server-url")
         {
             Description = "Base URL of the Gimbur.Server (e.g. http://localhost:5123)",
@@ -294,6 +293,8 @@ internal static class RootCommandFactory
             var maxDiscardRate = 0.05;
             var minimumAttemptsForDiscardRate = 50;
             var maxConsecutiveDiscards = 5;
+            var greedyPrior = false;
+            var greedyPriorUniformMix = 0.25;
 
             // ── Apply config file defaults for simulate ──────────────
             if (cfg.ValueKind == JsonValueKind.Object)
@@ -368,6 +369,8 @@ internal static class RootCommandFactory
                 maxDiscardRate = ConfigLoader.GetDouble(cfg, "maxDiscardRate") ?? maxDiscardRate;
                 minimumAttemptsForDiscardRate = ConfigLoader.GetInt(cfg, "minimumAttemptsForDiscardRate") ?? minimumAttemptsForDiscardRate;
                 maxConsecutiveDiscards = ConfigLoader.GetInt(cfg, "maxConsecutiveDiscards") ?? maxConsecutiveDiscards;
+                greedyPrior = ConfigLoader.GetBool(cfg, "greedyPrior") ?? greedyPrior;
+                greedyPriorUniformMix = ConfigLoader.GetDouble(cfg, "greedyPriorUniformMix") ?? greedyPriorUniformMix;
                 if (!WasProvided(parseResult, "--verbosity", "-v") && !WasProvided(parseResult, "-q") && !WasProvided(parseResult, "--verbose"))
                     verbosity = ConfigLoader.GetString(cfg, "verbosity") ?? verbosity;
             }
@@ -413,6 +416,8 @@ internal static class RootCommandFactory
                 MaxDiscardRate = maxDiscardRate,
                 MinimumAttemptsForDiscardRate = minimumAttemptsForDiscardRate,
                 MaxConsecutiveDiscards = maxConsecutiveDiscards,
+                GreedyPrior = greedyPrior,
+                GreedyPriorUniformMix = greedyPriorUniformMix,
             };
 
             var runner = new SimulationRunner(options);
@@ -457,7 +462,7 @@ internal static class RootCommandFactory
         var playersOption = new Option<string[]>("--ai")
         {
             Description = "AI for each player seat (e.g. --ai random greedy mcts nn). " +
-                          "Available: random, greedy, mcts, nn, nn-placement, nn-placement-random, nn-state, nn-state-random, nn-placement-state, server-mcts, server-mcts-nn, nn-mcts-placement, nn-mcts-placement-random, nn-mcts-placement-state, mcts-placement, mcts-placement-random",
+                          "Available: random, greedy, mcts, nn, nn-placement, nn-placement-random, nn-state, nn-state-random, nn-placement-state, server-mcts, server-mcts-nn, nn-mcts-placement, nn-mcts-placement-random, nn-mcts-state, nn-mcts-placement-state, mcts-placement, mcts-placement-random",
             AllowMultipleArgumentsPerToken = true,
         };
         playersOption.DefaultValueFactory = _ => new[] { "random", "greedy" };
@@ -490,6 +495,16 @@ internal static class RootCommandFactory
             Description = "Base URL of the NN inference server (e.g. http://localhost:8000)",
             DefaultValueFactory = _ => "http://localhost:8000",
         };
+        var nnUrlsOption = new Option<string[]?>("--nn-urls")
+        {
+            Description = "NN inference URL for each configured AI",
+            AllowMultipleArgumentsPerToken = true,
+        };
+        var playerLabelsOption = new Option<string[]?>("--player-labels")
+        {
+            Description = "Unique result label for each configured AI",
+            AllowMultipleArgumentsPerToken = true,
+        };
 
         var serverUrlOption = new Option<string>("--server-url")
         {
@@ -518,6 +533,8 @@ internal static class RootCommandFactory
             maxSimulationsOption,
             maxRolloutDepthOption,
             nnUrlOption,
+            nnUrlsOption,
+            playerLabelsOption,
             serverUrlOption,
             serverPriorModeOption,
             serverMaxPriorDepthOption,
@@ -542,6 +559,8 @@ internal static class RootCommandFactory
             int maxSimulations = parseResult.GetValue(maxSimulationsOption);
             int maxRolloutDepth = parseResult.GetValue(maxRolloutDepthOption);
             string nnUrl = parseResult.GetValue(nnUrlOption)!;
+            string[]? nnUrls = parseResult.GetValue(nnUrlsOption);
+            string[]? playerLabels = parseResult.GetValue(playerLabelsOption);
             string serverUrl = parseResult.GetValue(serverUrlOption)!;
             string serverPriorMode = parseResult.GetValue(serverPriorModeOption)!;
             int? serverMaxPriorDepth = parseResult.GetValue(serverMaxPriorDepthOption);
@@ -577,6 +596,10 @@ internal static class RootCommandFactory
                     maxRolloutDepth = ConfigLoader.GetInt(cfg, "maxRolloutDepth") ?? maxRolloutDepth;
                 if (!WasProvided(parseResult, "--nn-url"))
                     nnUrl = ConfigLoader.GetString(cfg, "nnUrl") ?? nnUrl;
+                if (!WasProvided(parseResult, "--nn-urls") && !WasProvided(parseResult, "--nn-url"))
+                    nnUrls = ConfigLoader.GetStringArray(cfg, "nnUrls") ?? nnUrls;
+                if (!WasProvided(parseResult, "--player-labels"))
+                    playerLabels = ConfigLoader.GetStringArray(cfg, "playerLabels") ?? playerLabels;
                 if (!WasProvided(parseResult, "--server-url"))
                     serverUrl = ConfigLoader.GetString(cfg, "serverUrl") ?? serverUrl;
                 if (!WasProvided(parseResult, "--server-prior-mode"))
@@ -617,11 +640,24 @@ internal static class RootCommandFactory
                 MaxSimulations = maxSimulations,
                 MaxRolloutDepth = maxRolloutDepth,
                 NnUrl = nnUrl,
+                NnUrls = nnUrls,
+                PlayerLabels = playerLabels,
                 ServerUrl = serverUrl,
                 ServerPriorMode = serverPriorMode,
                 ServerMaxPriorDepth = serverMaxPriorDepth,
                 Parallelism = parallelism,
             };
+
+            try
+            {
+                BenchmarkRunner.ResolveNnUrls(options);
+                BenchmarkRunner.ResolvePlayerLabels(options);
+            }
+            catch (ArgumentException ex)
+            {
+                Console.Error.WriteLine(ex.Message);
+                return;
+            }
 
             var runner = new BenchmarkRunner(options);
             runner.Run();

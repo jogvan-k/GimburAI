@@ -268,6 +268,18 @@ type PUCTActionEvaluatorTests() =
         let expectedExploration1 = sqrt 2. * 0.3 * sqrt 20.
         score1 |> should (equalWithin 0.001) expectedExploration1
 
+    [<Test>]
+    member _.ExplicitPrior_BreaksInitialSelectionTie() =
+        let root = MCTSState(termNode p1 0)
+        root.Actions <-
+            [| Unexplored(Deterministic(action(termNode p1 0, termNode p2 1)))
+               Unexplored(Deterministic(action(termNode p1 0, termNode p2 2))) |]
+        root.Priors <- Some [| 0.875; 0.125 |]
+
+        match select (sqrt 2.) root with
+        | Candidate (_, index) -> index |> should equal 0
+        | result -> Assert.Fail $"Expected Candidate, got {result}"
+
 // ────────────────────────────────────────────────────────────────
 // explorationRate — PUCT formula
 // ────────────────────────────────────────────────────────────────

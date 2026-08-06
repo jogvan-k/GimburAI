@@ -591,8 +591,8 @@ After each backpropagation and terminal propagation step, the search loop calls
 completed prior responses. For each response:
 
 1. Look up the corresponding parent `MCTSState` by its ID.
-2. For placement, apply the configured policy mapping. Stage-policy mapping is
-   pending the follow-up PriorClient change.
+2. For placement, mask the fixed-width policy to legal vertex or direction
+   indices and normalize it in node-action order.
 3. Store the prior on the parent node.
 
 If no responses are available, `collectPriors` returns immediately with no
@@ -639,7 +639,7 @@ policy is stored on the parent `MCTSState` node and used by `actionEvaluator`
 
 #### Placement Stage Priors
 
-The intended follow-up maps legal vertex logits at settlement nodes and legal
+The placement prior client maps legal vertex logits at settlement nodes and legal
 direction logits at road nodes, masking and normalizing each stage independently.
 
 ### Prior Data Format
@@ -677,8 +677,9 @@ direction logits at road nodes, masking and normalizing each stage independently
 ```
 
 - `id` — matches the request ID.
-- `priors` — the direct stage-policy shape is 24, 32, or 54 for mini, small, or
-  standard maps. Placement PriorClient support for this shape is pending.
+- `priors` — the direct fixed-width stage-policy shape is 24, 32, or 54 for mini,
+  small, or standard maps. Settlement stages index vertices; road stages use the
+  first six entries in `N, NE, SE, S, SW, NW` order.
 - `player_win_probabilities` — normalized per-player values from the value head.
 
 ### Server Endpoints

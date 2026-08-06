@@ -105,9 +105,10 @@ def _state_token_size(t: int, v: int, e: int, p: int, n: int) -> int:
 
     Sections: tiles (3*T) + ports (P) + robber (1) + currentTurn (2) +
     longestLargest (2) + vertices (2*V) + edges (E) + resources (5*N) +
-    knights (N) + devCards (5*N) + newDevCards (5) + devCardResolution (2).
+    knights (N) + devCards (5*N) + newDevCards (5) + devCardResolution (2) +
+    remainingDevDeck (5) + winner (1).
     """
-    return (3 * t + 2 * v + e + p + 5) + 11 * n + 5 + 2
+    return (3 * t + 2 * v + e + p + 5) + 11 * n + 5 + 2 + 5 + 1
 
 
 def _placement_token_size(t: int, v: int, e: int, p: int) -> int:

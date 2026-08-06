@@ -242,6 +242,62 @@ public class PlacementSerializationTests
     }
 
     [Test]
+    public void StagePolicy_MasksSettlementVerticesInActionOrder()
+    {
+        var serializer = PlacementActionSerializer.Mini;
+        var policy = new double[serializer.StagePolicySize];
+        policy[7] = 3;
+        policy[2] = 1;
+
+        Assert.That(
+            serializer.MaskAndNormalizeStage(policy, new[] { 7, 2 }),
+            Is.EqualTo(new[] { 0.75, 0.25 }).Within(1e-12));
+    }
+
+    [Test]
+    public void StagePolicy_MasksRoadDirectionsInActionOrder()
+    {
+        var serializer = PlacementActionSerializer.Mini;
+        var policy = new double[serializer.StagePolicySize];
+        policy[5] = 2;
+        policy[1] = 6;
+
+        Assert.That(
+            serializer.MaskAndNormalizeStage(policy, new[] { 5, 1 }),
+            Is.EqualTo(new[] { 0.25, 0.75 }).Within(1e-12));
+    }
+
+    [Test]
+    public void PlacementValues_RestoreCanonicalActingPlayerToAbsoluteOrder()
+    {
+        Assert.That(
+            PriorClient.RestoreAbsolutePlayerOrder(new[] { 0.8, 0.2 }, actingPlayer: 2),
+            Is.EqualTo(new[] { 0.2, 0.8 }).Within(1e-12));
+        Assert.That(
+            PriorClient.RestoreAbsolutePlayerOrder(new[] { 0.6, 0.3, 0.1 }, actingPlayer: 3),
+            Is.EqualTo(new[] { 0.3, 0.1, 0.6 }).Within(1e-12));
+    }
+
+    [TestCaseSource(nameof(MalformedStagePolicies))]
+    public void StagePolicy_MalformedInputFallsBackToUniform(double[] policy)
+    {
+        Assert.That(
+            PlacementActionSerializer.Mini.MaskAndNormalizeStage(policy, new[] { 1, 3 }),
+            Is.EqualTo(new[] { 0.5, 0.5 }).Within(1e-12));
+    }
+
+    private static IEnumerable<double[]> MalformedStagePolicies()
+    {
+        yield return new double[PlacementActionSerializer.Mini.StagePolicySize - 1];
+        var negative = new double[PlacementActionSerializer.Mini.StagePolicySize];
+        negative[0] = -1;
+        yield return negative;
+        var nonFinite = new double[PlacementActionSerializer.Mini.StagePolicySize];
+        nonFinite[0] = double.NaN;
+        yield return nonFinite;
+    }
+
+    [Test]
     public void PeakVertices_UseN_SW_SE_Directions()
     {
         var validDirs = new HashSet<string> { "N", "SW", "SE" };

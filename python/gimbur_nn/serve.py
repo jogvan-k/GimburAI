@@ -73,7 +73,7 @@ def _load_checkpoint(path: Path, device: torch.device, architecture: str) -> dic
         not isinstance(raw, dict)
         or "model_state_dict" not in raw
         or raw.get("architecture") != architecture
-        or (architecture == "state_player_value_v1" and raw.get("checkpoint_version") != 3)
+        or (architecture == "state_player_value_v1" and raw.get("checkpoint_version") != 4)
     ):
         raise ValueError(
             f"incompatible checkpoint; expected architecture={architecture!r}"

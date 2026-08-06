@@ -79,7 +79,13 @@ let rec recSelect (explorationConstant: float) (s: MCTSState, path: SelectionPat
             Blocked
         else
             let selectedAction =
-                available |> Array.maxBy (fun (i, a) -> actionEvaluator explorationConstant s i a)
+                available
+                |> Array.maxBy (fun (i, a) ->
+                    let prior =
+                        match s.Priors with
+                        | Some priors -> priors.[i]
+                        | None -> 1. / float s.Actions.Length
+                    actionEvaluator explorationConstant s i a, prior)
             match snd selectedAction with
             | Unexplored _ -> Candidate(path, fst selectedAction)
             | DeterministicAction ds ->
@@ -743,7 +749,7 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
     // guidance: it steers the very first action selection and every
     // subsequent UCB comparison.  Without this wait the search typically
     // finishes all rollouts before the HTTP round-trip completes.
-    let rootPriorWaitTimeoutMs = 50L
+    let rootPriorWaitTimeoutMs = 250L
     requestPrior root 0
     if priorClient.IsSome && root.Priors.IsNone then
         let waitStart = timer.ElapsedMilliseconds

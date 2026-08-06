@@ -129,6 +129,15 @@ internal static class CatanStateSerializer
             ? StateToken.EncodeTurnStage(state._postDevCardStage.Value)
             : '_');
 
+        // Section 13: Remaining development card deck (5 chars)
+        sb.Append('|');
+        for (var card = 0; card < CatanState.DevCardCount; card++)
+            sb.Append(CrockfordBase32.Encode(state._devDeckRemaining[card]));
+
+        // Section 14: Winner player, or none
+        sb.Append('|');
+        sb.Append(StateToken.EncodePlayer(state.WinnerPlayer));
+
         return sb.ToString();
     }
 
@@ -142,12 +151,12 @@ internal static class CatanStateSerializer
             throw new ArgumentException("Serialized state cannot be empty.", nameof(serialized));
         }
 
-        // Format: tiles|ports|robber|currentTurn|longestArmy|vertices|edges|resources|knights|devCards|newDevCards[|devCardResolution]
+        // Format: tiles|ports|robber|currentTurn|longestArmy|vertices|edges|resources|knights|devCards|newDevCards|devCardResolution|devDeck|winner
         var sections = serialized.Split('|');
-        if (sections.Length is not (11 or 12))
+        if (sections.Length != 14)
         {
             throw new InvalidOperationException(
-                $"Serialized state has {sections.Length} sections, expected 11 or 12.");
+                $"Serialized state has {sections.Length} sections, expected 14.");
         }
 
         var topology = config.Map.Topology;
@@ -307,36 +316,19 @@ internal static class CatanStateSerializer
         var turnNumber = stage is TurnStage.PreRoll or TurnStage.ChooseRobberLocation or TurnStage.ChooseRobberVictim or TurnStage.BuildTrade ? 1 : 0;
 
         var deck = new int[CatanState.DevCardCount];
-        foreach (var pair in config.DevCardCounts)
-        {
-            deck[(int)pair.Key] = pair.Value;
-        }
-
-        for (var player = 1; player <= playerCount; player++)
-        {
-            for (var card = 0; card < CatanState.DevCardCount; card++)
-            {
-                deck[card] -= devCards[player, card];
-            }
-        }
-
+        if (sections[12].Length != CatanState.DevCardCount)
+            throw new InvalidOperationException("Development deck section has the wrong length.");
         for (var card = 0; card < CatanState.DevCardCount; card++)
-        {
-            if (deck[card] < 0)
-            {
-                throw new InvalidOperationException("Serialized dev card counts exceed deck size.");
-            }
-        }
+            deck[card] = CrockfordBase32.Decode(sections[12][card]);
+
+        var winnerPlayer = StateToken.DecodePlayer(sections[13][0]);
 
         // Section 12: Dev Card Resolution State (optional, 2 chars)
         var pendingRoadBuildingPlacements = new int[playerCount + 1];
         TurnStage? postDevCardStage = null;
-        if (sections.Length >= 12)
-        {
-            var roadBuildingSection = sections[11];
-            pendingRoadBuildingPlacements[currentPlayer] = CrockfordBase32.Decode(roadBuildingSection[0]);
-            postDevCardStage = roadBuildingSection[1] == '_' ? null : StateToken.DecodeTurnStage(roadBuildingSection[1]);
-        }
+        var roadBuildingSection = sections[11];
+        pendingRoadBuildingPlacements[currentPlayer] = CrockfordBase32.Decode(roadBuildingSection[0]);
+        postDevCardStage = roadBuildingSection[1] == '_' ? null : StateToken.DecodeTurnStage(roadBuildingSection[1]);
 
         var state = new CatanState(
             config,
@@ -348,7 +340,7 @@ internal static class CatanStateSerializer
             pendingSettlement,
             longestRoadOwner,
             largestArmyOwner,
-            winnerPlayer: 0,
+            winnerPlayer,
             resources,
             knightsPlayed,
             devCards,
@@ -358,7 +350,6 @@ internal static class CatanStateSerializer
             postDevCardStage,
             vertexPlacementRound: InferPlacementRounds(topology.VertexCount, vertices, stage));
 
-        state.RefreshVictory();
         return state;
     }
 
@@ -491,12 +482,18 @@ internal static class CatanStateSerializer
         }
 
         // Section 12: Dev Card Resolution State — 2 chars
-        if (pos < compact.Length)
-        {
-            sb.Append('|');
+        sb.Append('|');
+        sb.Append(compact[pos++]);
+        sb.Append(compact[pos++]);
+
+        // Section 13: Remaining development card deck — 5 chars
+        sb.Append('|');
+        for (var i = 0; i < CatanState.DevCardCount; i++)
             sb.Append(compact[pos++]);
-            sb.Append(compact[pos++]);
-        }
+
+        // Section 14: Winner player — 1 char
+        sb.Append('|');
+        sb.Append(compact[pos++]);
 
         return DeserializeHumanReadable(config, playerCount, sb.ToString());
     }
@@ -543,8 +540,8 @@ internal static class CatanStateSerializer
         // Capacity: tokens + 8 section '|' separators + player '/' separators
         var capacity = 1 + 2 + 2 + (topology.VertexCount * 2) + topology.EdgeCount
                        + (5 * playerCount) + playerCount + (5 * playerCount)
-                       + CatanState.NewDevCardSerializedCount
-                       + 8 + (3 * (playerCount - 1));
+                       + CatanState.NewDevCardSerializedCount + 2 + CatanState.DevCardCount + 1
+                       + 11 + (3 * (playerCount - 1));
         var sb = new StringBuilder(capacity);
 
         // Section 3: Robber
@@ -642,6 +639,15 @@ internal static class CatanStateSerializer
         sb.Append(state._postDevCardStage.HasValue
             ? StateToken.EncodeTurnStage(state._postDevCardStage.Value)
             : '_');
+
+        // Section 13: Remaining development card deck
+        sb.Append('|');
+        for (var card = 0; card < CatanState.DevCardCount; card++)
+            sb.Append(CrockfordBase32.Encode(state._devDeckRemaining[card]));
+
+        // Section 14: Winner player
+        sb.Append('|');
+        sb.Append(StateToken.EncodePlayer(state.WinnerPlayer));
         return sb.ToString();
     }
 

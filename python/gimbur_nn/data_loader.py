@@ -343,11 +343,15 @@ def _process_game(
         board_variants = [board_serialized, *board_permutations]
         state_variants = [state_serialized, *state_permutations]
 
-        weight = _scheduled_mcts_value_weight(
-            state_entry["turnNumber"],
-            game.get("turns", 0),
-            mcts_value_weight_start,
-            mcts_value_weight_end,
+        weight = (
+            1.0
+            if state_entry.get("reachedTerminal", False)
+            else _scheduled_mcts_value_weight(
+                state_entry["turnNumber"],
+                game.get("turns", 0),
+                mcts_value_weight_start,
+                mcts_value_weight_end,
+            )
         )
         target = _value_target(wins, game.get("winner"), n_players, weight)
         if target is None:
@@ -494,7 +498,13 @@ def _process_placement_game(
             continue
         visits = [max(0, int(action.get("visits", 0))) for action in actions]
         total_visits = sum(visits)
-        if target == "combined" and total_visits == 0:
+        model_priors = [action.get("modelPrior") for action in actions]
+        bootstrap_targets = [prior == 1 for prior in model_priors]
+        bootstrap_policy = (
+            sum(bootstrap_targets) == 1
+            and all(prior in (0, 1) for prior in model_priors)
+        )
+        if target == "combined" and total_visits == 0 and not bootstrap_policy:
             continue
         weighted_value = torch.zeros(player_count, dtype=torch.float32)
         value_weight = 0
@@ -522,7 +532,7 @@ def _process_placement_game(
 
             policy = torch.zeros(tokenizer.policy_size, dtype=torch.float32)
             legal_mask = torch.zeros(tokenizer.policy_size, dtype=torch.bool)
-            for action_entry, visit_count in zip(actions, visits):
+            for action_position, (action_entry, visit_count) in enumerate(zip(actions, visits)):
                 action_idx = int(
                     action_entry["policyIndex"]
                     if variant_idx == 0
@@ -537,7 +547,9 @@ def _process_placement_game(
                         ) from exc
                 elif not 0 <= action_idx < 6:
                     raise ValueError(f"policy index {action_idx} is invalid for stage {stage}")
-                policy[action_idx] += visit_count / total_visits
+                policy[action_idx] += (
+                    1.0 if bootstrap_targets[action_position] else 0.0
+                ) if bootstrap_policy else visit_count / total_visits
                 legal_mask[action_idx] = True
             if policy_target_temperature != 1.0:
                 positive = policy > 0

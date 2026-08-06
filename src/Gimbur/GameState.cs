@@ -15,7 +15,7 @@ public sealed class CatanState : ICoreState
     internal readonly int[,] _resources;
     internal readonly int[] _knightsPlayed;
     internal readonly int[,] _devCards;
-    private readonly int[] _devDeckRemaining;
+    internal readonly int[] _devDeckRemaining;
     internal readonly int[] _newDevCardsThisTurn;
     internal readonly int[] _pendingRoadBuildingPlacements;
     internal TurnStage? _postDevCardStage;

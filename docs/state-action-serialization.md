@@ -41,7 +41,7 @@ These alphabets apply to the **state** tokenizer (Parts I and II). Placement act
 
 ## Serialization Layout
 
-Tokens are emitted in the order below. All counts are fixed-length. Major sections are separated by `|`. Within per-player sections (resources, knights, dev cards) individual players are separated by `/`. Tile tokens are concatenated directly without separators. Section 11 (new dev cards this turn) is a fixed-length block for the active player only. Section 12 (dev card resolution state) captures mid-dev-card state that would otherwise be lost during serialization.
+Tokens are emitted in the order below. All counts are fixed-length. Major sections are separated by `|`. Within per-player sections (resources, knights, dev cards) individual players are separated by `/`. Tile tokens are concatenated directly without separators. Sections 13 and 14 preserve the exact development deck and terminal winner so the serialized state remains Markov and terminal values are explicit.
 
 Let `T` = number of tiles, `V` = number of vertices, `E` = number of edges, `P` = number of ports, `N` = number of players.
 
@@ -215,6 +215,18 @@ This section is not per-player — it always represents the current player's sta
 
 **Tokens**: 2 (fixed, player-count-independent).
 
+### 13) Remaining Development Deck
+
+Five count tokens in `DevCardType` order: `[knight, victoryPoint, roadBuilding, monopoly, yearOfPlenty]`. These are the exact cards remaining in the deck and are unchanged by geometric or player rotation.
+
+**Tokens**: 5.
+
+### 14) Winner
+
+One player-id token: `_` while the game is active, otherwise the winning player. Player rotation remaps this token with every other player identifier.
+
+**Tokens**: 1.
+
 ## Game State Examples
 
 ### Mini Map (2 players, early game)
@@ -341,7 +353,7 @@ Affected sections:
 - **Knights played** ([section 9](#9-per-player-knights-played)): `N` blocks of 1 token each.
 - **Dev cards** ([section 10](#10-per-player-dev-cards-in-hand-5-per-player)): `N` blocks of 5 tokens each.
 
-**Not affected**: Section 11 (new dev cards this turn) and section 12 (dev card resolution state) are always relative to the current player and are left unchanged by rotation.
+**Not affected**: Sections 11-13 are relative/global and remain unchanged. Section 14 winner is remapped as a player ID.
 
 ### Rotation Example
 
@@ -498,11 +510,11 @@ Compact form: strip all `/` and `|` separators from the human-readable form. The
 ## Game State
 
 ```
-(3*T) + P + 1 + 2 + 2 + (2*V) + E + (5*N) + (1*N) + (5*N) + 4 + 2
-= (3*T + 2*V + E + P + 5) + 11*N + 6
+(3*T) + P + 1 + 2 + 2 + (2*V) + E + (5*N) + (1*N) + (5*N) + 5 + 2 + 5 + 1
+= (3*T + 2*V + E + P + 5) + 11*N + 13
 ```
 
-The constant 5 = robber(1) + current-turn(2) + awards(2). The trailing 7 = new dev cards this turn (5, section 11, active player only) + dev card resolution state (2, section 12).
+The constant 5 = robber(1) + current-turn(2) + awards(2). The trailing 13 = new dev cards (5), resolution state (2), remaining deck (5), and winner (1).
 
 ## Placement Phase State
 

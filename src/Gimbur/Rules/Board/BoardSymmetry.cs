@@ -283,8 +283,8 @@ public static class BoardSymmetry
 
     /// <summary>
     /// Applies a symmetry permutation to a serialized state-only string.
-    /// State format: robber|playerStage|longestLargest|vertices|edges|resources|knights|devCards|newDevCards[|devCardResolution]
-    /// (9 or 10 sections separated by '|').
+    /// State format: robber|playerStage|longestLargest|vertices|edges|resources|knights|devCards|newDevCards|devCardResolution|devDeck|winner
+    /// (12 sections separated by '|').
     /// <para>
     /// Only the robber tile index (section 0), vertices (section 3), and edges (section 4)
     /// are position-dependent and need permutation. All other sections are scalar or
@@ -294,9 +294,9 @@ public static class BoardSymmetry
     public static string PermuteState(string stateSerialized, SymmetryPermutation perm)
     {
         var sections = stateSerialized.Split('|');
-        if (sections.Length is not (9 or 10))
+        if (sections.Length != 12)
             throw new ArgumentException(
-                $"State string has {sections.Length} sections, expected 9 or 10.", nameof(stateSerialized));
+                $"State string has {sections.Length} sections, expected 12.", nameof(stateSerialized));
 
         var vertexCount = perm.Vertices.Length;
         var edgeCount = perm.Edges.Length;
@@ -354,11 +354,11 @@ public static class BoardSymmetry
         sb.Append('|');
         sb.Append(sections[8]);
 
-        // Section 9: Dev Card Resolution State — unchanged (scalar, not positional)
-        if (sections.Length >= 10)
+        // Sections 9-11: resolution, deck, and winner are not geometric.
+        for (var section = 9; section < sections.Length; section++)
         {
             sb.Append('|');
-            sb.Append(sections[9]);
+            sb.Append(sections[section]);
         }
 
         return sb.ToString();

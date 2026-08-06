@@ -113,6 +113,29 @@ public class CatanStateTests
     }
 
     [Test]
+    public void Serialization_RestoresExactDevelopmentDeckAndWinner()
+    {
+        var state = new Gimbur.CatanState(GameConfig.Mini, 2, new Random(777));
+        var serialized = state.SerializeHumanReadable();
+        var sections = serialized.Split('|');
+        sections[12] = "32100";
+        sections[13] = "+";
+
+        var parsed = Gimbur.CatanState.DeserializeHumanReadable(
+            GameConfig.Mini, 2, string.Join('|', sections));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(parsed.DevCardsRemaining(DevCardType.Knight), Is.EqualTo(3));
+            Assert.That(parsed.DevCardsRemaining(DevCardType.VictoryPoint), Is.EqualTo(2));
+            Assert.That(parsed.DevCardsRemaining(DevCardType.RoadBuilding), Is.EqualTo(1));
+            Assert.That(parsed.DevCardsRemaining(DevCardType.Monopoly), Is.Zero);
+            Assert.That(parsed.DevCardsRemaining(DevCardType.YearOfPlenty), Is.Zero);
+            Assert.That(parsed.WinnerPlayer, Is.EqualTo(2));
+        });
+    }
+
+    [Test]
     public void SecondSettlement_GrantsAdjacentNonDesertResources()
     {
         var state = new Gimbur.CatanState(GameConfig.Standard, 3, new Random(123));
@@ -284,6 +307,9 @@ public class CatanStateTests
         serialized = SetDevCard(serialized, buildTrade, current, DevCardType.RoadBuilding, GameConfig.Mini.DevCardCounts[DevCardType.RoadBuilding]);
         serialized = SetDevCard(serialized, buildTrade, current, DevCardType.Monopoly, GameConfig.Mini.DevCardCounts[DevCardType.Monopoly]);
         serialized = SetDevCard(serialized, buildTrade, current, DevCardType.YearOfPlenty, GameConfig.Mini.DevCardCounts[DevCardType.YearOfPlenty]);
+        var sections = serialized.Split('|');
+        sections[12] = "70000"; // Only knights remain available to buy.
+        serialized = string.Join('|', sections);
 
         var loaded = Gimbur.CatanState.DeserializeHumanReadable(GameConfig.Mini, 2, serialized);
         var buyKnight = GetCatanActions(loaded).Single(a => a is Gimbur.BuyDevCardAction);

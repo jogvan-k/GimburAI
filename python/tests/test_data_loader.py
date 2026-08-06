@@ -114,7 +114,7 @@ MINI_STATE_ONLY = (
     "4|-t|__|"
     "._._._._._._v-._._._._._._._v+._._._._._._._._._|"
     "_____-_______+________________|"
-    "21010/00130|0/0|00000/00000|00000|0_"
+    "21010/00130|0/0|00000/00000|00000|0_|72111|_"
 )
 
 
@@ -502,6 +502,15 @@ class TestLoadSamples:
 
 
 class TestExpandGames:
+    def test_resolved_state_uses_exact_distribution_without_terminal_blend(self) -> None:
+        game = _simple_game([25.0, 75.0])
+        game["winner"] = 1
+        game["states"][0]["reachedTerminal"] = True
+
+        samples = expand_games([game], MINI_2P, mcts_value_weight_start=0.1)
+
+        torch.testing.assert_close(samples[0][1], torch.tensor([0.25, 0.75]))
+
     def test_uses_root_mcts_win_probability(self) -> None:
         game = _make_game(
             board=MINI_BOARD,
@@ -688,6 +697,37 @@ class TestExpandPlacementGames:
         assert identity_policy[5] == pytest.approx(0.7)
         assert perm_policy[1] == pytest.approx(0.3)
         assert perm_policy[2] == pytest.approx(0.7)
+
+    def test_greedy_bootstrap_policy_is_one_hot_without_changing_value_target(self) -> None:
+        from gimbur_nn.data_loader import expand_placement_games
+
+        game = _placement_game()
+        game["states"][0]["actions"][0]["modelPrior"] = 1
+        game["states"][0]["actions"][1]["modelPrior"] = 0
+        samples = expand_placement_games(
+            [game], MINI_2P, target="combined", mcts_value_weight_start=1.0
+        )
+        _, value_target, identity_policy, legal_mask = samples[0]
+        _, _, perm_policy, _ = samples[1]
+
+        torch.testing.assert_close(value_target, torch.tensor([0.41, 0.59]))
+        assert identity_policy[0] == 1
+        assert identity_policy[5] == 0
+        assert perm_policy[1] == 1
+        assert perm_policy[6] == 0
+        assert legal_mask.sum() == 2
+
+    def test_soft_model_prior_keeps_mcts_visit_target(self) -> None:
+        from gimbur_nn.data_loader import expand_placement_games
+
+        game = _placement_game()
+        game["states"][0]["actions"][0]["modelPrior"] = 0.8
+        game["states"][0]["actions"][1]["modelPrior"] = 0.2
+
+        policy = expand_placement_games([game], MINI_2P, target="combined")[0][2]
+
+        assert policy[0] == pytest.approx(0.3)
+        assert policy[5] == pytest.approx(0.7)
 
     def test_policy_temperature_one_preserves_exact_visit_shares(self) -> None:
         from gimbur_nn.data_loader import expand_placement_games

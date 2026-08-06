@@ -338,7 +338,7 @@ Endpoints:
 
 The `placement_stage_policy` model accepts canonical five-section placement states. It always emits player-value logits `[B,N]` and one fixed-width policy head `[B,max(V,6)]`: settlement stages use the first `V` vertex logits, while road stages use the first six logits in `N, NE, SE, S, SW, NW` order. Masking and interpretation are external to the model. `/placement/predict` softmaxes the fixed-width head and returns it as `policy_probabilities`.
 
-State checkpoints use version 3 architecture `state_player_value_v1`. Placement checkpoints use the current-only `placement_stage_policy` architecture; old placement checkpoints are incompatible.
+State checkpoints use version 4 architecture `state_player_value_v1`. Placement checkpoints use the current-only `placement_stage_policy` architecture; older checkpoints are incompatible.
 
 ### End-to-End Workflow (Manual)
 
@@ -380,7 +380,7 @@ python -m gimbur_nn.pipeline --config ../pipeline.example.json
 ```
 
 **Per-generation flow:**
-1. **Simulate** -- Gen 0 uses greedy rollouts (no NN). Gen N>0 starts the inference server with gen N-1's model and enables `--prior`.
+1. **Simulate** -- Gen 0 uses greedy placement policy labels and stochastic rollout values (no NN). Gen N>0 starts the inference server with gen N-1's model and enables `--prior`.
 2. **Train** -- Trains on the new generation's data. Resumes from previous generation's checkpoint when available.
 3. **Benchmark** -- Starts the inference server with this generation's model and runs all configured benchmarks.
 4. **Report** -- Prints win rates and saves results.

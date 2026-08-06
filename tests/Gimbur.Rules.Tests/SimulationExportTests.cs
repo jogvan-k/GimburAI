@@ -48,9 +48,10 @@ public class SimulationExportTests
                     PlayerTurn = 1,
                     TurnNumber = 1,
                     Stage = "r",
-                    SerializedState = "state",
-                    Scores = [2.0, 3.0],
-                    Wins = [1.0, 0.0],
+                     SerializedState = "state",
+                     Scores = [2.0, 3.0],
+                     Wins = [1.0, 0.0],
+                     Actions = [],
                 },
             ],
         };
@@ -68,6 +69,64 @@ public class SimulationExportTests
             Assert.That(
                 state.GetProperty("scores").EnumerateArray().Select(value => value.GetDouble()),
                 Is.EqualTo(new[] { 2.0, 3.0 }));
+        });
+    }
+
+    [Test]
+    public void GameStateExport_IncludesActionDiagnosticsAndSelection()
+    {
+        var game = new GameResult
+        {
+            Seed = 42,
+            Map = "mini",
+            Players = 2,
+            Winner = 1,
+            Turns = 3,
+            SearchTimeMs = 1,
+            MaxSimulations = 1,
+            MaxRolloutDepth = 1,
+            ActionRolloutLimit = 1,
+            BoardSerialized = "board",
+            States =
+            [
+                new StateRecord
+                {
+                    PlayerTurn = 1,
+                    TurnNumber = 1,
+                    Stage = "r",
+                    SerializedState = "state",
+                    Scores = [2.0, 3.0],
+                    Wins = [1.0, 0.0],
+                    Actions =
+                    [
+                        new StateActionRecord
+                        {
+                            Action = "2:0:0",
+                            Wins = [3.0, 1.0],
+                            Visits = 4,
+                            WinRate = 0.75,
+                            ModelPrior = 0.6,
+                            Selected = true,
+                        },
+                    ],
+                },
+            ],
+        };
+
+        var json = JsonSerializer.Serialize(
+            SimulationRunner.BuildGameJsonObject(game, ImmutableArray<SymmetryPermutation>.Empty),
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        using var document = JsonDocument.Parse(json);
+        var action = document.RootElement.GetProperty("states")[0].GetProperty("actions")[0];
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(action.GetProperty("action").GetString(), Is.EqualTo("2:0:0"));
+            Assert.That(action.GetProperty("wins")[0].GetDouble(), Is.EqualTo(3.0));
+            Assert.That(action.GetProperty("visits").GetInt32(), Is.EqualTo(4));
+            Assert.That(action.GetProperty("winRate").GetDouble(), Is.EqualTo(0.75));
+            Assert.That(action.GetProperty("modelPrior").GetDouble(), Is.EqualTo(0.6));
+            Assert.That(action.GetProperty("selected").GetBoolean(), Is.True);
         });
     }
 
@@ -119,9 +178,10 @@ public class SimulationExportTests
                     PlayerTurn = 1,
                     TurnNumber = 0,
                     Stage = "a",
-                    SerializedState = "state",
-                    Scores = [1.0, 1.0],
-                    Wins = [0.0, 1.0],
+                     SerializedState = "state",
+                     Scores = [1.0, 1.0],
+                     Wins = [0.0, 1.0],
+                     Actions = [],
                 },
             ],
         };
@@ -246,6 +306,7 @@ public class SimulationExportTests
                             Visits = 4,
                             Wins = [3.0, 1.0],
                             WinRate = 0.75,
+                            ModelPrior = 1.0,
                         },
                     ],
                 },
@@ -282,6 +343,8 @@ public class SimulationExportTests
             Assert.That(settlement.GetProperty("stage").GetString(), Is.EqualTo("a"));
             Assert.That(settlement.GetProperty("actions")[0].GetProperty("visits").GetInt32(), Is.EqualTo(4));
             Assert.That(settlement.GetProperty("actions")[0].TryGetProperty("action", out _), Is.False);
+            Assert.That(settlement.GetProperty("actions")[0].GetProperty("modelPrior").GetDouble(), Is.EqualTo(1.0));
+            Assert.That(settlement.GetProperty("actions")[0].TryGetProperty("policyTarget", out _), Is.False);
             Assert.That(
                 settlement.GetProperty("actions")[0].GetProperty("permutations")[0].GetInt32(),
                 Is.EqualTo(permutation.Vertices[((PlaceSettlementAction)settlementAction).VertexIndex]));

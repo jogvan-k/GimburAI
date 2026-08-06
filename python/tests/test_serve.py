@@ -302,7 +302,7 @@ def test_load_checkpoint_accepts_current_architecture(tmp_path: Path, architectu
     torch.save(
         {
             "model_state_dict": {},
-            **({"checkpoint_version": 3} if architecture == "state_player_value_v1" else {}),
+            **({"checkpoint_version": 4} if architecture == "state_player_value_v1" else {}),
             "architecture": architecture,
             "output_mode": "combined",
         },

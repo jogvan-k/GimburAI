@@ -34,6 +34,7 @@ internal enum AiKind
     MctsPlacement,
     MctsPlacementRandom,
     NnMctsPlacementState,
+    NnMctsState,
 }
 
 /// <summary>
@@ -77,6 +78,8 @@ internal record BenchmarkOptions
     /// Defaults to <c>http://localhost:8000</c>.
     /// </summary>
     public string NnUrl { get; init; } = "http://localhost:8000";
+    public string[]? NnUrls { get; init; }
+    public string[]? PlayerLabels { get; init; }
 
     /// <summary>
     /// Base URL for the Gimbur.Server (used by server-mcts and server-mcts-nn AI kinds).
@@ -382,12 +385,14 @@ internal record BenchmarkGameResult
     /// The winning AI kind, or null for a draw (no winner before safety limits).
     /// </summary>
     public required AiKind? WinnerAi { get; init; }
+    public required string? WinnerLabel { get; init; }
 
     /// <summary>
     /// The seat assignment used for this game (index 0 = seat 1).
     /// Rotates across games to eliminate positional bias.
     /// </summary>
     public required AiKind[] SeatAssignment { get; init; }
+    public required string[] SeatLabels { get; init; }
 
     /// <summary>
     /// The winning seat number (1-based), or 0 for a draw.
@@ -443,6 +448,7 @@ internal record BenchmarkStats
     public required int TotalGames { get; init; }
     public required TimeSpan TotalElapsed { get; init; }
     public required AiKind[] PlayerAis { get; init; }
+    public required string[] PlayerLabels { get; init; }
 }
 
 /// <summary>
@@ -453,7 +459,7 @@ internal class BenchmarkRunner
 {
     private readonly BenchmarkOptions _options;
     private readonly bool _quiet;
-    private NnClient? _nnClient;
+    private readonly Dictionary<string, NnClient> _nnClients = new(StringComparer.OrdinalIgnoreCase);
 
     public BenchmarkRunner(BenchmarkOptions options)
     {
@@ -465,6 +471,8 @@ internal class BenchmarkRunner
     {
         var config = ResolveGameConfig();
         var playerCount = _options.Players.Length;
+        var nnUrls = ResolveNnUrls(_options);
+        var playerLabels = ResolvePlayerLabels(_options);
 
         if (playerCount < config.MinPlayers || playerCount > config.MaxPlayers)
         {
@@ -476,12 +484,16 @@ internal class BenchmarkRunner
 
         if (UsesNn(_options.Players))
         {
-            _nnClient = new NnClient(_options.NnUrl);
-            if (!_nnClient.IsHealthyAsync().GetAwaiter().GetResult())
+            foreach (var url in nnUrls.Distinct(StringComparer.OrdinalIgnoreCase))
             {
-                Console.Error.WriteLine($"NN inference server at {_options.NnUrl} is not reachable.");
-                _nnClient.Dispose();
-                return;
+                var client = new NnClient(url);
+                _nnClients[url] = client;
+                if (!client.IsHealthyAsync().GetAwaiter().GetResult())
+                {
+                    Console.Error.WriteLine($"NN inference server at {url} is not reachable.");
+                    DisposeNnClients();
+                    return;
+                }
             }
         }
 
@@ -495,14 +507,14 @@ internal class BenchmarkRunner
                 if (!response.IsSuccessStatusCode)
                 {
                     Console.Error.WriteLine($"Game server at {_options.ServerUrl} returned {(int)response.StatusCode}.");
-                    _nnClient?.Dispose();
+                    DisposeNnClients();
                     return;
                 }
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"Game server at {_options.ServerUrl} is not reachable: {ex.Message}");
-                _nnClient?.Dispose();
+                DisposeNnClients();
                 return;
             }
         }
@@ -530,7 +542,7 @@ internal class BenchmarkRunner
             }
             if (UsesNn(_options.Players))
             {
-                Console.WriteLine($"  NN server: {_options.NnUrl}");
+                Console.WriteLine($"  NN servers: {string.Join(", ", nnUrls.Distinct())}");
             }
             if (UsesServer(_options.Players))
             {
@@ -554,15 +566,20 @@ internal class BenchmarkRunner
             // Rotate seat assignments to eliminate first-player bias.
             var rotation = gameIndex % playerCount;
             var seatAssignment = new AiKind[playerCount];
+            var seatLabels = new string[playerCount];
+            var seatNnUrls = new string[playerCount];
             for (var i = 0; i < playerCount; i++)
             {
-                seatAssignment[i] = _options.Players[(i + rotation) % playerCount];
+                var competitor = (i + rotation) % playerCount;
+                seatAssignment[i] = _options.Players[competitor];
+                seatLabels[i] = playerLabels[competitor];
+                seatNnUrls[i] = nnUrls[competitor];
             }
 
             try
             {
                 var gameStopwatch = Stopwatch.StartNew();
-                var (winnerSeat, turns, nnRequests, nnStatesEvaluated, priorNodesRequested, priorActionsApplied, priorActionsRequested, priorInferencesRequested, priorActionsPerDepth, priorInferencesPerDepth) = RunSingleGame(config, rng, seatAssignment);
+                var (winnerSeat, turns, nnRequests, nnStatesEvaluated, priorNodesRequested, priorActionsApplied, priorActionsRequested, priorInferencesRequested, priorActionsPerDepth, priorInferencesPerDepth) = RunSingleGame(config, rng, seatAssignment, seatNnUrls);
                 gameStopwatch.Stop();
 
                 AiKind? winnerAi = winnerSeat > 0 ? seatAssignment[winnerSeat - 1] : null;
@@ -572,7 +589,9 @@ internal class BenchmarkRunner
                     GameNumber = gameIndex + 1,
                     Seed = gameSeed,
                     WinnerAi = winnerAi,
+                    WinnerLabel = winnerSeat > 0 ? seatLabels[winnerSeat - 1] : null,
                     SeatAssignment = seatAssignment,
+                    SeatLabels = seatLabels,
                     WinnerSeat = winnerSeat,
                     Turns = turns,
                     Elapsed = gameStopwatch.Elapsed,
@@ -625,6 +644,7 @@ internal class BenchmarkRunner
             TotalGames = completedGames.Count,
             TotalElapsed = totalStopwatch.Elapsed,
             PlayerAis = _options.Players,
+            PlayerLabels = playerLabels,
         };
 
         if (!_quiet)
@@ -637,7 +657,7 @@ internal class BenchmarkRunner
             ExportResults(stats, _options.OutputPath);
         }
 
-        _nnClient?.Dispose();
+        DisposeNnClients();
 
         // Only fail the benchmark if more than half the games failed.
         // A few sporadic failures (e.g. from edge-case states the NN server
@@ -654,12 +674,13 @@ internal class BenchmarkRunner
     /// Creates a new player instance for the given AI kind.
     /// A new instance is created per game to allow stateful players (e.g. MCTS tree reuse).
     /// </summary>
-    private IBenchmarkPlayer CreatePlayer(AiKind kind, GameConfig config)
+    private IBenchmarkPlayer CreatePlayer(AiKind kind, GameConfig config, string nnUrl)
     {
+        var nnClient = _nnClients.GetValueOrDefault(nnUrl);
         ServerPlayer CreateServerNnPlayer(string priorMode) => new(
             _options.ServerUrl, "mcts-nn-ai", _options.MapConfig ?? "standard",
             _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth,
-            _options.NnUrl, priorMode, _options.ServerMaxPriorDepth);
+            nnUrl, priorMode, _options.ServerMaxPriorDepth);
 
         return kind switch
         {
@@ -678,35 +699,35 @@ internal class BenchmarkRunner
                 32,
                 500,
                 1000)),
-            AiKind.Nn => new NnPlayer(_nnClient!),
+            AiKind.Nn => new NnPlayer(nnClient!),
             AiKind.NnPlacement => new NnPlacementPlayer(
-                _nnClient!, PlacementActionSerializer.ForTopology(config.Map.Topology)),
+                nnClient!, PlacementActionSerializer.ForTopology(config.Map.Topology)),
             AiKind.NnPlacementRandom => new NnPlacementPlayer(
-                _nnClient!, PlacementActionSerializer.ForTopology(config.Map.Topology), new RandomPlayer()),
-            AiKind.NnState => new NnStatePlayer(_nnClient!),
-            AiKind.NnStateRandom => new NnStatePlayer(_nnClient!, new RandomPlayer()),
+                nnClient!, PlacementActionSerializer.ForTopology(config.Map.Topology), new RandomPlayer()),
+            AiKind.NnState => new NnStatePlayer(nnClient!),
+            AiKind.NnStateRandom => new NnStatePlayer(nnClient!, new RandomPlayer()),
             AiKind.NnPlacementState => new PhaseSwitchingPlayer(
                 new NnPlacementPlayer(
-                    _nnClient!, PlacementActionSerializer.ForTopology(config.Map.Topology)),
-                new NnStatePlayer(_nnClient!)),
+                    nnClient!, PlacementActionSerializer.ForTopology(config.Map.Topology)),
+                new NnStatePlayer(nnClient!)),
             AiKind.ServerMcts => new ServerPlayer(
                 _options.ServerUrl, "mcts-ai", _options.MapConfig ?? "standard",
                 _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth),
             AiKind.ServerMctsNn => new ServerPlayer(
                 _options.ServerUrl, "mcts-nn-ai", _options.MapConfig ?? "standard",
                 _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth,
-                _options.NnUrl, _options.ServerPriorMode, _options.ServerMaxPriorDepth),
+                nnUrl, _options.ServerPriorMode, _options.ServerMaxPriorDepth),
             AiKind.NnMctsPlacement => new ServerPlacementPlayer(
                 new ServerPlayer(
                     _options.ServerUrl, "mcts-nn-ai", _options.MapConfig ?? "standard",
                     _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth,
-                    _options.NnUrl, "placement", _options.ServerMaxPriorDepth),
+                    nnUrl, "placement", _options.ServerMaxPriorDepth),
                 new GreedyPlayer()),
             AiKind.NnMctsPlacementRandom => new ServerPlacementPlayer(
                 new ServerPlayer(
                     _options.ServerUrl, "mcts-nn-ai", _options.MapConfig ?? "standard",
                     _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth,
-                    _options.NnUrl, "placement", _options.ServerMaxPriorDepth),
+                    nnUrl, "placement", _options.ServerMaxPriorDepth),
                 new RandomPlayer()),
             AiKind.MctsPlacement => new ServerPlacementPlayer(
                 new ServerPlayer(
@@ -720,6 +741,9 @@ internal class BenchmarkRunner
                 new RandomPlayer()),
             AiKind.NnMctsPlacementState => new PhaseSwitchingPlayer(
                 CreateServerNnPlayer("placement"),
+                CreateServerNnPlayer("state")),
+            AiKind.NnMctsState => new PhaseSwitchingPlayer(
+                new GreedyPlayer(),
                 CreateServerNnPlayer("state")),
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, $"Unknown AI kind: {kind}"),
         };
@@ -735,15 +759,56 @@ internal class BenchmarkRunner
         players.Any(ai => ai is AiKind.ServerMcts or AiKind.ServerMctsNn
                                or AiKind.NnMctsPlacement or AiKind.NnMctsPlacementRandom
                                or AiKind.MctsPlacement or AiKind.MctsPlacementRandom
-                               or AiKind.NnMctsPlacementState);
+                               or AiKind.NnMctsPlacementState or AiKind.NnMctsState);
 
     private static bool UsesNn(AiKind[] players) =>
         players.Any(ai => ai is AiKind.Nn or AiKind.NnPlacement or AiKind.NnPlacementRandom
             or AiKind.NnState or AiKind.NnStateRandom or AiKind.NnPlacementState
             or AiKind.ServerMctsNn or AiKind.NnMctsPlacement or AiKind.NnMctsPlacementRandom
-            or AiKind.NnMctsPlacementState);
+            or AiKind.NnMctsPlacementState or AiKind.NnMctsState);
 
-    private (int WinnerSeat, int Turns, int NnRequests, int NnStatesEvaluated, int PriorNodesRequested, int PriorActionsApplied, int PriorActionsRequested, int PriorInferencesRequested, Dictionary<int, int>? PriorActionsPerDepth, Dictionary<int, int>? PriorInferencesPerDepth) RunSingleGame(GameConfig config, Random rng, AiKind[] seatAssignment)
+    internal static string[] ResolveNnUrls(BenchmarkOptions options)
+    {
+        var urls = options.NnUrls is { Length: > 0 }
+            ? options.NnUrls
+            : Enumerable.Repeat(options.NnUrl, options.Players.Length).ToArray();
+        if (urls.Length != options.Players.Length)
+            throw new ArgumentException("nnUrls must contain one URL per configured AI.");
+        if (urls.Any(url => !Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            || uri.Scheme is not ("http" or "https")))
+            throw new ArgumentException("Each nnUrls entry must be an absolute HTTP or HTTPS URL.");
+        return urls;
+    }
+
+    internal static string[] ResolvePlayerLabels(BenchmarkOptions options)
+    {
+        var labels = options.PlayerLabels is { Length: > 0 } ? options.PlayerLabels : null;
+        if (labels is null)
+        {
+            var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            labels = options.Players.Select(ai =>
+            {
+                var label = AiKindNames.Format(ai);
+                counts.TryGetValue(label, out var count);
+                counts[label] = ++count;
+                return count == 1 ? label : $"{label}-{count}";
+            }).ToArray();
+        }
+        if (labels.Length != options.Players.Length || labels.Any(string.IsNullOrWhiteSpace))
+            throw new ArgumentException("playerLabels must contain one non-empty label per configured AI.");
+        if (labels.Distinct(StringComparer.OrdinalIgnoreCase).Count() != labels.Length)
+            throw new ArgumentException("playerLabels must be unique.");
+        return labels;
+    }
+
+    private void DisposeNnClients()
+    {
+        foreach (var client in _nnClients.Values)
+            client.Dispose();
+        _nnClients.Clear();
+    }
+
+    private (int WinnerSeat, int Turns, int NnRequests, int NnStatesEvaluated, int PriorNodesRequested, int PriorActionsApplied, int PriorActionsRequested, int PriorInferencesRequested, Dictionary<int, int>? PriorActionsPerDepth, Dictionary<int, int>? PriorInferencesPerDepth) RunSingleGame(GameConfig config, Random rng, AiKind[] seatAssignment, string[] seatNnUrls)
     {
         var playerCount = seatAssignment.Length;
         var state = new CatanState(config, playerCount, rng);
@@ -752,7 +817,7 @@ internal class BenchmarkRunner
         var players = new IBenchmarkPlayer[playerCount + 1];
         for (var i = 0; i < playerCount; i++)
         {
-            players[i + 1] = CreatePlayer(seatAssignment[i], config);
+            players[i + 1] = CreatePlayer(seatAssignment[i], config, seatNnUrls[i]);
         }
 
         const int maxTotalActions = 10_000;
@@ -871,14 +936,13 @@ internal class BenchmarkRunner
         Console.WriteLine();
         Console.WriteLine("Win rates by AI:");
 
-        var distinctAis = stats.PlayerAis.Distinct().ToList();
-        var draws = stats.Games.Count(g => g.WinnerAi is null);
+        var draws = stats.Games.Count(g => g.WinnerLabel is null);
 
-        foreach (var ai in distinctAis)
+        foreach (var label in stats.PlayerLabels)
         {
-            var wins = stats.Games.Count(g => g.WinnerAi == ai);
+            var wins = stats.Games.Count(g => g.WinnerLabel == label);
             var rate = stats.TotalGames > 0 ? (double)wins / stats.TotalGames * 100 : 0;
-            Console.WriteLine($"  {ai}: {wins}/{stats.TotalGames} ({rate:F1}%)");
+            Console.WriteLine($"  {label}: {wins}/{stats.TotalGames} ({rate:F1}%)");
         }
 
         if (draws > 0)
@@ -975,16 +1039,18 @@ internal class BenchmarkRunner
 
         var output = new
         {
-            aiKinds = stats.PlayerAis.Distinct().Select(AiKindNames.Format).ToArray(),
+            aiKinds = stats.PlayerAis.Select(AiKindNames.Format).ToArray(),
+            playerLabels = stats.PlayerLabels,
             totalGames = stats.TotalGames,
             totalElapsedSeconds = Math.Round(stats.TotalElapsed.TotalSeconds, 2),
-            winRates = stats.PlayerAis.Distinct().Select(ai =>
+            winRates = stats.PlayerLabels.Select((label, index) =>
             {
-                var wins = stats.Games.Count(g => g.WinnerAi == ai);
+                var wins = stats.Games.Count(g => g.WinnerLabel == label);
                 var rate = stats.TotalGames > 0 ? (double)wins / stats.TotalGames : 0.0;
                 return new
                 {
-                    ai = AiKindNames.Format(ai),
+                    ai = AiKindNames.Format(stats.PlayerAis[index]),
+                    label,
                     wins,
                     rate = Math.Round(rate, 4),
                     confidence95Margin = Math.Round(
@@ -999,7 +1065,9 @@ internal class BenchmarkRunner
                 game = g.GameNumber,
                 seed = g.Seed,
                 seatAssignment = g.SeatAssignment.Select(AiKindNames.Format).ToArray(),
+                seatLabels = g.SeatLabels,
                 winnerAi = g.WinnerAi is { } winner ? AiKindNames.Format(winner) : null,
+                winnerLabel = g.WinnerLabel,
                 winnerSeat = g.WinnerSeat,
                 turns = g.Turns,
                 elapsedSeconds = Math.Round(g.Elapsed.TotalSeconds, 3),
@@ -1020,7 +1088,9 @@ internal class BenchmarkRunner
 
         Directory.CreateDirectory(outputPath.DirectoryName ?? ".");
         var json = JsonSerializer.Serialize(output, jsonOptions);
-        File.WriteAllText(outputPath.FullName, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        var temporaryPath = outputPath.FullName + ".tmp";
+        File.WriteAllText(temporaryPath, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        File.Move(temporaryPath, outputPath.FullName, overwrite: true);
 
         Console.WriteLine($"Results exported to {outputPath.FullName}");
     }
