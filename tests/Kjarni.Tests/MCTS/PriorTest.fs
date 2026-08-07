@@ -280,6 +280,16 @@ type PUCTActionEvaluatorTests() =
         | Candidate (_, index) -> index |> should equal 0
         | result -> Assert.Fail $"Expected Candidate, got {result}"
 
+    [<Test>]
+    member _.ExtractBestPath_UsesPriorWhenActionsAreUnvisited() =
+        let root = MCTSState(termNode p1 0)
+        root.Actions <-
+            [| Unexplored(Deterministic(action(termNode p1 0, termNode p2 1)))
+               Unexplored(Deterministic(action(termNode p1 0, termNode p2 2))) |]
+        root.Priors <- Some [| 0.9; 0.1 |]
+
+        extractBestPath root |> should equal [ 0 ]
+
 // ────────────────────────────────────────────────────────────────
 // explorationRate — PUCT formula
 // ────────────────────────────────────────────────────────────────

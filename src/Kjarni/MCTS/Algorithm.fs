@@ -218,6 +218,14 @@ let extractionEvaluator (state: MCTSState) actionIndex =
     | Terminal outcome -> outcome.[int state.State.PlayerTurn]
     | _ -> edgeQ state.ActionStats.[actionIndex] state.State.PlayerTurn
 
+let extractionKey (state: MCTSState) actionIndex =
+    let prior =
+        match state.Priors with
+        | Some priors when actionIndex < priors.Length -> priors.[actionIndex]
+        | _ -> 1. / float state.Actions.Length
+    let stats = state.ActionStats.[actionIndex]
+    extractionEvaluator state actionIndex, stats.CompletedVisits + stats.PendingVisits, prior
+
 let extractBestPath (root: MCTSState) =
     let mutable path = List.empty
     let mutable currentState = root
@@ -230,7 +238,7 @@ let extractBestPath (root: MCTSState) =
             let bestAction =
                 currentState.Actions
                 |> Array.indexed
-                |> Array.maxBy (fun (i, _) -> extractionEvaluator currentState i)
+                |> Array.maxBy (fun (i, _) -> extractionKey currentState i)
 
             path <- fst bestAction :: path
 
@@ -549,8 +557,9 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
     let mutable leafStats = LeafEvaluationStats()
     let pendingEvaluations = Dictionary<int64, PendingEvaluation>()
 
+    let mutable effectiveEvaluateUntil = evaluateUntil
     let beforeDeadline () =
-        not evaluateUntil.IsSome || timer.ElapsedTicks < evaluateUntil.Value
+        not effectiveEvaluateUntil.IsSome || timer.ElapsedTicks < effectiveEvaluateUntil.Value
 
     let reservePath (path: SelectionPath) delta =
         for edge in path.Edges do
@@ -753,6 +762,7 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
     let rootPriorWaitTimeoutMs = 250L
     requestPrior root 0
     if priorClient.IsSome && root.Priors.IsNone then
+        let waitStartTicks = timer.ElapsedTicks
         let waitStart = timer.ElapsedMilliseconds
         while root.Priors.IsNone
               && (timer.ElapsedMilliseconds - waitStart) < rootPriorWaitTimeoutMs do
@@ -760,6 +770,10 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
             Thread.Sleep(1)
         // One final collection attempt after the sleep loop.
         collectPriors ()
+        match effectiveEvaluateUntil with
+        | Some deadline ->
+            effectiveEvaluateUntil <- Some (deadline + timer.ElapsedTicks - waitStartTicks)
+        | None -> ()
 
     while root.Rollouts < maxSimulationCount
           && beforeDeadline ()
