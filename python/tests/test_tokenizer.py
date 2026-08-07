@@ -191,6 +191,72 @@ class TestCompletePolicyVocabulary:
         assert tok.rotate_policy_index(tok.vertex_policy_index(3), 2) == tok.vertex_policy_index(3)
 
 
+class TestActionPolicyIndex:
+    @pytest.mark.parametrize(
+        ("action", "expected"),
+        [
+            ("PlaceRobber:6", ("tile", 6)),
+            ("PlaceSettlement:23", ("vertex", 23)),
+            ("PlaceCity:4", ("vertex", 4)),
+            ("PlaceRoad:29", ("edge", 29)),
+            ("BuyRoad", ("buy_trade", 0)),
+            ("BuySettlement", ("buy_trade", 1)),
+            ("UpgradeCity", ("buy_trade", 2)),
+            ("BuyDevCard", ("buy_trade", 3)),
+            ("TradeWithBank", ("buy_trade", 4)),
+            ("PlayKnight", ("dev_card", 0)),
+            ("PlayRoadBuilding", ("dev_card", 1)),
+            ("PlayMonopoly", ("dev_card", 2)),
+            ("PlayYearOfPlenty", ("dev_card", 3)),
+            ("Roll", ("control", 0)),
+            ("EndTurn", ("control", 1)),
+        ],
+    )
+    def test_maps_all_action_categories(self, action: str, expected: tuple[str, int]) -> None:
+        tok = StateTokenizer(MINI_2P)
+        helper = getattr(tok, f"{expected[0]}_policy_index")
+        assert tok.action_policy_index(action, acting_player=1) == helper(expected[1])
+
+    @pytest.mark.parametrize(
+        "action_name",
+        [
+            "ChooseBankTradeGive",
+            "ChooseBankTradeReceive",
+            "ChooseMonopolyResource",
+            "ChooseYearOfPlentyResource",
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("resource", "resource_index"),
+        [("Wood", 0), ("Brick", 1), ("Sheep", 2), ("Wheat", 3), ("Ore", 4)],
+    )
+    def test_maps_resources(self, action_name: str, resource: str, resource_index: int) -> None:
+        tok = StateTokenizer(MINI_2P)
+        assert tok.action_policy_index(
+            f"{action_name}:{resource}", acting_player=1
+        ) == tok.resource_policy_index(resource_index)
+
+    @pytest.mark.parametrize(
+        ("acting_player", "victim_player", "canonical_slot"),
+        [(1, 1, 0), (1, 3, 2), (2, 1, 2), (2, 3, 1), (3, 1, 1)],
+    )
+    def test_maps_absolute_victim_to_canonical_slot(
+        self, acting_player: int, victim_player: int, canonical_slot: int
+    ) -> None:
+        tok = StateTokenizer(STANDARD_3P)
+        assert tok.action_policy_index(
+            f"ChooseRobberVictim:Player{victim_player}", acting_player
+        ) == tok.victim_policy_index(canonical_slot)
+
+    @pytest.mark.parametrize(
+        "action",
+        ["Unknown", "Unknown:1", "PlaceShip:3", "ChooseBankTradeGive:Gold"],
+    )
+    def test_rejects_unknown_actions(self, action: str) -> None:
+        with pytest.raises(ValueError):
+            StateTokenizer(MINI_2P).action_policy_index(action, acting_player=1)
+
+
 # ---------------------------------------------------------------------------
 # Full-tensor comparison for each doc example
 # ---------------------------------------------------------------------------

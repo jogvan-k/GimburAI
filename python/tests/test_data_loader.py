@@ -502,41 +502,49 @@ class TestLoadSamples:
 
 
 class TestExpandGames:
-    def test_combined_policy_target_and_symmetry_indices(self) -> None:
+    def test_combined_policy_target_and_descriptive_symmetry_actions(self) -> None:
         tok = StateTokenizer(MINI_2P)
-        roll = tok.control_policy_index(0)
-        knight = tok.dev_card_policy_index(0)
+        road_0 = tok.edge_policy_index(0)
+        road_1 = tok.edge_policy_index(1)
+        road_2 = tok.edge_policy_index(2)
+        road_3 = tok.edge_policy_index(3)
         game = _simple_game([60.0, 40.0])
         game["board"]["permutations"] = [MINI_BOARD]
         state = game["states"][0]
-        state["permutations"] = [MINI_STATE_ONLY]
+        state["stage"] = "e"
+        state["serializedState"] = MINI_STATE_ONLY.replace("|-t|", "|-e|")
+        state["permutations"] = [state["serializedState"]]
         state["actions"] = [
-            {"policyIndex": roll, "permutations": [roll], "visits": 30},
-            {"policyIndex": knight, "permutations": [knight], "visits": 70},
+            {"action": "PlaceRoad:0", "permutations": ["PlaceRoad:1"], "visits": 30},
+            {"action": "PlaceRoad:2", "permutations": ["PlaceRoad:3"], "visits": 70},
         ]
 
         samples = expand_games([game], MINI_2P)
 
         assert len(samples) == 2
-        for _, _, policy, legal_mask in samples:
-            assert policy[roll] == pytest.approx(0.3)
-            assert policy[knight] == pytest.approx(0.7)
-            assert legal_mask.sum() == 2
+        identity_policy, identity_mask = samples[0][2:]
+        symmetry_policy, symmetry_mask = samples[1][2:]
+        assert identity_policy[road_0] == pytest.approx(0.3)
+        assert identity_policy[road_2] == pytest.approx(0.7)
+        assert identity_mask.sum() == 2
+        assert symmetry_policy[road_1] == pytest.approx(0.3)
+        assert symmetry_policy[road_3] == pytest.approx(0.7)
+        assert symmetry_mask.sum() == 2
 
-    def test_one_hot_model_prior_is_bootstrap_policy_target(self) -> None:
+    def test_one_hot_model_prior_does_not_replace_visit_policy_target(self) -> None:
         tok = StateTokenizer(MINI_2P)
         roll = tok.control_policy_index(0)
         knight = tok.dev_card_policy_index(0)
         game = _simple_game([60.0, 40.0])
         game["states"][0]["actions"] = [
-            {"policyIndex": roll, "permutations": [], "visits": 90, "modelPrior": 0},
-            {"policyIndex": knight, "permutations": [], "visits": 10, "modelPrior": 1},
+            {"action": "Roll", "permutations": [], "visits": 90, "modelPrior": 0},
+            {"action": "PlayKnight", "permutations": [], "visits": 10, "modelPrior": 1},
         ]
 
         policy = expand_games([game], MINI_2P)[0][2]
 
-        assert policy[roll] == 0
-        assert policy[knight] == 1
+        assert policy[roll] == pytest.approx(0.9)
+        assert policy[knight] == pytest.approx(0.1)
 
     def test_soft_model_prior_keeps_visit_policy_target(self) -> None:
         tok = StateTokenizer(MINI_2P)
@@ -544,8 +552,8 @@ class TestExpandGames:
         knight = tok.dev_card_policy_index(0)
         game = _simple_game([60.0, 40.0])
         game["states"][0]["actions"] = [
-            {"policyIndex": roll, "permutations": [], "visits": 90, "modelPrior": 0.2},
-            {"policyIndex": knight, "permutations": [], "visits": 10, "modelPrior": 0.8},
+            {"action": "Roll", "permutations": [], "visits": 90, "modelPrior": 0.2},
+            {"action": "PlayKnight", "permutations": [], "visits": 10, "modelPrior": 0.8},
         ]
 
         policy = expand_games([game], MINI_2P)[0][2]
@@ -561,7 +569,7 @@ class TestExpandGames:
         state["playerTurn"] = 2
         state["serializedState"] = MINI_STATE_ONLY.replace("|-t|", "|+y|")
         state["actions"] = [
-            {"policyIndex": tok.victim_policy_index(1), "permutations": [], "visits": 10}
+            {"action": "ChooseRobberVictim:Player1", "permutations": [], "visits": 10}
         ]
 
         _, value, policy, legal_mask = expand_games([game], MINI_2P)[0]

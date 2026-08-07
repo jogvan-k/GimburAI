@@ -136,6 +136,53 @@ class StateTokenizer:
     def control_policy_index(self, control_index: int) -> int:
         return self._segment_index(control_index, 2, self.policy_offsets.controls)
 
+    def action_policy_index(self, action: str, acting_player: int) -> int:
+        """Map an architecture-neutral exported action identifier to a policy index."""
+        name, separator, argument = action.partition(":")
+        if name == "PlaceRobber":
+            return self.tile_policy_index(int(argument))
+        if name in ("PlaceSettlement", "PlaceCity"):
+            return self.vertex_policy_index(int(argument))
+        if name == "PlaceRoad":
+            return self.edge_policy_index(int(argument))
+        resource_actions = {
+            "ChooseBankTradeGive",
+            "ChooseBankTradeReceive",
+            "ChooseMonopolyResource",
+            "ChooseYearOfPlentyResource",
+        }
+        if name in resource_actions:
+            resources = ["Wood", "Brick", "Sheep", "Wheat", "Ore"]
+            return self.resource_policy_index(resources.index(argument))
+        buy_trade = {
+            "BuyRoad": 0,
+            "BuySettlement": 1,
+            "UpgradeCity": 2,
+            "BuyDevCard": 3,
+            "TradeWithBank": 4,
+        }
+        if name in buy_trade:
+            return self.buy_trade_policy_index(buy_trade[name])
+        play_dev = {
+            "PlayKnight": 0,
+            "PlayRoadBuilding": 1,
+            "PlayMonopoly": 2,
+            "PlayYearOfPlenty": 3,
+        }
+        if name in play_dev:
+            return self.dev_card_policy_index(play_dev[name])
+        if name == "ChooseRobberVictim":
+            absolute_player = int(argument.removeprefix("Player"))
+            canonical_slot = (absolute_player - acting_player) % self._cfg.player_count
+            return self.victim_policy_index(canonical_slot)
+        if name == "Roll":
+            return self.control_policy_index(0)
+        if name == "EndTurn":
+            return self.control_policy_index(1)
+        if separator:
+            raise ValueError(f"unknown action identifier {action!r}")
+        raise ValueError(f"unknown action identifier {action!r}")
+
     @staticmethod
     def _segment_index(index: int, width: int, offset: int) -> int:
         if not 0 <= index < width:

@@ -102,7 +102,6 @@ public class SimulationExportTests
                         new StateActionRecord
                         {
                             Action = "Roll",
-                            PolicyIndex = 77,
                             Wins = [3.0, 1.0],
                             Visits = 4,
                             WinRate = 0.75,

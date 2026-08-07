@@ -153,12 +153,10 @@ internal sealed class CatanPolicySerializerTests
     }
 
     [Test]
-    public void FullStateExport_IncludesPolicyIndexAndSymmetryPermutation()
+    public void FullStateExport_UsesDescriptiveActionAndSymmetryPermutation()
     {
         var topology = BoardTopology.Mini;
-        var serializer = new CatanPolicySerializer(topology, 2);
         var permutation = BoardSymmetry.GetPermutations(topology)[0];
-        var policyIndex = serializer.EdgesOffset + 4;
         var game = new GameResult
         {
             Seed = 42,
@@ -186,7 +184,6 @@ internal sealed class CatanPolicySerializerTests
                         new StateActionRecord
                         {
                             Action = "PlaceRoad:4",
-                            PolicyIndex = policyIndex,
                             Wins = [],
                         },
                     ],
@@ -202,9 +199,10 @@ internal sealed class CatanPolicySerializerTests
 
         Assert.Multiple(() =>
         {
-            Assert.That(exported.GetProperty("policyIndex").GetInt32(), Is.EqualTo(policyIndex));
-            Assert.That(exported.GetProperty("permutations")[0].GetInt32(),
-                Is.EqualTo(serializer.EdgesOffset + permutation.Edges[4]));
+            Assert.That(exported.GetProperty("action").GetString(), Is.EqualTo("PlaceRoad:4"));
+            Assert.That(exported.TryGetProperty("policyIndex", out _), Is.False);
+            Assert.That(exported.GetProperty("permutations")[0].GetString(),
+                Is.EqualTo($"PlaceRoad:{permutation.Edges[4]}"));
         });
     }
 
