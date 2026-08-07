@@ -22,6 +22,8 @@ internal enum AiKind
     Greedy,
     Mcts,
     Nn,
+    NnPlacement,
+    NnMainGame,
     ServerMcts,
     ServerMctsNn,
 }
@@ -96,6 +98,41 @@ internal interface IBenchmarkPlayer
     /// Returns null if no action can be taken (game should stop).
     /// </summary>
     CatanState? Act(CatanState state, Random rng);
+}
+
+/// <summary>Routes initial setup and normal play to separate benchmark players.</summary>
+internal sealed class PhaseSwitchingPlayer : IBenchmarkPlayer, INnStatsProvider, IDisposable
+{
+    private readonly IBenchmarkPlayer _placement;
+    private readonly IBenchmarkPlayer _mainGame;
+
+    public PhaseSwitchingPlayer(IBenchmarkPlayer placement, IBenchmarkPlayer mainGame)
+    {
+        _placement = placement;
+        _mainGame = mainGame;
+    }
+
+    public int TotalNnRequests => Stats(_placement).Requests + Stats(_mainGame).Requests;
+    public int TotalNnStatesEvaluated => Stats(_placement).States + Stats(_mainGame).States;
+
+    public CatanState? Act(CatanState state, Random rng) => IsInitialPlacement(state.Stage)
+        ? _placement.Act(state, rng)
+        : _mainGame.Act(state, rng);
+
+    internal static bool IsInitialPlacement(TurnStage stage) => stage is
+        TurnStage.PlaceFirstSettlement or TurnStage.PlaceFirstRoad or
+        TurnStage.PlaceSecondSettlement or TurnStage.PlaceSecondRoad;
+
+    public void Dispose()
+    {
+        if (_placement is IDisposable placement) placement.Dispose();
+        if (_mainGame is IDisposable mainGame) mainGame.Dispose();
+    }
+
+    private static (int Requests, int States) Stats(IBenchmarkPlayer player) =>
+        player is INnStatsProvider stats
+            ? (stats.TotalNnRequests, stats.TotalNnStatesEvaluated)
+            : (0, 0);
 }
 
 
@@ -632,6 +669,10 @@ internal class BenchmarkRunner
                 500,
                 1000)),
             AiKind.Nn => new NnPlayer(nnClient!),
+            AiKind.NnPlacement => new PhaseSwitchingPlayer(
+                new NnPlayer(nnClient!), new GreedyPlayer()),
+            AiKind.NnMainGame => new PhaseSwitchingPlayer(
+                new GreedyPlayer(), new NnPlayer(nnClient!)),
             AiKind.ServerMcts => new ServerPlayer(
                 _options.ServerUrl, "mcts-ai", _options.MapConfig ?? "standard",
                 _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth),
@@ -653,7 +694,8 @@ internal class BenchmarkRunner
         players.Any(ai => ai is AiKind.ServerMcts or AiKind.ServerMctsNn);
 
     private static bool UsesNn(AiKind[] players) =>
-        players.Any(ai => ai is AiKind.Nn or AiKind.ServerMctsNn);
+        players.Any(ai => ai is AiKind.Nn or AiKind.NnPlacement or AiKind.NnMainGame
+            or AiKind.ServerMctsNn);
 
     internal static string[] ResolveNnUrls(BenchmarkOptions options)
     {

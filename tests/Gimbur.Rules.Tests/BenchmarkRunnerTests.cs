@@ -9,6 +9,8 @@ internal sealed class BenchmarkRunnerTests
     [TestCase("greedy", AiKind.Greedy)]
     [TestCase("mcts", AiKind.Mcts)]
     [TestCase("nn", AiKind.Nn)]
+    [TestCase("nn-placement", AiKind.NnPlacement)]
+    [TestCase("nn-main-game", AiKind.NnMainGame)]
     [TestCase("server-mcts", AiKind.ServerMcts)]
     [TestCase("server-mcts-nn", AiKind.ServerMctsNn)]
     public void ParsesStableAiNames(string name, AiKind expected)
@@ -18,7 +20,6 @@ internal sealed class BenchmarkRunnerTests
         Assert.That(AiKindNames.Format(actual), Is.EqualTo(name));
     }
 
-    [TestCase("nn-placement")]
     [TestCase("nn-state")]
     [TestCase("nn-placement-state")]
     [TestCase("nn-mcts-placement")]
@@ -94,6 +95,19 @@ internal sealed class BenchmarkRunnerTests
             Is.EqualTo(new[] { "http://localhost:8123", "http://localhost:8123" }));
         Assert.That(BenchmarkRunner.ResolvePlayerLabels(options),
             Is.EqualTo(new[] { "nn", "greedy" }));
+    }
+
+    [Test]
+    public void PhaseSwitching_OnlyTreatsInitialSetupAsPlacement()
+    {
+        Assert.Multiple(() =>
+        {
+            Assert.That(PhaseSwitchingPlayer.IsInitialPlacement(TurnStage.PlaceFirstSettlement), Is.True);
+            Assert.That(PhaseSwitchingPlayer.IsInitialPlacement(TurnStage.PlaceSecondRoad), Is.True);
+            Assert.That(PhaseSwitchingPlayer.IsInitialPlacement(TurnStage.PlaceRoadCommitted), Is.False);
+            Assert.That(PhaseSwitchingPlayer.IsInitialPlacement(TurnStage.PlaceCityCommitted), Is.False);
+            Assert.That(PhaseSwitchingPlayer.IsInitialPlacement(TurnStage.BuildTrade), Is.False);
+        });
     }
 
 }
