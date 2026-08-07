@@ -359,7 +359,13 @@ def _process_game(
         actions = state_entry.get("actions", [])
         visits = [max(0, int(action.get("visits", 0))) for action in actions]
         total_visits = sum(visits)
-        if actions and total_visits == 0:
+        model_priors = [action.get("modelPrior") for action in actions]
+        bootstrap_targets = [prior == 1 for prior in model_priors]
+        bootstrap_policy = (
+            sum(bootstrap_targets) == 1
+            and all(prior in (0, 1) for prior in model_priors)
+        )
+        if actions and total_visits == 0 and not bootstrap_policy:
             continue
         player_turn = int(state_entry["playerTurn"])
         rotated_target = rotate_player_target(target, player_turn)
@@ -380,7 +386,9 @@ def _process_game(
                 )
                 tokenizer.validate_stage_policy_index(state_entry["stage"], policy_index)
                 legal_indices.append(policy_index)
-                if total_visits:
+                if bootstrap_policy:
+                    policy[policy_index] = 1.0 if bootstrap_targets[len(legal_indices) - 1] else 0.0
+                elif total_visits:
                     policy[policy_index] += visit_count / total_visits
             legal_mask = tokenizer.stage_legal_mask(state_entry["stage"], legal_indices)
             samples.append((token_ids, rotated_target, policy, legal_mask))

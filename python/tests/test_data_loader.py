@@ -523,6 +523,36 @@ class TestExpandGames:
             assert policy[knight] == pytest.approx(0.7)
             assert legal_mask.sum() == 2
 
+    def test_one_hot_model_prior_is_bootstrap_policy_target(self) -> None:
+        tok = StateTokenizer(MINI_2P)
+        roll = tok.control_policy_index(0)
+        knight = tok.dev_card_policy_index(0)
+        game = _simple_game([60.0, 40.0])
+        game["states"][0]["actions"] = [
+            {"policyIndex": roll, "permutations": [], "visits": 90, "modelPrior": 0},
+            {"policyIndex": knight, "permutations": [], "visits": 10, "modelPrior": 1},
+        ]
+
+        policy = expand_games([game], MINI_2P)[0][2]
+
+        assert policy[roll] == 0
+        assert policy[knight] == 1
+
+    def test_soft_model_prior_keeps_visit_policy_target(self) -> None:
+        tok = StateTokenizer(MINI_2P)
+        roll = tok.control_policy_index(0)
+        knight = tok.dev_card_policy_index(0)
+        game = _simple_game([60.0, 40.0])
+        game["states"][0]["actions"] = [
+            {"policyIndex": roll, "permutations": [], "visits": 90, "modelPrior": 0.2},
+            {"policyIndex": knight, "permutations": [], "visits": 10, "modelPrior": 0.8},
+        ]
+
+        policy = expand_games([game], MINI_2P)[0][2]
+
+        assert policy[roll] == pytest.approx(0.9)
+        assert policy[knight] == pytest.approx(0.1)
+
     def test_victim_policy_rotates_with_acting_player(self) -> None:
         tok = StateTokenizer(MINI_2P)
         game = _simple_game()

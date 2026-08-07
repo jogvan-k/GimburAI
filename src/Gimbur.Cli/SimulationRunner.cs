@@ -992,15 +992,16 @@ internal class SimulationRunner
                 });
             }
         }
+        var policyIndex = policySerializer.IndexOf((CatanState)coreAction.OriginState, coreAction);
         return new StateActionRecord
         {
             Action = DescribeAction(coreAction),
-            PolicyIndex = policySerializer.IndexOf((CatanState)coreAction.OriginState, coreAction),
+            PolicyIndex = policyIndex,
             Wins = wins,
             Visits = visits,
             WinRate = winRate,
-            ModelPrior = mctsRoot.DensePriors is { } dense && actionIndex < dense.Value.Length
-                ? dense.Value[actionIndex]
+            ModelPrior = mctsRoot.DensePriors is { } dense && policyIndex < dense.Value.Length
+                ? dense.Value[policyIndex]
                 : mctsRoot.Priors is { } priors && actionIndex < priors.Value.Length
                     ? priors.Value[actionIndex]
                     : null,

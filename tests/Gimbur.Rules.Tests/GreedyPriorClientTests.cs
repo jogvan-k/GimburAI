@@ -35,9 +35,12 @@ internal sealed class GreedyPriorClientTests
                 Is.All.EqualTo(expected));
             offset += length;
         }
+        var serializer = new CatanPolicySerializer(state.Board.Topology, state.PlayerCount);
+        Assert.That(responses[0].DensePriors, Has.Length.EqualTo(serializer.PolicySize));
+        Assert.That(responses[0].DensePriors[serializer.IndexOf(state, greedy)], Is.EqualTo(1.0));
         Assert.That(responses[0].DensePriors.Count(value => value == 1.0), Is.EqualTo(1));
         Assert.That(responses[0].DensePriors.Count(value => value == 0.0),
-            Is.EqualTo(actions.Length - 1));
+            Is.EqualTo(serializer.PolicySize - 1));
     }
 
     [Test]

@@ -32,13 +32,14 @@ public sealed class GreedyPriorClient : IPriorClient
             return 0;
 
         var actions = state.Actions();
+        var policySerializer = new CatanPolicySerializer(state.Board.Topology, state.PlayerCount);
         var greedyAction = new GreedyActionSelector().ChooseAction(
             state, new Random(HashCode.Combine(state.GetHashCode(), nodeId)));
         if (greedyAction is null)
             return 0;
 
         var priors = new double[states.Length];
-        var densePriors = new double[actions.Length];
+        var densePriors = new double[policySerializer.PolicySize];
         var uniformPrior = _uniformMix / actions.Length;
         var stateIndex = 0;
         var found = false;
@@ -54,7 +55,7 @@ public sealed class GreedyPriorClient : IPriorClient
             if (action.Equals(greedyAction))
             {
                 Array.Fill(priors, 1.0 - _uniformMix + uniformPrior, stateIndex, outcomeCount);
-                densePriors[actionIndex] = 1.0;
+                densePriors[policySerializer.IndexOf(state, action)] = 1.0;
                 found = true;
             }
             else
