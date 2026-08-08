@@ -17,6 +17,7 @@ from gimbur_nn.pipeline import (
     _generation_complete,
     _load_config,
     _load_section,
+    _run_gen0_milestones,
     _save_progress_chart,
     _save_summary,
     _step_simulate,
@@ -51,6 +52,69 @@ def test_pipeline_config_loads_nested_promotion_defaults_and_overrides(tmp_path)
     assert config.promotion.direct.games == 10_000
     assert config.promotion.direct.minimum_improvement_vs_greedy == 0.02
     assert config.promotion.hybrid.games == 1_000
+
+
+def test_pipeline_config_loads_gen0_milestones(tmp_path) -> None:
+    path = tmp_path / "pipeline.json"
+    path.write_text(json.dumps({"gen0Milestones": [200, 400, 600]}))
+
+    config = _load_config(path)
+
+    assert config.gen0_milestones == [200, 400, 600]
+    assert config.gen0_games == 600
+
+
+@pytest.mark.parametrize("milestones", [[400, 200], [200, 200], [0, 200]])
+def test_pipeline_rejects_invalid_gen0_milestones(tmp_path, milestones) -> None:
+    path = tmp_path / "pipeline.json"
+    path.write_text(json.dumps({"gen0Milestones": milestones}))
+
+    with pytest.raises(ValueError, match="gen0Milestones"):
+        _load_config(path)
+
+
+def test_gen0_milestones_use_cumulative_targets(tmp_path, monkeypatch) -> None:
+    cfg = PipelineConfig(
+        data_dir=str(tmp_path / "data"),
+        model_dir=str(tmp_path / "models"),
+        results_dir=str(tmp_path / "results"),
+        gen0_milestones=[200, 400, 600],
+        benchmarks=[BenchmarkConfig(name="nn", games=1, ai=["nn", "greedy"])],
+    )
+    targets: list[int] = []
+
+    def simulate(*args, target_games_override=None, **kwargs):
+        targets.append(target_games_override)
+
+    def train(cfg, gen, root, out_path_override=None, **kwargs):
+        out_path_override.parent.mkdir(parents=True, exist_ok=True)
+        out_path_override.write_text("model")
+
+    def benchmark(cfg, gen, root, url, output_path_for=None, **kwargs):
+        path = output_path_for("nn")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        result = {
+            "totalGames": 1,
+            "draws": 0,
+            "winRates": [{"ai": "nn", "label": "nn", "wins": 1, "rate": 1.0}],
+        }
+        path.write_text(json.dumps(result))
+        return {"nn": result}
+
+    monkeypatch.setattr("gimbur_nn.pipeline._step_simulate", simulate)
+    monkeypatch.setattr("gimbur_nn.pipeline._step_train", train)
+    monkeypatch.setattr("gimbur_nn.pipeline._step_benchmark", benchmark)
+    monkeypatch.setattr("gimbur_nn.pipeline._start_complete_model_server", lambda *a, **k: "url")
+    monkeypatch.setattr("gimbur_nn.pipeline._save_bootstrap_progress_chart", lambda *a: True)
+
+    class NoopServer:
+        def stop(self):
+            pass
+
+    _run_gen0_milestones(cfg, tmp_path, NoopServer(), NoopServer())
+
+    assert targets == [200, 400, 600]
+    assert (tmp_path / "models/champions/gen0/model.pt").read_text() == "model"
 
 
 def test_promotion_gate_requires_both_thresholds() -> None:

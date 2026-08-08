@@ -17,6 +17,19 @@ pipeline/models/genN.pt
 pipeline/results/genN/{benchmark}.json
 ```
 
+### Gen-0 Milestone Sweep
+
+Set `gen0Milestones` to cumulative counts such as
+`[200, 400, 600, 800, 1000]`. One shared `data/gen0` directory is extended only
+by the games missing from the next target. Each milestone trains a separate
+model from scratch on all accumulated games and runs the full benchmark suite.
+
+Models and results are stored under `models/bootstrap/{games}` and
+`results/bootstrap/{games}`. The pipeline writes `bootstrap-summary.json` and
+`bootstrap-progress.png`. The final milestone becomes the Gen-0 champion, then
+normal processing continues at Gen 1. Existing milestone artifacts are reused
+after interruption.
+
 Run from the repository root:
 
 ```bash

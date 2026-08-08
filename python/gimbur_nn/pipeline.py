@@ -28,6 +28,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -195,6 +196,7 @@ class PipelineConfig:
 
     # Optional larger bootstrap dataset for generation 0.
     gen0_games: int | None = None
+    gen0_milestones: list[int] = field(default_factory=list)
 
     # Skip generations before this threshold (treat them as complete).
     skip_until_gen: int | None = None
@@ -261,6 +263,7 @@ def _load_config(path: Path) -> PipelineConfig:
         "results_dir",
         "generations",
         "gen0_games",
+        "gen0_milestones",
         "dotnet_project",
         "python_module",
         "skip_until_gen",
@@ -294,6 +297,12 @@ def _load_config(path: Path) -> PipelineConfig:
             cfg.promotion.hybrid = _load_section(PromotionGateConfig, promotion_raw["hybrid"])
 
     _validate_promotion_config(cfg)
+    if cfg.gen0_milestones:
+        if cfg.gen0_milestones != sorted(set(cfg.gen0_milestones)):
+            raise ValueError("gen0Milestones must be strictly increasing and unique.")
+        if any(games <= 0 for games in cfg.gen0_milestones):
+            raise ValueError("gen0Milestones values must be positive.")
+        cfg.gen0_games = cfg.gen0_milestones[-1]
     return cfg
 
 
@@ -359,6 +368,18 @@ def _model_path(cfg: PipelineConfig, gen: int) -> Path:
 
 def _results_path(cfg: PipelineConfig, gen: int, name: str) -> Path:
     return Path(cfg.results_dir) / f"gen{gen}" / f"{name}.json"
+
+
+def _bootstrap_model_path(cfg: PipelineConfig, games: int) -> Path:
+    return Path(cfg.model_dir) / "bootstrap" / str(games) / "model.pt"
+
+
+def _bootstrap_checkpoint_path(cfg: PipelineConfig, games: int) -> Path:
+    return Path(cfg.model_dir) / "bootstrap" / str(games) / "checkpoints"
+
+
+def _bootstrap_result_path(cfg: PipelineConfig, games: int, name: str) -> Path:
+    return Path(cfg.results_dir) / "bootstrap" / str(games) / f"{name}.json"
 
 
 def _candidate_model_path(cfg: PipelineConfig, gen: int, attempt: int) -> Path:
@@ -1124,6 +1145,8 @@ def _step_benchmark(
     nn_url: str,
     gimbur_server: _GimburServerProcess | None = None,
     all_results: dict[int, dict[str, Any]] | None = None,
+    output_path_for: Callable[[str], Path] | None = None,
+    config_prefix: str | None = None,
 ) -> dict[str, Any]:
     """Run benchmarks for a generation. Returns aggregated results.
 
@@ -1144,7 +1167,11 @@ def _step_benchmark(
 
     try:
         for bench in benchmarks:
-            out_path = _results_path(cfg, gen, bench.name)
+            out_path = (
+                output_path_for(bench.name)
+                if output_path_for is not None
+                else _results_path(cfg, gen, bench.name)
+            )
             out_path.parent.mkdir(parents=True, exist_ok=True)
 
             # If results already exist, load and skip.
@@ -1180,7 +1207,8 @@ def _step_benchmark(
             if bench.parallelism is not None:
                 bench_config["parallelism"] = bench.parallelism
 
-            config_path = _write_config(cfg, f"benchmark_gen{gen}_{bench.name}", bench_config)
+            config_name = config_prefix or f"benchmark_gen{gen}"
+            config_path = _write_config(cfg, f"{config_name}_{bench.name}", bench_config)
 
             args = [
                 "dotnet",
@@ -1584,6 +1612,172 @@ def _run_promoted_benchmarks(
             _save_progress_chart(cfg, all_results)
     finally:
         server.stop()
+
+
+def _run_gen0_milestones(
+    cfg: PipelineConfig,
+    project_root: Path,
+    server: _ServerProcess,
+    gimbur_server: _GimburServerProcess,
+) -> None:
+    """Train and benchmark cumulative generation-zero dataset milestones."""
+    if not cfg.gen0_milestones:
+        return
+
+    bootstrap_summary_path = Path(cfg.results_dir) / "bootstrap-summary.json"
+    summary_document = (
+        json.loads(bootstrap_summary_path.read_text())
+        if bootstrap_summary_path.is_file()
+        else {"milestones": []}
+    )
+    summary: list[dict[str, Any]] = summary_document.get("milestones", [])
+    summary_by_games = {int(entry["games"]): entry for entry in summary}
+
+    # Reuse an already completed conventional 200-game Gen-0 model/result set.
+    first = cfg.gen0_milestones[0]
+    legacy_model = _champion_model_path(cfg, 0)
+    if first == 200 and legacy_model.is_file() and not _bootstrap_model_path(cfg, first).is_file():
+        destination = _bootstrap_model_path(cfg, first)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(legacy_model, destination)
+        for bench in cfg.benchmarks:
+            legacy_result = _results_path(cfg, 0, bench.name)
+            if legacy_result.is_file():
+                result = _bootstrap_result_path(cfg, first, bench.name)
+                result.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(legacy_result, result)
+
+    for games in cfg.gen0_milestones:
+        print(f"\n{'#' * 60}\n  GEN-0 BOOTSTRAP: {games} GAMES\n{'#' * 60}\n")
+        _step_simulate(
+            cfg,
+            0,
+            project_root,
+            nn_url=None,
+            target_games_override=games,
+            seed_offset=games,
+            config_suffix=f"_bootstrap_{games}",
+        )
+
+        model_path = _bootstrap_model_path(cfg, games)
+        _step_train(
+            cfg,
+            0,
+            project_root,
+            out_path_override=model_path,
+            resume_path_override=None,
+            checkpoint_path_override=_bootstrap_checkpoint_path(cfg, games),
+            config_suffix=f"_bootstrap_{games}",
+        )
+
+        nn_url = _start_complete_model_server(server, cfg, cfg.serve, model_path, project_root)
+        try:
+            results = _step_benchmark(
+                cfg,
+                0,
+                project_root,
+                nn_url,
+                gimbur_server=gimbur_server,
+                output_path_for=lambda name, games=games: _bootstrap_result_path(cfg, games, name),
+                config_prefix=f"benchmark_bootstrap_{games}",
+            )
+        finally:
+            server.stop()
+
+        summary_by_games[games] = {
+            "games": games,
+            "model": str(model_path),
+            "benchmarks": {
+                name: {
+                    "winRates": _normalize_win_rates(result),
+                    "draws": result.get("draws", 0),
+                    "totalGames": result.get("totalGames", 0),
+                }
+                for name, result in results.items()
+            },
+        }
+        _write_json_atomic(
+            bootstrap_summary_path,
+            {"milestones": [summary_by_games[key] for key in sorted(summary_by_games)]},
+        )
+        _save_bootstrap_progress_chart(cfg, summary_by_games)
+
+    final_games = cfg.gen0_milestones[-1]
+    final_model = _bootstrap_model_path(cfg, final_games)
+    champion = _champion_model_path(cfg, 0)
+    champion.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(final_model, champion)
+    shutil.copy2(final_model, _model_path(cfg, 0))
+    for bench in cfg.benchmarks:
+        source = _bootstrap_result_path(cfg, final_games, bench.name)
+        destination = _results_path(cfg, 0, bench.name)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+    _write_json_atomic(
+        _champion_manifest_path(cfg),
+        {"generation": 0, "attempt": 0, "games": final_games, "model": str(champion)},
+    )
+    _write_json_atomic(
+        _promotion_generation_path(cfg, 0),
+        {
+            "generation": 0,
+            "status": "promoted",
+            "attempt": 0,
+            "trainingGames": final_games,
+            "championGenerationAfter": 0,
+        },
+    )
+
+
+def _save_bootstrap_progress_chart(
+    cfg: PipelineConfig,
+    summary_by_games: dict[int, dict[str, Any]],
+) -> bool:
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return False
+    if not summary_by_games:
+        return False
+
+    fig, ax = plt.subplots(figsize=(11, 6))
+    games = sorted(summary_by_games)
+    for benchmark in cfg.benchmarks:
+        points: list[tuple[int, float]] = []
+        for game_count in games:
+            result = summary_by_games[game_count].get("benchmarks", {}).get(benchmark.name)
+            if not result:
+                continue
+            rates = result.get("winRates", {})
+            candidate = next(
+                (rate for label, rate in rates.items() if label == benchmark.ai[0]), None
+            )
+            if candidate is not None:
+                points.append((game_count, candidate))
+        if points:
+            ax.plot(
+                [point[0] for point in points],
+                [point[1] * 100 for point in points],
+                marker="o",
+                label=benchmark.name,
+            )
+    ax.axhline(50, color="gray", linestyle="--", linewidth=1)
+    ax.set_xlabel("Cumulative Gen-0 self-play games")
+    ax.set_ylabel("Win rate (%)")
+    ax.set_title("Gen-0 Bootstrap Model Strength by Dataset Size")
+    ax.grid(alpha=0.25)
+    ax.legend()
+    fig.tight_layout()
+    output = Path(cfg.results_dir) / "bootstrap-progress.png"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_suffix(".tmp.png")
+    fig.savefig(temporary, dpi=150)
+    plt.close(fig)
+    os.replace(temporary, output)
+    return True
 
 
 def _step_baselines(
@@ -2027,6 +2221,10 @@ def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> Non
             print("  BASELINES")
             print(f"{'#' * 60}\n")
             _step_baselines(cfg, project_root, gimbur_server=gimbur_server)
+
+        if cfg.gen0_milestones and start_gen == 0:
+            _run_gen0_milestones(cfg, project_root, server, gimbur_server)
+            start_gen = 1
 
         for gen in range(start_gen, cfg.generations):
             # Check if entire generation is already done.

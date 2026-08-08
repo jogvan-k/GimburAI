@@ -8,6 +8,7 @@
   "modelDir": "pipeline/models",
   "resultsDir": "pipeline/results",
   "generations": 10,
+  "gen0Milestones": [200, 400, 600, 800, 1000],
   "simulate": {
     "games": 1000,
     "players": 2,
