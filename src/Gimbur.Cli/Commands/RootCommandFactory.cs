@@ -436,7 +436,7 @@ internal static class RootCommandFactory
         var playersOption = new Option<string[]>("--ai")
         {
             Description = "AI for each player seat (e.g. --ai random greedy mcts nn). " +
-                          "Available: random, greedy, mcts, nn, nn-placement, nn-main-game, server-mcts, server-mcts-nn",
+                          "Available: random, greedy, mcts, nn, nn-placement, nn-main-game, nn-value, nn-value-placement, nn-value-main-game, server-mcts, server-mcts-nn",
             AllowMultipleArgumentsPerToken = true,
         };
         playersOption.DefaultValueFactory = _ => new[] { "random", "greedy" };

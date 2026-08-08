@@ -11,6 +11,9 @@ internal sealed class BenchmarkRunnerTests
     [TestCase("nn", AiKind.Nn)]
     [TestCase("nn-placement", AiKind.NnPlacement)]
     [TestCase("nn-main-game", AiKind.NnMainGame)]
+    [TestCase("nn-value", AiKind.NnValue)]
+    [TestCase("nn-value-placement", AiKind.NnValuePlacement)]
+    [TestCase("nn-value-main-game", AiKind.NnValueMainGame)]
     [TestCase("server-mcts", AiKind.ServerMcts)]
     [TestCase("server-mcts-nn", AiKind.ServerMctsNn)]
     public void ParsesStableAiNames(string name, AiKind expected)
@@ -107,6 +110,17 @@ internal sealed class BenchmarkRunnerTests
             Assert.That(PhaseSwitchingPlayer.IsInitialPlacement(TurnStage.PlaceRoadCommitted), Is.False);
             Assert.That(PhaseSwitchingPlayer.IsInitialPlacement(TurnStage.PlaceCityCommitted), Is.False);
             Assert.That(PhaseSwitchingPlayer.IsInitialPlacement(TurnStage.BuildTrade), Is.False);
+        });
+    }
+
+    [Test]
+    public void ValuePlayer_MapsParentPlayerIntoSuccessorCanonicalSlots()
+    {
+        Assert.Multiple(() =>
+        {
+            Assert.That(NnValuePlayer.CanonicalPlayerSlot(1, 1, 2), Is.Zero);
+            Assert.That(NnValuePlayer.CanonicalPlayerSlot(1, 2, 2), Is.EqualTo(1));
+            Assert.That(NnValuePlayer.CanonicalPlayerSlot(3, 2, 3), Is.EqualTo(1));
         });
     }
 

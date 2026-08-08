@@ -24,6 +24,9 @@ internal enum AiKind
     Nn,
     NnPlacement,
     NnMainGame,
+    NnValue,
+    NnValuePlacement,
+    NnValueMainGame,
     ServerMcts,
     ServerMctsNn,
 }
@@ -673,6 +676,11 @@ internal class BenchmarkRunner
                 new NnPlayer(nnClient!), new GreedyPlayer()),
             AiKind.NnMainGame => new PhaseSwitchingPlayer(
                 new GreedyPlayer(), new NnPlayer(nnClient!)),
+            AiKind.NnValue => new NnValuePlayer(nnClient!),
+            AiKind.NnValuePlacement => new PhaseSwitchingPlayer(
+                new NnValuePlayer(nnClient!), new GreedyPlayer()),
+            AiKind.NnValueMainGame => new PhaseSwitchingPlayer(
+                new GreedyPlayer(), new NnValuePlayer(nnClient!)),
             AiKind.ServerMcts => new ServerPlayer(
                 _options.ServerUrl, "mcts-ai", _options.MapConfig ?? "standard",
                 _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth),
@@ -695,6 +703,7 @@ internal class BenchmarkRunner
 
     private static bool UsesNn(AiKind[] players) =>
         players.Any(ai => ai is AiKind.Nn or AiKind.NnPlacement or AiKind.NnMainGame
+            or AiKind.NnValue or AiKind.NnValuePlacement or AiKind.NnValueMainGame
             or AiKind.ServerMctsNn);
 
     internal static string[] ResolveNnUrls(BenchmarkOptions options)
