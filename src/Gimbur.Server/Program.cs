@@ -109,6 +109,7 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
                 ? CatanStateLeafEvaluatorPool.Get(req.NnUrl!)
                 : null,
             leafBoundary: null,
+            maxTreeDepth: int.MaxValue,
             maxPriorDepth: maxPriorDepth,
             maxPendingEvaluations: 32,
             leafEvaluationTimeoutMs: 500,

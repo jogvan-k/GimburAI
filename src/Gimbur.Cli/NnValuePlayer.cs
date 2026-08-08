@@ -26,6 +26,7 @@ internal sealed class NnValuePlayer : IBenchmarkPlayer, INnStatsProvider
 
         var actingPlayer = state.CurrentPlayer;
         var states = new List<CatanState>();
+        var actionOutcomes = new List<(int Weight, CatanState State)[]>(coreActions.Length);
         var descriptors = new List<ActionDescriptor>(coreActions.Length);
         for (var actionIndex = 0; actionIndex < coreActions.Length; actionIndex++)
         {
@@ -33,6 +34,8 @@ internal sealed class NnValuePlayer : IBenchmarkPlayer, INnStatsProvider
             var outcomes = action is CatanStochasticAction stochastic
                 ? stochastic.Outcomes()
                 : [Tuple.Create(1, action.DoCoreAction())];
+            actionOutcomes.Add(outcomes.Select(outcome => (
+                outcome.Item1, (CatanState)outcome.Item2)).ToArray());
             var entries = new OutcomeDescriptor[outcomes.Length];
             for (var outcomeIndex = 0; outcomeIndex < outcomes.Length; outcomeIndex++)
             {
@@ -68,7 +71,7 @@ internal sealed class NnValuePlayer : IBenchmarkPlayer, INnStatsProvider
             TotalNnStatesEvaluated += states.Count;
         }
 
-        var bestAction = 0;
+        var bestActions = new List<int>();
         var bestValue = float.NegativeInfinity;
         foreach (var descriptor in descriptors)
         {
@@ -85,11 +88,26 @@ internal sealed class NnValuePlayer : IBenchmarkPlayer, INnStatsProvider
             if (expectedValue > bestValue)
             {
                 bestValue = expectedValue;
-                bestAction = descriptor.ActionIndex;
+                bestActions.Clear();
+                bestActions.Add(descriptor.ActionIndex);
+            }
+            else if (Math.Abs(expectedValue - bestValue) < 1e-6f)
+            {
+                bestActions.Add(descriptor.ActionIndex);
             }
         }
 
-        return (CatanState)Unwrap(coreActions[bestAction]).DoCoreAction();
+        var bestAction = bestActions[rng.Next(bestActions.Count)];
+        var outcomesToSample = actionOutcomes[bestAction];
+        var roll = rng.Next(outcomesToSample.Sum(outcome => outcome.Weight));
+        var cumulative = 0;
+        foreach (var outcome in outcomesToSample)
+        {
+            cumulative += outcome.Weight;
+            if (roll < cumulative)
+                return outcome.State;
+        }
+        return outcomesToSample[^1].State;
     }
 
     internal static int CanonicalPlayerSlot(int absolutePlayer, int successorPlayer, int playerCount) =>

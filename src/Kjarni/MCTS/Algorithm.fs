@@ -529,7 +529,7 @@ let propagateTerminals (visitedStates: MCTSState list) =
 
     propagate visitedStates
 
-let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float, actionRolloutLimit: int, priorClient: IPriorClient option, leafEvaluator: ILeafEvaluator option, leafBoundary: (ICoreState -> bool) option, maxPriorDepth: int, maxPendingEvaluations: int, leafEvaluationTimeoutMs: int, drainTimeoutMs: int) =
+let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float, actionRolloutLimit: int, priorClient: IPriorClient option, leafEvaluator: ILeafEvaluator option, leafBoundary: (ICoreState -> bool) option, maxTreeDepth: int, maxPriorDepth: int, maxPendingEvaluations: int, leafEvaluationTimeoutMs: int, drainTimeoutMs: int) =
     // Normalise the option to guard against C# passing Some(null).
     let priorClient =
         match priorClient with
@@ -808,85 +808,130 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
             let mostRecentState = path.States.[0]
             let depth = path.States.Length
 
-            let expandedState = expand leafBoundary (mostRecentState, i)
             let selectedEdge = { Parent = mostRecentState; ActionIndex = i }
-            let expandedPath =
-                { States = expandedState :: path.States
-                  Edges = selectedEdge :: path.Edges }
-
-            match mostRecentState.Actions.[i] with
-            | HorizonAction _ ->
-                priorStats.horizonSkips <- priorStats.horizonSkips + 1
-                let evaluationPath = { path with Edges = selectedEdge :: path.Edges }
-                if not (enqueueLeaf evaluationPath [| expandedState |] [| 1 |] Array.empty depth) then
-                    let outcome = simulate maxRolloutDepth expandedState
-                    backPropagatePath expandedPath outcome
-                collectPriors ()
-            | StochasticAction stochasticOutcomes ->
-                for stochasticOutcome in stochasticOutcomes do
-                    requestPrior stochasticOutcome.State depth
-
-                let evaluationPath =
-                    { States = path.States
-                      Edges = selectedEdge :: path.Edges }
-                let nonterminal =
-                    stochasticOutcomes |> Array.filter (fun outcome -> not (Array.isEmpty outcome.State.Actions))
-                let exactOutcomes =
-                    stochasticOutcomes
-                    |> Array.choose (fun outcome ->
-                        if Array.isEmpty outcome.State.Actions then
-                            Some (
-                                outcome.ProbabilityWeight,
-                                oneHotOutcome (outcome.State.State.PlayerTurn, outcome.State.State.NumberOfPlayers))
-                        else None)
-                if nonterminal.Length > 0
-                   && enqueueLeaf
-                        evaluationPath
-                        (nonterminal |> Array.map (fun outcome -> outcome.State))
-                        (nonterminal |> Array.map (fun outcome -> outcome.ProbabilityWeight))
-                        exactOutcomes
-                        depth then
-                    ()
-                else
-                    let evaluateOutcome (outcomeState: MCTSState) =
-                        let outcome =
-                            if Array.isEmpty outcomeState.Actions then
-                                oneHotOutcome (outcomeState.State.PlayerTurn, outcomeState.State.NumberOfPlayers)
-                            else
-                                simulate maxRolloutDepth outcomeState
-                        backPropagate [ outcomeState ] outcome
-                        outcome
-                    let outcome = evaluateStochasticOutcomes evaluateOutcome stochasticOutcomes
-                    backPropagatePath evaluationPath outcome
-                    for stochasticOutcome in stochasticOutcomes do
-                        propagateTerminals (stochasticOutcome.State :: path.States)
-                collectPriors ()
-            // Check if the expanded state is a terminal game state (no actions).
-            | _ when Array.isEmpty expandedState.Actions ->
-                let outcome = oneHotOutcome (expandedState.State.PlayerTurn, expandedState.State.NumberOfPlayers)
-                backPropagatePath expandedPath outcome
+            let coreAction =
                 match mostRecentState.Actions.[i] with
-                | DeterministicAction _ ->
-                    mostRecentState.Actions.[i] <- Terminal outcome
-                | _ -> ()
-                propagateTerminals expandedPath.States
-                collectPriors ()
-            | _ ->
-                // Phase 3 — Prior request: enqueue async NN evaluation for the
-                // expanded node's actions.
-                requestPrior expandedState depth
-                collectPriors ()
+                | Unexplored action -> action
+                | _ -> failwith "Candidate action was already expanded"
+            if depth >= maxTreeDepth then
                 let evaluationPath = { path with Edges = selectedEdge :: path.Edges }
-                match expandedState.ValueEstimates with
-                | Some outcome ->
-                    backPropagate [ expandedState ] outcome
-                    backPropagatePath evaluationPath outcome
-                    propagateTerminals expandedPath.States
-                | None when enqueueLeaf evaluationPath [| expandedState |] [| 1 |] Array.empty depth -> ()
-                | None ->
-                    let outcome = simulate maxRolloutDepth expandedState
+                match coreAction with
+                | Deterministic action ->
+                    let state = MCTSState(action.State())
+                    if Array.isEmpty state.Actions then
+                        backPropagatePath evaluationPath
+                            (oneHotOutcome(state.State.PlayerTurn, state.State.NumberOfPlayers))
+                    elif not (enqueueLeaf evaluationPath [| state |] [| 1 |] Array.empty depth) then
+                        backPropagatePath evaluationPath (simulate 0 state)
+                | Stochastic action ->
+                    let outcomes = action.Outcomes()
+                    let states = outcomes |> Array.map (snd >> MCTSState)
+                    let nonterminal =
+                        states
+                        |> Array.mapi (fun index state -> index, state)
+                        |> Array.filter (fun (_, state) -> not (Array.isEmpty state.Actions))
+                    let exact =
+                        states
+                        |> Array.mapi (fun index state -> index, state)
+                        |> Array.choose (fun (index, state) ->
+                            if Array.isEmpty state.Actions then
+                                Some(fst outcomes.[index], oneHotOutcome(state.State.PlayerTurn, state.State.NumberOfPlayers))
+                            else None)
+                    if nonterminal.Length > 0
+                       && enqueueLeaf evaluationPath
+                            (nonterminal |> Array.map snd)
+                            (nonterminal |> Array.map (fun (index, _) -> fst outcomes.[index]))
+                            exact depth then ()
+                    else
+                        let weighted =
+                            states
+                            |> Array.mapi (fun index state ->
+                                fst outcomes.[index],
+                                if Array.isEmpty state.Actions then
+                                    oneHotOutcome(state.State.PlayerTurn, state.State.NumberOfPlayers)
+                                else simulate 0 state)
+                            |> weightedOutcome
+                        backPropagatePath evaluationPath weighted
+                collectPriors ()
+            else
+                let expandedState = expand leafBoundary (mostRecentState, i)
+                let expandedPath =
+                    { States = expandedState :: path.States
+                      Edges = selectedEdge :: path.Edges }
+
+                match mostRecentState.Actions.[i] with
+                | HorizonAction _ ->
+                    priorStats.horizonSkips <- priorStats.horizonSkips + 1
+                    let evaluationPath = { path with Edges = selectedEdge :: path.Edges }
+                    if not (enqueueLeaf evaluationPath [| expandedState |] [| 1 |] Array.empty depth) then
+                        let outcome = simulate maxRolloutDepth expandedState
+                        backPropagatePath expandedPath outcome
+                    collectPriors ()
+                | StochasticAction stochasticOutcomes ->
+                    for stochasticOutcome in stochasticOutcomes do
+                        requestPrior stochasticOutcome.State depth
+
+                    let evaluationPath =
+                        { States = path.States
+                          Edges = selectedEdge :: path.Edges }
+                    let nonterminal =
+                        stochasticOutcomes |> Array.filter (fun outcome -> not (Array.isEmpty outcome.State.Actions))
+                    let exactOutcomes =
+                        stochasticOutcomes
+                        |> Array.choose (fun outcome ->
+                            if Array.isEmpty outcome.State.Actions then
+                                Some (
+                                    outcome.ProbabilityWeight,
+                                    oneHotOutcome (outcome.State.State.PlayerTurn, outcome.State.State.NumberOfPlayers))
+                            else None)
+                    if nonterminal.Length > 0
+                       && enqueueLeaf
+                            evaluationPath
+                            (nonterminal |> Array.map (fun outcome -> outcome.State))
+                            (nonterminal |> Array.map (fun outcome -> outcome.ProbabilityWeight))
+                            exactOutcomes
+                            depth then
+                        ()
+                    else
+                        let evaluateOutcome (outcomeState: MCTSState) =
+                            let outcome =
+                                if Array.isEmpty outcomeState.Actions then
+                                    oneHotOutcome (outcomeState.State.PlayerTurn, outcomeState.State.NumberOfPlayers)
+                                else
+                                    simulate maxRolloutDepth outcomeState
+                            backPropagate [ outcomeState ] outcome
+                            outcome
+                        let outcome = evaluateStochasticOutcomes evaluateOutcome stochasticOutcomes
+                        backPropagatePath evaluationPath outcome
+                        for stochasticOutcome in stochasticOutcomes do
+                            propagateTerminals (stochasticOutcome.State :: path.States)
+                    collectPriors ()
+                // Check if the expanded state is a terminal game state (no actions).
+                | _ when Array.isEmpty expandedState.Actions ->
+                    let outcome = oneHotOutcome (expandedState.State.PlayerTurn, expandedState.State.NumberOfPlayers)
                     backPropagatePath expandedPath outcome
+                    match mostRecentState.Actions.[i] with
+                    | DeterministicAction _ ->
+                        mostRecentState.Actions.[i] <- Terminal outcome
+                    | _ -> ()
                     propagateTerminals expandedPath.States
+                    collectPriors ()
+                | _ ->
+                    // Phase 3 — Prior request: enqueue async NN evaluation for the
+                    // expanded node's actions.
+                    requestPrior expandedState depth
+                    collectPriors ()
+                    let evaluationPath = { path with Edges = selectedEdge :: path.Edges }
+                    match expandedState.ValueEstimates with
+                    | Some outcome ->
+                        backPropagate [ expandedState ] outcome
+                        backPropagatePath evaluationPath outcome
+                        propagateTerminals expandedPath.States
+                    | None when enqueueLeaf evaluationPath [| expandedState |] [| 1 |] Array.empty depth -> ()
+                    | None ->
+                        let outcome = simulate maxRolloutDepth expandedState
+                        backPropagatePath expandedPath outcome
+                        propagateTerminals expandedPath.States
         | StochasticCandidate (path, _) ->
             resubmitPriors path.States
             let expandedState = path.States.[0]

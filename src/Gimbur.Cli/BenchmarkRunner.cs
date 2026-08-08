@@ -27,6 +27,9 @@ internal enum AiKind
     NnValue,
     NnValuePlacement,
     NnValueMainGame,
+    NnOnePly,
+    NnOnePlyPlacement,
+    NnOnePlyMainGame,
     ServerMcts,
     ServerMctsNn,
 }
@@ -224,6 +227,7 @@ internal sealed class GreedyPlayer : IBenchmarkPlayer
 internal sealed class MctsPlayer : IBenchmarkPlayer, INnStatsProvider
 {
     private readonly Kjarni.MCTS.AI.MonteCarloTreeSearch _mcts;
+    private readonly bool _reuseTree;
     private Kjarni.MCTS.Types.MCTSState? _mctsRoot;
 
     /// <summary>Total nodes for which a prior was requested across all MCTS decisions in this game.</summary>
@@ -248,9 +252,10 @@ internal sealed class MctsPlayer : IBenchmarkPlayer, INnStatsProvider
     int INnStatsProvider.TotalNnRequests => TotalPriorNodesRequested;
     int INnStatsProvider.TotalNnStatesEvaluated => TotalPriorInferencesRequested;
 
-    public MctsPlayer(MCTSConfig config)
+    public MctsPlayer(MCTSConfig config, bool reuseTree = true)
     {
         _mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(config);
+        _reuseTree = reuseTree;
     }
 
     public CatanState? Act(CatanState state, Random rng)
@@ -262,12 +267,13 @@ internal sealed class MctsPlayer : IBenchmarkPlayer, INnStatsProvider
         {
             // Forced action — apply without running MCTS.
             var next = (CatanState)UnwrapCoreAction(actions[0]).DoCoreAction();
-            _mctsRoot = AdvanceMctsRoot(_mctsRoot, 0, (ICoreState)next);
+            _mctsRoot = _reuseTree ? AdvanceMctsRoot(_mctsRoot, 0, (ICoreState)next) : null;
             return next;
         }
 
         // Multiple actions — run MCTS to decide.
-        _mctsRoot ??= new Kjarni.MCTS.Types.MCTSState((ICoreState)state);
+        if (!_reuseTree || _mctsRoot is null)
+            _mctsRoot = new Kjarni.MCTS.Types.MCTSState((ICoreState)state);
         _mcts.RunSimulation(_mctsRoot);
         var bestPath = extractBestPath(_mctsRoot);
 
@@ -299,7 +305,9 @@ internal sealed class MctsPlayer : IBenchmarkPlayer, INnStatsProvider
         if (!bestPath.IsEmpty && bestPath.Head < actions.Length)
         {
             var next = (CatanState)UnwrapCoreAction(actions[bestPath.Head]).DoCoreAction();
-            _mctsRoot = AdvanceMctsRoot(_mctsRoot, bestPath.Head, (ICoreState)next);
+            _mctsRoot = _reuseTree
+                ? AdvanceMctsRoot(_mctsRoot, bestPath.Head, (ICoreState)next)
+                : null;
             return next;
         }
 
@@ -653,6 +661,22 @@ internal class BenchmarkRunner
     private IBenchmarkPlayer CreatePlayer(AiKind kind, string nnUrl)
     {
         var nnClient = _nnClients.GetValueOrDefault(nnUrl);
+        MctsPlayer OnePly() => new(
+            new MCTSConfig(
+                searchTime.NewMilliSeconds(_options.SearchTimeMs),
+                _options.MaxSimulations,
+                0,
+                Math.Sqrt(2.0),
+                int.MaxValue,
+                PriorClientPool.Get(nnUrl),
+                CatanStateLeafEvaluatorPool.Get(nnUrl),
+                null,
+                1,
+                0,
+                32,
+                500,
+                1000),
+            reuseTree: false);
 
         return kind switch
         {
@@ -668,6 +692,7 @@ internal class BenchmarkRunner
                 null,
                 null,
                 int.MaxValue,
+                int.MaxValue,
                 32,
                 500,
                 1000)),
@@ -681,6 +706,11 @@ internal class BenchmarkRunner
                 new NnValuePlayer(nnClient!), new GreedyPlayer()),
             AiKind.NnValueMainGame => new PhaseSwitchingPlayer(
                 new GreedyPlayer(), new NnValuePlayer(nnClient!)),
+            AiKind.NnOnePly => OnePly(),
+            AiKind.NnOnePlyPlacement => new PhaseSwitchingPlayer(
+                OnePly(), new GreedyPlayer()),
+            AiKind.NnOnePlyMainGame => new PhaseSwitchingPlayer(
+                new GreedyPlayer(), OnePly()),
             AiKind.ServerMcts => new ServerPlayer(
                 _options.ServerUrl, "mcts-ai", _options.MapConfig ?? "standard",
                 _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth),
@@ -704,6 +734,7 @@ internal class BenchmarkRunner
     private static bool UsesNn(AiKind[] players) =>
         players.Any(ai => ai is AiKind.Nn or AiKind.NnPlacement or AiKind.NnMainGame
             or AiKind.NnValue or AiKind.NnValuePlacement or AiKind.NnValueMainGame
+            or AiKind.NnOnePly or AiKind.NnOnePlyPlacement or AiKind.NnOnePlyMainGame
             or AiKind.ServerMctsNn);
 
     internal static string[] ResolveNnUrls(BenchmarkOptions options)

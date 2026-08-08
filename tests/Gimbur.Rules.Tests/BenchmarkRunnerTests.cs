@@ -14,6 +14,9 @@ internal sealed class BenchmarkRunnerTests
     [TestCase("nn-value", AiKind.NnValue)]
     [TestCase("nn-value-placement", AiKind.NnValuePlacement)]
     [TestCase("nn-value-main-game", AiKind.NnValueMainGame)]
+    [TestCase("nn-one-ply", AiKind.NnOnePly)]
+    [TestCase("nn-one-ply-placement", AiKind.NnOnePlyPlacement)]
+    [TestCase("nn-one-ply-main-game", AiKind.NnOnePlyMainGame)]
     [TestCase("server-mcts", AiKind.ServerMcts)]
     [TestCase("server-mcts-nn", AiKind.ServerMctsNn)]
     public void ParsesStableAiNames(string name, AiKind expected)

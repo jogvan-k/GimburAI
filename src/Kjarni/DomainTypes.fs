@@ -140,6 +140,7 @@ type MCTSConfig =
       PriorClient: IPriorClient option
       LeafEvaluator: ILeafEvaluator option
       LeafBoundary: (ICoreState -> bool) option
+      MaxTreeDepth: int
       MaxPriorDepth: int
       MaxPendingEvaluations: int
       LeafEvaluationTimeoutMs: int
@@ -154,6 +155,7 @@ type MCTSConfig =
           PriorClient = None
           LeafEvaluator = None
           LeafBoundary = None
+          MaxTreeDepth = System.Int32.MaxValue
           MaxPriorDepth = System.Int32.MaxValue
           MaxPendingEvaluations = 32
           LeafEvaluationTimeoutMs = 500

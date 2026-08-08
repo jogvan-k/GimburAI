@@ -1381,6 +1381,7 @@ internal class SimulationRunner
                 ? CatanStateLeafEvaluatorPool.Get(_options.NnUrl)
                 : null,
             placement ? leafBoundary : null,
+            int.MaxValue,
             _options.MaxPriorDepth,
             _options.MaxPendingEvaluations,
             _options.LeafEvaluationTimeoutMs,
@@ -1571,6 +1572,7 @@ internal class SimulationRunner
             priorOption,
             null,
             leafBoundary,
+            int.MaxValue,
             _options.MaxPriorDepth,
             _options.MaxPendingEvaluations,
             _options.LeafEvaluationTimeoutMs,

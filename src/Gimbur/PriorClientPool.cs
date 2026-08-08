@@ -22,6 +22,7 @@ public static class PriorClientPool
     /// </summary>
     public static PriorClient Get(string nnUrl)
     {
-        return _clients.GetOrAdd(nnUrl, url => new PriorClient(url, pooled: true));
+        var normalized = nnUrl.TrimEnd('/');
+        return _clients.GetOrAdd(normalized, url => new PriorClient(url, pooled: true));
     }
 }

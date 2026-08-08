@@ -180,3 +180,38 @@ type LeafEvaluatorTests() =
 
         root.Rollouts |> should equal 1
         root.ActionStats |> Array.sumBy (fun stats -> stats.CompletedVisits) |> should equal 1
+
+    [<Test>]
+    member _.MaxTreeDepthOneEvaluatesDeterministicChildrenWithoutExpansion() =
+        let evaluator = DelayedLeafEvaluator([| [| 0.7; 0.3 |] |], true)
+        let child = node_builder(p2, 1, 0, 41, node_builder(p1, 2, 1, 42))
+        let root = MCTSState(node_builder(p1, 0, 0, 40, child).build())
+        let cfg =
+            { config (evaluator :> ILeafEvaluator) with
+                MaxTreeDepth = 1
+                MaxSimulations = 1 }
+        let mcts = MonteCarloTreeSearch(cfg)
+
+        mcts.RunSimulation(root) |> ignore
+
+        root.Actions.[0] |> should be (ofCase <@ Unexplored @>)
+        root.ActionStats.[0].CompletedVisits |> should equal 1
+        root.ActionStats.[0].ValueSums.[0] |> should (equalWithin 0.0001) 0.7
+
+    [<Test>]
+    member _.MaxTreeDepthOneEvaluatesAllStochasticOutcomesWithoutExpansion() =
+        let outcomeA = node_builder(p2, 1, 0, 51, node_builder(p1, 2, 1, 52)).build()
+        let outcomeB = node_builder(p2, 1, 0, 53, node_builder(p1, 2, 1, 54)).build()
+        let evaluator = DelayedLeafEvaluator([| [| 0.8; 0.2 |]; [| 0.2; 0.8 |] |], true)
+        let root = MCTSState(stochastic_node(p1, 0, 0, 50, [ 1, outcomeA; 3, outcomeB ]))
+        let cfg =
+            { config (evaluator :> ILeafEvaluator) with
+                MaxTreeDepth = 1
+                MaxSimulations = 1 }
+        let mcts = MonteCarloTreeSearch(cfg)
+
+        mcts.RunSimulation(root) |> ignore
+
+        root.Actions.[0] |> should be (ofCase <@ Unexplored @>)
+        root.ActionStats.[0].CompletedVisits |> should equal 1
+        root.ActionStats.[0].ValueSums.[0] |> should (equalWithin 0.0001) 0.35
