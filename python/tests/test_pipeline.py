@@ -17,6 +17,7 @@ from gimbur_nn.pipeline import (
     _generation_complete,
     _load_config,
     _load_section,
+    _reload_config,
     _run_gen0_milestones,
     _save_progress_chart,
     _save_summary,
@@ -62,6 +63,20 @@ def test_pipeline_config_loads_gen0_milestones(tmp_path) -> None:
 
     assert config.gen0_milestones == [200, 400, 600]
     assert config.gen0_games == 600
+
+
+def test_pipeline_config_reloads_in_place(tmp_path) -> None:
+    path = tmp_path / "pipeline.json"
+    path.write_text(json.dumps({"simulate": {"games": 10}, "train": {"lr": 5e-5}}))
+    config = _load_config(path)
+    original = config
+
+    path.write_text(json.dumps({"simulate": {"games": 20}, "train": {"lr": 2e-5}}))
+    reloaded = _reload_config(config)
+
+    assert reloaded is original
+    assert config.simulate.games == 20
+    assert config.train.lr == 2e-5
 
 
 @pytest.mark.parametrize("milestones", [[400, 200], [200, 200], [0, 200]])
@@ -126,6 +141,20 @@ def test_promotion_gate_requires_both_thresholds() -> None:
     assert _evaluate_promotion_gate(gate, 0.52, 0.51)["passed"]
     assert not _evaluate_promotion_gate(gate, 0.519, 0.60)["passed"]
     assert not _evaluate_promotion_gate(gate, 0.60, 0.509)["passed"]
+
+
+def test_promotion_gate_can_skip_greedy_comparison() -> None:
+    gate = PromotionGateConfig(
+        compare_with_greedy=False,
+        minimum_improvement_vs_greedy=0.25,
+        minimum_improvement_vs_champion=0.01,
+    )
+
+    result = _evaluate_promotion_gate(gate, None, 0.51)
+
+    assert result["passed"]
+    assert result["passedGreedy"]
+    assert result["greedyScore"] is None
 
 
 def test_promotion_benchmark_score_counts_draws_and_requires_exact_games() -> None:
@@ -261,6 +290,37 @@ def test_step_train_passes_value_blending_and_state_sampling(tmp_path, monkeypat
     assert config["victoryPointSamplingUpperPercentage"] == 0.25
     assert "modelType" not in config
     assert "outputMode" not in config
+
+
+def test_step_train_resumes_incomplete_epoch_checkpoint(tmp_path, monkeypatch) -> None:
+    model = tmp_path / "models/gen0.pt"
+    checkpoint_dir = tmp_path / "models/gen0_checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    model.write_text("best model")
+    (checkpoint_dir / "epoch_1.pt").write_text("epoch")
+    cfg = PipelineConfig(data_dir=str(tmp_path / "data"), model_dir=str(tmp_path / "models"))
+    monkeypatch.setattr("gimbur_nn.pipeline._run", lambda *args, **kwargs: None)
+
+    _step_train(cfg, 0, tmp_path)
+
+    config = json.loads((tmp_path / "models/.configs/train_gen0.json").read_text())
+    assert config["resume"] == str(checkpoint_dir)
+
+
+def test_step_train_skips_completed_epoch_checkpoint(tmp_path, monkeypatch) -> None:
+    model = tmp_path / "models/gen0.pt"
+    checkpoint_dir = tmp_path / "models/gen0_checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    model.write_text("best model")
+    (checkpoint_dir / "epoch_1.pt").write_text("epoch")
+    (checkpoint_dir / "training_complete").write_text("1\n")
+    cfg = PipelineConfig(data_dir=str(tmp_path / "data"), model_dir=str(tmp_path / "models"))
+    monkeypatch.setattr(
+        "gimbur_nn.pipeline._run",
+        lambda *args, **kwargs: pytest.fail("completed training should be skipped"),
+    )
+
+    _step_train(cfg, 0, tmp_path)
 
 
 def test_complete_mode_generates_state_sim_and_one_train_config(tmp_path, monkeypatch) -> None:

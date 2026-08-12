@@ -29,7 +29,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -48,7 +48,6 @@ class SimulateConfig:
     max_simulations: int = 200
     max_rollout_depth: int = 500
     action_rollout_limit: int | None = None
-    max_prior_depth: int | None = None
     symmetries: bool = True
     verbosity: str = "quiet"
     oversample: float = 1.0
@@ -120,8 +119,8 @@ class BenchmarkConfig:
     ai: list[str] = field(default_factory=lambda: ["nn", "greedy"])
     search_time_ms: int | None = None
     server_prior_mode: str | None = None
-    server_max_prior_depth: int | None = None
     parallelism: int | None = None
+    progress_interval: int = 10
 
 
 @dataclass
@@ -129,13 +128,14 @@ class PromotionGateConfig:
     """One direct or MCTS promotion gate."""
 
     enabled: bool = True
+    compare_with_greedy: bool = True
     games: int = 10_000
     ai: str = "nn-placement-state"
     minimum_improvement_vs_greedy: float = 0.0
     minimum_improvement_vs_champion: float = 0.0
     search_time_ms: int | None = None
-    server_max_prior_depth: int | None = None
     parallelism: int | None = None
+    progress_interval: int = 10
 
 
 @dataclass
@@ -170,8 +170,8 @@ class BaselineBenchmarkConfig:
     games: int = 200
     ai: list[str] = field(default_factory=lambda: ["mcts", "greedy"])
     search_time_ms: int | None = None
+    progress_interval: int = 10
     server_prior_mode: str | None = None
-    server_max_prior_depth: int | None = None
 
 
 @dataclass
@@ -218,6 +218,7 @@ class PipelineConfig:
     )
     baselines: list[BaselineBenchmarkConfig] = field(default_factory=list)
     promotion: PromotionConfig = field(default_factory=PromotionConfig)
+    config_path: Path | None = field(default=None, repr=False, compare=False)
 
 
 def _strip_json_comments(text: str) -> str:
@@ -250,7 +251,7 @@ def _load_config(path: Path) -> PipelineConfig:
     """Load a PipelineConfig from a JSON file. Supports // comments."""
     text = _strip_json_comments(path.read_text())
     raw = json.loads(text)
-    cfg = PipelineConfig()
+    cfg = PipelineConfig(config_path=path.resolve())
 
     # Top-level scalars.
     for attr in (
@@ -303,6 +304,16 @@ def _load_config(path: Path) -> PipelineConfig:
         if any(games <= 0 for games in cfg.gen0_milestones):
             raise ValueError("gen0Milestones values must be positive.")
         cfg.gen0_games = cfg.gen0_milestones[-1]
+    return cfg
+
+
+def _reload_config(cfg: PipelineConfig) -> PipelineConfig:
+    """Refresh *cfg* in place from its source file before a pipeline step."""
+    if cfg.config_path is None:
+        return cfg
+    refreshed = _load_config(cfg.config_path)
+    for config_field in fields(PipelineConfig):
+        setattr(cfg, config_field.name, getattr(refreshed, config_field.name))
     return cfg
 
 
@@ -889,6 +900,7 @@ def _step_simulate(
     On resume, counts existing ``.json`` files and only requests the
     remaining games needed to reach the target.
     """
+    _reload_config(cfg)
     out_dir = _data_path(cfg, gen)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -925,8 +937,6 @@ def _step_simulate(
     }
     if sim.action_rollout_limit is not None:
         sim_config["actionRolloutLimit"] = sim.action_rollout_limit
-    if sim.max_prior_depth is not None:
-        sim_config["maxPriorDepth"] = sim.max_prior_depth
     if sim.parallelism is not None:
         sim_config["parallelism"] = sim.parallelism
     sim_config["maxPendingEvaluations"] = sim.max_pending_evaluations
@@ -1082,12 +1092,22 @@ def _step_train(
     config_suffix: str = "",
 ) -> None:
     """Train the model for a generation. Skips if the checkpoint already exists."""
+    _reload_config(cfg)
     out_path = out_path_override or _model_path(cfg, gen)
-    if out_path.is_file():
+    tr = cfg.train
+    checkpoint_dir = (
+        checkpoint_path_override or _checkpoint_path(cfg, gen) if tr.checkpoint_dir else None
+    )
+    interrupted = (
+        checkpoint_dir is not None
+        and checkpoint_dir.is_dir()
+        and any(checkpoint_dir.glob("epoch_*.pt"))
+        and not (checkpoint_dir / "training_complete").is_file()
+    )
+    if out_path.is_file() and not interrupted:
         print(f"  Train: Model already exists at {out_path}, skipping.")
         return
 
-    tr = cfg.train
     replay_start = max(0, gen - max(1, tr.replay_generations) + 1)
     data_paths = [_data_path(cfg, replay_gen) for replay_gen in range(replay_start, gen + 1)]
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1113,12 +1133,13 @@ def _step_train(
         "victoryPointSamplingUpperPercentage": tr.victory_point_sampling_upper_percentage,
     }
     # Enable per-epoch checkpointing if configured.
-    if tr.checkpoint_dir:
-        ckpt_dir = checkpoint_path_override or _checkpoint_path(cfg, gen)
-        train_config["checkpointDir"] = str(ckpt_dir)
+    if checkpoint_dir is not None:
+        train_config["checkpointDir"] = str(checkpoint_dir)
 
     # Resume from previous generation's model if available.
-    if resume_path_override is not None:
+    if interrupted:
+        train_config["resume"] = str(checkpoint_dir)
+    elif resume_path_override is not None:
         train_config["resume"] = str(resume_path_override)
     elif tr.resume_from_previous and gen > 0:
         prev_model = _model_path(cfg, gen - 1)
@@ -1152,21 +1173,31 @@ def _step_benchmark(
 
     Skips individual benchmarks whose result files already exist (resume).
     """
+    _reload_config(cfg)
     gen_results: dict[str, Any] = {}
 
-    benchmarks = cfg.benchmarks
+    benchmarks = list(cfg.benchmarks)
 
-    # Start the Gimbur.Server if any benchmark needs it.
     started_game_server = False
-    if gimbur_server is not None and _benchmarks_need_game_server(benchmarks):
-        gimbur_server.start(
-            gimbur_server_cfg=cfg.gimbur_server,
-            cwd=project_root,
-        )
-        started_game_server = True
-
     try:
-        for bench in benchmarks:
+        for configured_bench in benchmarks:
+            _reload_config(cfg)
+            bench = next(
+                (item for item in cfg.benchmarks if item.name == configured_bench.name), None
+            )
+            if bench is None:
+                print(f"  Benchmark '{configured_bench.name}': removed from config, skipping.")
+                continue
+            if (
+                gimbur_server is not None
+                and not started_game_server
+                and _benchmarks_need_game_server([bench])
+            ):
+                gimbur_server.start(
+                    gimbur_server_cfg=cfg.gimbur_server,
+                    cwd=project_root,
+                )
+                started_game_server = True
             out_path = (
                 output_path_for(bench.name)
                 if output_path_for is not None
@@ -1202,10 +1233,9 @@ def _step_benchmark(
                 bench_config["serverUrl"] = f"http://{gs.host}:{gs.port}"
             if bench.server_prior_mode is not None:
                 bench_config["serverPriorMode"] = bench.server_prior_mode
-            if bench.server_max_prior_depth is not None:
-                bench_config["serverMaxPriorDepth"] = bench.server_max_prior_depth
             if bench.parallelism is not None:
                 bench_config["parallelism"] = bench.parallelism
+            bench_config["progressInterval"] = bench.progress_interval
 
             config_name = config_prefix or f"benchmark_gen{gen}"
             config_path = _write_config(cfg, f"{config_name}_{bench.name}", bench_config)
@@ -1273,6 +1303,8 @@ def _run_promotion_match(
     opponent_url: str,
     gimbur_server: _GimburServerProcess,
 ) -> tuple[dict[str, Any], float]:
+    _reload_config(cfg)
+    gate = getattr(cfg.promotion, name.split("-", 1)[0])
     out_path = _promotion_attempt_path(cfg, gen, attempt) / f"{name}.json"
     if out_path.is_file():
         try:
@@ -1297,10 +1329,9 @@ def _run_promotion_match(
         bench_config["seed"] = cfg.seed + gen * 100_000 + attempt * 10_000
     if gate.search_time_ms is not None:
         bench_config["searchTimeMs"] = gate.search_time_ms
-    if gate.server_max_prior_depth is not None:
-        bench_config["serverMaxPriorDepth"] = gate.server_max_prior_depth
     if gate.parallelism is not None:
         bench_config["parallelism"] = gate.parallelism
+    bench_config["progressInterval"] = gate.progress_interval
     if gate.ai in _SERVER_AI_KINDS:
         gs = cfg.gimbur_server
         bench_config["serverUrl"] = f"http://{gs.host}:{gs.port}"
@@ -1331,11 +1362,13 @@ def _run_promotion_match(
 
 
 def _evaluate_promotion_gate(
-    gate: PromotionGateConfig, greedy_score: float, champion_score: float
+    gate: PromotionGateConfig, greedy_score: float | None, champion_score: float
 ) -> dict[str, Any]:
     greedy_required = 0.5 + gate.minimum_improvement_vs_greedy
     champion_required = 0.5 + gate.minimum_improvement_vs_champion
-    passed_greedy = greedy_score >= greedy_required
+    passed_greedy = not gate.compare_with_greedy or (
+        greedy_score is not None and greedy_score >= greedy_required
+    )
     passed_champion = champion_score >= champion_required
     return {
         "games": gate.games,
@@ -1403,6 +1436,9 @@ def _start_complete_model_server(
     model: Path,
     project_root: Path,
 ) -> str:
+    original_port_offset = serve_cfg.port - cfg.serve.port
+    _reload_config(cfg)
+    serve_cfg = replace(cfg.serve, port=cfg.serve.port + original_port_offset)
     server.start(
         serve_cfg=serve_cfg,
         game_config=cfg.game_config,
@@ -1445,18 +1481,20 @@ def _run_promotion_gates(
         for name, gate in (("direct", cfg.promotion.direct), ("hybrid", cfg.promotion.hybrid)):
             if not gate.enabled:
                 continue
-            _, greedy_score = _run_promotion_match(
-                cfg,
-                gen,
-                attempt,
-                project_root,
-                name=f"{name}-challenger-vs-greedy",
-                gate=gate,
-                opponent_ai="greedy",
-                challenger_url=challenger_url,
-                opponent_url=champion_url,
-                gimbur_server=gimbur_server,
-            )
+            greedy_score = None
+            if gate.compare_with_greedy:
+                _, greedy_score = _run_promotion_match(
+                    cfg,
+                    gen,
+                    attempt,
+                    project_root,
+                    name=f"{name}-challenger-vs-greedy",
+                    gate=gate,
+                    opponent_ai="greedy",
+                    challenger_url=challenger_url,
+                    opponent_url=champion_url,
+                    gimbur_server=gimbur_server,
+                )
             _, champion_score = _run_promotion_match(
                 cfg,
                 gen,
@@ -1796,6 +1834,7 @@ def _step_baselines(
     Returns ``{baseline_name: result_dict}`` for every configured baseline,
     populated from cache where available.
     """
+    _reload_config(cfg)
     results: dict[str, dict[str, Any]] = {}
     if not cfg.baselines:
         return results
@@ -1843,10 +1882,9 @@ def _step_baselines(
             if any(ai in _SERVER_AI_KINDS for ai in bench.ai):
                 gs = cfg.gimbur_server
                 bench_config["serverUrl"] = f"http://{gs.host}:{gs.port}"
+            bench_config["progressInterval"] = bench.progress_interval
             if bench.server_prior_mode is not None:
                 bench_config["serverPriorMode"] = bench.server_prior_mode
-            if bench.server_max_prior_depth is not None:
-                bench_config["serverMaxPriorDepth"] = bench.server_max_prior_depth
 
             config_path = _write_config(cfg, f"baseline_{bench.name}", bench_config)
 
@@ -2117,7 +2155,6 @@ def _run_single_generation(
     gen: int,
     project_root: Path,
     server: _ServerProcess,
-    nn_url: str,
     all_results: dict[int, dict[str, Any]],
     gimbur_server: _GimburServerProcess | None = None,
 ) -> None:
@@ -2129,6 +2166,7 @@ def _run_single_generation(
     sim_already_done = _simulation_complete(cfg, gen)
     gen_nn_url: str | None = None
     if gen > 0 and not sim_already_done:
+        _reload_config(cfg)
         prev_model = _model_path(cfg, gen - 1)
         if not prev_model.exists():
             raise FileNotFoundError(
@@ -2144,7 +2182,7 @@ def _run_single_generation(
             pipeline_cfg=cfg,
             cwd=project_root,
         )
-        gen_nn_url = nn_url
+        gen_nn_url = f"http://{cfg.serve.host}:{cfg.serve.port}"
 
     _step_simulate(cfg, gen, project_root, gen_nn_url)
 
@@ -2158,6 +2196,7 @@ def _run_single_generation(
     # --- Benchmark ---
     # Start server with this generation's model (only if needed).
     bench_already_done = _benchmark_complete(cfg, gen)
+    _reload_config(cfg)
     model_path = _model_path(cfg, gen)
     if not model_path.exists():
         print(f"WARNING: Model not found at {model_path}, skipping benchmarks.")
@@ -2178,7 +2217,7 @@ def _run_single_generation(
         cfg,
         gen,
         project_root,
-        nn_url,
+        f"http://{cfg.serve.host}:{cfg.serve.port}",
         gimbur_server=gimbur_server,
         all_results=all_results,
     )
@@ -2204,7 +2243,6 @@ def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> Non
     """
     server = _ServerProcess()
     gimbur_server = _GimburServerProcess()
-    nn_url = f"http://{cfg.serve.host}:{cfg.serve.port}"
     all_results: dict[int, dict[str, Any]] = {}
 
     # Load any existing summary.
@@ -2226,7 +2264,11 @@ def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> Non
             _run_gen0_milestones(cfg, project_root, server, gimbur_server)
             start_gen = 1
 
-        for gen in range(start_gen, cfg.generations):
+        gen = start_gen
+        while True:
+            _reload_config(cfg)
+            if gen >= cfg.generations:
+                break
             # Check if entire generation is already done.
             if _generation_complete(cfg, gen):
                 print(f"\n--- Generation {gen} already complete, skipping.")
@@ -2239,6 +2281,7 @@ def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> Non
                             gen_results[bench.name] = json.loads(rp.read_text())
                     if gen_results:
                         all_results[gen] = gen_results
+                gen += 1
                 continue
 
             print(f"\n{'#' * 60}")
@@ -2262,8 +2305,9 @@ def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> Non
                 )
             else:
                 _run_single_generation(
-                    cfg, gen, project_root, server, nn_url, all_results, gimbur_server=gimbur_server
+                    cfg, gen, project_root, server, all_results, gimbur_server=gimbur_server
                 )
+            gen += 1
 
     except KeyboardInterrupt:
         print("\n\nPipeline interrupted by user.")

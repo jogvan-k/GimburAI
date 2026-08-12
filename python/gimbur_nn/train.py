@@ -681,6 +681,9 @@ def main() -> None:
         )
         print(f"Test loss: {test_loss:.4f}")
 
+    if checkpoint_dir is not None:
+        (checkpoint_dir / "training_complete").write_text(f"{epoch}\n")
+
 
 if __name__ == "__main__":
     main()
