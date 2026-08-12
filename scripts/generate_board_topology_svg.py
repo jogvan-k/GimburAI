@@ -14,6 +14,7 @@ Vertices and edges use canonical indexing (top-to-bottom, left-to-right).
 
 import math
 import os
+import re
 import sys
 
 SQRT3 = math.sqrt(3.0)
@@ -108,7 +109,12 @@ def make_vertices_and_edges(tiles):
     vertices = sorted(vertex_pos.items(), key=lambda kv: (kv[1][1], kv[1][0]))
     v_index = {key: i for i, (key, _) in enumerate(vertices)}
 
-    edges = sorted(edge_set, key=lambda e: (v_index[e[0]], v_index[e[1]]))
+    # Match BoardTopology: normalize endpoint indices, then sort numerically.
+    edges = [
+        edge if v_index[edge[0]] < v_index[edge[1]] else (edge[1], edge[0])
+        for edge in edge_set
+    ]
+    edges.sort(key=lambda edge: (v_index[edge[0]], v_index[edge[1]]))
 
     return vertices, v_index, edges
 
@@ -232,7 +238,6 @@ def make_ports(tiles, vertices, v_index, edges, port_count):
     Returns list of (vertex_a, vertex_b) pairs (by vertex index), ordered
     clockwise from the top of the board.
     """
-    tile_set = set(tiles)
     adj = build_adjacency(tiles, vertices, v_index, edges)
 
     # Build coastal-edge graph for walking the boundary ring
@@ -519,10 +524,176 @@ def dump_adjacency(tiles, vertices, v_index, edges):
         print(f"| {ei} | {', '.join(str(t) for t in adj['edge_tiles'][ei])} |")
 
 
+def markdown_table(headers, rows):
+    lines = ["| " + " | ".join(headers) + " |", "| " + " | ".join("---" for _ in headers) + " |"]
+    lines.extend("| " + " | ".join(str(value) for value in row) + " |" for row in rows)
+    return "\n".join(lines)
+
+
+def placement_actions(vertices, v_index, edges):
+    positions = {index: pos for index, (_, pos) in enumerate(vertices)}
+    entries = []
+    for edge_index, (key_a, key_b) in enumerate(edges):
+        a, b = v_index[key_a], v_index[key_b]
+        for source, target in ((a, b), (b, a)):
+            sx, sy = positions[source]
+            tx, ty = positions[target]
+            dx, dy = tx - sx, ty - sy
+            if abs(dx) < 1e-9:
+                direction = "N" if dy < 0 else "S"
+            elif dx > 0:
+                direction = "NE" if dy < 0 else "SE"
+            else:
+                direction = "NW" if dy < 0 else "SW"
+            entries.append((source, direction, edge_index))
+    entries.sort(key=lambda entry: (entry[0], entry[1]))
+    return entries
+
+
+def render_map_section(layout_name, section_number, tiles, vertices, v_index, edges, ports):
+    adj = build_adjacency(tiles, vertices, v_index, edges)
+    coastal = find_coastal_edges(tiles, edges)
+    titles = {
+        "mini": "Mini Map (Radius 1)",
+        "small": "Small Map (10 tiles, non-circular)",
+        "standard": "Standard Map (Radius 2)",
+    }
+    svg_names = {
+        "mini": "mini-board-topology.svg",
+        "small": "small-board-topology.svg",
+        "standard": "board-topology.svg",
+    }
+    tile_rows = {"mini": "2, 3, 2", "small": "3, 4, 3", "standard": "3, 4, 5, 4, 3"}
+    degree_counts = {
+        degree: sum(1 for edges_for_vertex in adj["vertex_edges"].values() if len(edges_for_vertex) == degree)
+        for degree in (2, 3)
+    }
+    tile_touch_counts = {
+        count: sum(1 for vertex_tiles in adj["vertex_tiles"].values() if len(vertex_tiles) == count)
+        for count in (1, 2, 3)
+    }
+    action_entries = placement_actions(vertices, v_index, edges)
+
+    lines = [
+        f"## {section_number}. {titles[layout_name]}",
+        "",
+        f"![{titles[layout_name]} topology indices]({svg_names[layout_name]})",
+        "",
+    ]
+    if layout_name == "small":
+        lines.extend([
+            "The Small map is a non-circular oval board built from two central hexes",
+            "`(0,0)` and `(1,0)` plus one layer of hexes around them.",
+            "",
+        ])
+    lines.extend([
+        f"### {section_number}.1 Counts",
+        "",
+        markdown_table(
+            ["Element", "Count"],
+            [
+                ("Tiles", len(adj["tiles_sorted"])),
+                ("Vertices", len(vertices)),
+                ("Edges", len(edges)),
+                ("Ports", len(ports)),
+                ("Coastal edges", len(coastal)),
+                ("Interior edges", len(edges) - len(coastal)),
+                ("Boundary vertices (degree 2)", degree_counts[2]),
+                ("Interior vertices (degree 3)", degree_counts[3]),
+            ],
+        ),
+        "",
+        "Vertex tile-count distribution: "
+        + ", ".join(f"{tile_touch_counts[count]} touch {count} tile{'s' if count != 1 else ''}" for count in (1, 2, 3))
+        + ".",
+        "",
+        f"Tile rows (top-to-bottom): {tile_rows[layout_name]}.",
+        "",
+        f"### {section_number}.2 Tile Table",
+        "",
+        markdown_table(["Tile", "q", "r"], [(i, f"{q:+d}", f"{r:+d}") for i, (q, r) in enumerate(adj["tiles_sorted"])]),
+        "",
+        f"### {section_number}.3 Vertex Table",
+        "",
+        markdown_table(["Vertex", "Triplet (tile axial coords)"], [(i, fmt_triplet(key)) for i, (key, _) in enumerate(vertices)]),
+        "",
+        f"### {section_number}.4 Edge Table",
+        "",
+        markdown_table(["Edge", "Vertex A", "Vertex B"], [(i, v_index[a], v_index[b]) for i, (a, b) in enumerate(edges)]),
+        "",
+        f"### {section_number}.5 Coastal Edges ({len(coastal)} total)",
+        "",
+        "`" + ", ".join(map(str, coastal)) + "`",
+        "",
+        f"### {section_number}.6 Port Table ({len(ports)} ports)",
+        "",
+        "Ports are ordered clockwise from the top of the board.",
+        "",
+        markdown_table(["Port", "Vertex A", "Vertex B"], [(i, a, b) for i, (a, b) in enumerate(ports)]),
+    ])
+
+    sections = [
+        ("Tile -> Vertices", "Tile", "Vertices", adj["tile_vertices"]),
+        ("Tile -> Edges", "Tile", "Edges", adj["tile_edges"]),
+        ("Tile -> Adjacent Tiles", "Tile", "Neighbors", adj["tile_neighbors"]),
+        ("Vertex -> Tiles", "Vertex", "Tiles", adj["vertex_tiles"]),
+        ("Vertex -> Edges", "Vertex", "Edges", adj["vertex_edges"]),
+        ("Vertex -> Adjacent Vertices", "Vertex", "Neighbors", adj["vertex_neighbors"]),
+        ("Edge -> Vertices", "Edge", "Vertex A | Vertex B", adj["edge_vertices"]),
+        ("Edge -> Tiles", "Edge", "Tiles", adj["edge_tiles"]),
+    ]
+    subsection = 7
+    for title, key_header, value_header, values in sections:
+        lines.extend(["", f"### {section_number}.{subsection} {title}", ""])
+        if title == "Edge -> Vertices":
+            rows = [(index, pair[0], pair[1]) for index, pair in values.items()]
+            lines.append(markdown_table([key_header, "Vertex A", "Vertex B"], rows))
+        else:
+            rows = [(index, ", ".join(map(str, entries))) for index, entries in values.items()]
+            lines.append(markdown_table([key_header, value_header], rows))
+        subsection += 1
+
+    lines.extend([
+        "",
+        f"### {section_number}.15 Action Table ({len(action_entries)} actions)",
+        "",
+        "Each action represents a settlement vertex plus road direction. Entries are",
+        "sorted by vertex index, then direction string.",
+        "",
+        markdown_table(
+            ["Token", "Action", "Vertex", "Direction", "Edge"],
+            [(i, f"{vertex}{direction}", vertex, direction, edge) for i, (vertex, direction, edge) in enumerate(action_entries)],
+        ),
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def write_reference_document():
+    document_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "docs", "topology-reference.md"))
+    document = open(document_path, encoding="utf-8").read()
+    rendered = []
+    for section_number, layout_name in ((4, "mini"), (5, "small"), (6, "standard")):
+        layout = MAP_LAYOUTS[layout_name]
+        tiles = make_tile_coords(layout["radius"]) if "radius" in layout else list(layout["tiles"])
+        port_count = 3 * (layout["radius"] + 1) if "radius" in layout else layout["port_count"]
+        vertices, v_index, edges = make_vertices_and_edges(tiles)
+        ports = make_ports(tiles, vertices, v_index, edges, port_count)
+        rendered.append(render_map_section(layout_name, section_number, tiles, vertices, v_index, edges, ports))
+    replacement = "\n---\n\n".join(rendered) + "\n\n---\n\n## 7. Regeneration"
+    document = re.sub(r"## 4\. Mini Map.*?## 7\. Regeneration", replacement, document, flags=re.DOTALL)
+    with open(document_path, "w", encoding="utf-8") as output:
+        output.write(document)
+    print(f"Wrote {document_path}")
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 
 def main():
+    if "--write-reference" in sys.argv:
+        write_reference_document()
+        return
     # Parse map layout
     layout_name = "standard"
     for arg in sys.argv[1:]:
