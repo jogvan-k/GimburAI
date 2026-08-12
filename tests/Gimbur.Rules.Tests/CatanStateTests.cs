@@ -72,6 +72,34 @@ public class CatanStateTests
     }
 
     [Test]
+    public void MiniFirstSettlement_GrantsAdjacentNonDesertResources()
+    {
+        var state = new Gimbur.CatanState(GameConfig.Mini, 2, new Random(55));
+        var player = state.CurrentPlayer;
+        var settlementAction = GetCatanActions(state).First();
+        var targetVertex = settlementAction.TargetIndex;
+        var expected = Enum.GetValues<ResourceType>()
+            .Where(resource => resource != ResourceType.Desert)
+            .ToDictionary(resource => resource, _ => 0);
+
+        foreach (var tileIndex in state.Board.Topology.VertexTiles[targetVertex])
+        {
+            var resource = state.Board.TileResource(tileIndex);
+            if (resource != ResourceType.Desert)
+                expected[resource]++;
+        }
+
+        var next = (Gimbur.CatanState)settlementAction.DoCoreAction();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(next.Stage, Is.EqualTo(TurnStage.PlaceFirstRoad));
+            foreach (var (resource, count) in expected)
+                Assert.That(next.ResourceCountFor(player, resource), Is.EqualTo(count));
+        });
+    }
+
+    [Test]
     public void FinalPlacementRoad_ResultMatchesPlacementLeafBoundary()
     {
         var state = new Gimbur.CatanState(GameConfig.Mini, 2, new Random(55));

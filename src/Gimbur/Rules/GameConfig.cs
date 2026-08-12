@@ -84,7 +84,7 @@ public sealed class GameConfig
     /// <summary>
     /// Number of settlement+road placement rounds during setup.
     /// Standard Catan has 2 rounds (place first settlement/road, then second).
-    /// Mini variant has 1 round (skip second placement and resource collection).
+    /// Mini variant has 1 round and collects resources from that settlement.
     /// </summary>
     public int InitialPlacementRounds { get; }
 
@@ -193,8 +193,8 @@ public sealed class GameConfig
 
     /// <summary>
     /// Mini 2-player Catan game configuration.
-    /// 7-tile board, 5 VP to win, 1 initial placement round (no second settlement/road,
-    /// skip associated resource collection step).
+    /// 7-tile board, 5 VP to win, 1 initial placement round. Resources are collected
+    /// from that single setup settlement.
     /// Scaled supply limits and dev card pool.
     /// </summary>
     public static GameConfig Mini { get; } = new(

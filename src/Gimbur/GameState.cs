@@ -745,9 +745,10 @@ public sealed class CatanState : ICoreState
         var next = Clone();
         next.Board.VertexOccupancy[vertexIndex] = new VertexOccupancy(BuildingType.Settlement, CurrentPlayer);
         next._vertexPlacementRound[vertexIndex] = (byte)(Stage == TurnStage.PlaceFirstSettlement ? 1 : 2);
-        if (Stage == TurnStage.PlaceSecondSettlement)
+        var placementRound = Stage == TurnStage.PlaceFirstSettlement ? 1 : 2;
+        if (placementRound == Config.InitialPlacementRounds)
         {
-            next.GrantSecondPlacementResources(vertexIndex);
+            next.GrantFinalPlacementResources(vertexIndex);
         }
 
         next.PendingSettlementVertex = vertexIndex;
@@ -1518,7 +1519,7 @@ public sealed class CatanState : ICoreState
         }
     }
 
-    private void GrantSecondPlacementResources(int settlementVertex)
+    private void GrantFinalPlacementResources(int settlementVertex)
     {
         foreach (var tileIndex in Board.Topology.VertexTiles[settlementVertex])
         {
