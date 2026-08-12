@@ -34,7 +34,6 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
     private long _responsesPolled;
     private int _disposeStarted;
     private volatile bool _disposed;
-    private long _lastDiagnosticAt = Environment.TickCount64;
 
     public (long Queued, long Sent, long Acknowledged, long Polled, int Owned, int Mailbox)
         Diagnostics => (
@@ -115,7 +114,6 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
             {
                 if (!_pending.TryTake(out var first, 5, token))
                 {
-                    LogDiagnosticsIfDue();
                     continue;
                 }
                 if (_batchWindowMs > 0 && token.WaitHandle.WaitOne(_batchWindowMs))
@@ -128,7 +126,6 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
                 var owned = queued.Where(item => _submittedAt.ContainsKey(item.RequestId)).ToArray();
                 if (owned.Length > 0)
                     SendBatch(owned, token);
-                LogDiagnosticsIfDue();
             }
             catch (OperationCanceledException)
             {
@@ -266,18 +263,6 @@ public sealed class CatanStateLeafEvaluator : ILeafEvaluator, IDisposable
             NotifyCompletion();
         }
 
-    }
-
-    private void LogDiagnosticsIfDue()
-    {
-        if (Environment.TickCount64 - _lastDiagnosticAt < 30_000)
-            return;
-        _lastDiagnosticAt = Environment.TickCount64;
-        var diagnostic = Diagnostics;
-        Console.WriteLine(
-            $"[LeafEvaluator] queued={diagnostic.Queued} sent={diagnostic.Sent} " +
-            $"ack={diagnostic.Acknowledged} polled={diagnostic.Polled} " +
-            $"owned={diagnostic.Owned} mailbox={diagnostic.Mailbox}");
     }
 
     public void Dispose()

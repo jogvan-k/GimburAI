@@ -88,8 +88,8 @@ internal record BenchmarkOptions
     /// Maximum tree depth for NN prior requests (server-mcts-nn only).
     /// Defaults to unlimited.
     /// </summary>
-    public int? ServerMaxPriorDepth { get; init; }
     public int Parallelism { get; init; }
+    public int ProgressInterval { get; init; } = 10;
 }
 
 /// <summary>
@@ -435,12 +435,35 @@ internal record BenchmarkStats
     public required string[] PlayerLabels { get; init; }
 }
 
+internal record BenchmarkProgress
+{
+    public int Version { get; init; } = 1;
+    public required int TargetGames { get; init; }
+    public required int Seed { get; init; }
+    public required string MapConfig { get; init; }
+    public required AiKind[] PlayerAis { get; init; }
+    public required string[] PlayerLabels { get; init; }
+    public required string[] NnUrls { get; init; }
+    public required int SearchTimeMs { get; init; }
+    public required int MaxRolloutDepth { get; init; }
+    public required List<BenchmarkGameResult> Games { get; init; }
+    public required int FailedAttempts { get; init; }
+    public required double ElapsedSeconds { get; init; }
+}
+
 /// <summary>
 /// Runs benchmark games between configurable AI strategies and reports win rates.
 /// Games are executed in parallel across available CPU cores.
 /// </summary>
 internal class BenchmarkRunner
 {
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
     private readonly BenchmarkOptions _options;
     private readonly bool _quiet;
     private readonly Dictionary<string, NnClient> _nnClients = new(StringComparer.OrdinalIgnoreCase);
@@ -505,11 +528,7 @@ internal class BenchmarkRunner
 
         // When NN is in use, limit parallelism to avoid overwhelming the
         // inference server with concurrent requests.
-        var maxParallelism = _options.Parallelism > 0
-            ? Math.Min(_options.Parallelism, Environment.ProcessorCount)
-            : (UsesNn(_options.Players) || UsesServer(_options.Players))
-                ? Math.Min(4, Environment.ProcessorCount)
-                : Environment.ProcessorCount;
+        var maxParallelism = ResolveParallelism(_options);
 
         if (!_quiet)
         {
@@ -537,80 +556,139 @@ internal class BenchmarkRunner
 
         var gameResults = new ConcurrentBag<BenchmarkGameResult>();
         var failedGames = new ConcurrentBag<(int GameIndex, Exception Error)>();
-        var totalStopwatch = Stopwatch.StartNew();
-
-        Parallel.For(0, (int)_options.NumberOfGames, new ParallelOptions
+        var progressLock = new object();
+        var progressPath = _options.OutputPath is not null
+            ? new FileInfo(_options.OutputPath.FullName + ".progress.json")
+            : null;
+        var resumedElapsed = TimeSpan.Zero;
+        var attemptOffset = 0;
+        if (progressPath is not null && progressPath.Exists)
         {
-            MaxDegreeOfParallelism = maxParallelism,
-        }, gameIndex =>
-        {
-            var gameSeed = unchecked(_options.Seed + gameIndex);
-            var rng = new Random(gameSeed);
-
-            // Rotate seat assignments to eliminate first-player bias.
-            var rotation = gameIndex % playerCount;
-            var seatAssignment = new AiKind[playerCount];
-            var seatLabels = new string[playerCount];
-            var seatNnUrls = new string[playerCount];
-            for (var i = 0; i < playerCount; i++)
-            {
-                var competitor = (i + rotation) % playerCount;
-                seatAssignment[i] = _options.Players[competitor];
-                seatLabels[i] = playerLabels[competitor];
-                seatNnUrls[i] = nnUrls[competitor];
-            }
-
+            BenchmarkProgress? progress = null;
             try
             {
-                var gameStopwatch = Stopwatch.StartNew();
-                var (winnerSeat, turns, nnRequests, nnStatesEvaluated, priorNodesRequested, priorActionsApplied, priorActionsRequested, priorInferencesRequested, priorActionsPerDepth, priorInferencesPerDepth) = RunSingleGame(config, rng, seatAssignment, seatNnUrls);
-                gameStopwatch.Stop();
-
-                AiKind? winnerAi = winnerSeat > 0 ? seatAssignment[winnerSeat - 1] : null;
-
-                var result = new BenchmarkGameResult
-                {
-                    GameNumber = gameIndex + 1,
-                    Seed = gameSeed,
-                    WinnerAi = winnerAi,
-                    WinnerLabel = winnerSeat > 0 ? seatLabels[winnerSeat - 1] : null,
-                    SeatAssignment = seatAssignment,
-                    SeatLabels = seatLabels,
-                    WinnerSeat = winnerSeat,
-                    Turns = turns,
-                    Elapsed = gameStopwatch.Elapsed,
-                    NnRequests = nnRequests,
-                    NnStatesEvaluated = nnStatesEvaluated,
-                    PriorNodesRequested = priorNodesRequested,
-                    PriorActionsApplied = priorActionsApplied,
-                    PriorActionsRequested = priorActionsRequested,
-                    PriorInferencesRequested = priorInferencesRequested,
-                    PriorActionsPerDepth = priorActionsPerDepth,
-                    PriorInferencesPerDepth = priorInferencesPerDepth,
-                };
-
-                gameResults.Add(result);
-
-                if (!_quiet)
-                {
-                    var winnerLabel = winnerSeat == 0
-                        ? "draw"
-                        : $"P{winnerSeat}({winnerAi})";
-                    Console.WriteLine(
-                        $"Game {gameIndex + 1}: winner={winnerLabel}, turns={turns}, " +
-                        $"{gameStopwatch.Elapsed.TotalSeconds:F1}s");
-                }
+                progress = LoadProgress(progressPath);
             }
-            catch (Exception ex)
+            catch (JsonException)
             {
-                failedGames.Add((gameIndex + 1, ex));
-                if (!_quiet)
-                {
-                    Console.Error.WriteLine(
-                        $"Game {gameIndex + 1}: FAILED — {ex.GetType().Name}: {ex.Message}");
-                }
+                progressPath.Delete();
             }
-        });
+            if (progress is not null && ProgressMatches(progress, nnUrls, playerLabels))
+            {
+                foreach (var game in progress.Games.Take((int)_options.NumberOfGames))
+                    gameResults.Add(game);
+                resumedElapsed = TimeSpan.FromSeconds(progress.ElapsedSeconds);
+                attemptOffset = progress.Games.Count > 0
+                    ? progress.Games.Max(game => game.GameNumber)
+                    : 0;
+                if (!_quiet)
+                    Console.WriteLine($"  Resumed {gameResults.Count}/{_options.NumberOfGames} games from {progressPath.FullName}");
+            }
+            else if (progress is not null)
+            {
+                progressPath.Delete();
+            }
+        }
+        var totalStopwatch = Stopwatch.StartNew();
+        var requestedGames = checked((int)_options.NumberOfGames);
+        var failureLimit = Math.Max(1, requestedGames / 2);
+        while (gameResults.Count < requestedGames && failedGames.Count <= failureLimit)
+        {
+            var missingGames = requestedGames - gameResults.Count;
+            var roundOffset = attemptOffset;
+            attemptOffset += missingGames;
+            Parallel.For(0, missingGames, new ParallelOptions
+            {
+                MaxDegreeOfParallelism = maxParallelism,
+            }, roundIndex =>
+            {
+                var gameIndex = roundOffset + roundIndex;
+                var gameSeed = unchecked(_options.Seed + gameIndex);
+                var rng = new Random(gameSeed);
+
+                // Rotate seat assignments to eliminate first-player bias.
+                var rotation = gameIndex % playerCount;
+                var seatAssignment = new AiKind[playerCount];
+                var seatLabels = new string[playerCount];
+                var seatNnUrls = new string[playerCount];
+                for (var i = 0; i < playerCount; i++)
+                {
+                    var competitor = (i + rotation) % playerCount;
+                    seatAssignment[i] = _options.Players[competitor];
+                    seatLabels[i] = playerLabels[competitor];
+                    seatNnUrls[i] = nnUrls[competitor];
+                }
+
+                try
+                {
+                    var gameStopwatch = Stopwatch.StartNew();
+                    var (winnerSeat, turns, nnRequests, nnStatesEvaluated, priorNodesRequested, priorActionsApplied, priorActionsRequested, priorInferencesRequested, priorActionsPerDepth, priorInferencesPerDepth) = RunSingleGame(config, rng, seatAssignment, seatNnUrls);
+                    gameStopwatch.Stop();
+
+                    AiKind? winnerAi = winnerSeat > 0 ? seatAssignment[winnerSeat - 1] : null;
+
+                    var result = new BenchmarkGameResult
+                    {
+                        GameNumber = gameIndex + 1,
+                        Seed = gameSeed,
+                        WinnerAi = winnerAi,
+                        WinnerLabel = winnerSeat > 0 ? seatLabels[winnerSeat - 1] : null,
+                        SeatAssignment = seatAssignment,
+                        SeatLabels = seatLabels,
+                        WinnerSeat = winnerSeat,
+                        Turns = turns,
+                        Elapsed = gameStopwatch.Elapsed,
+                        NnRequests = nnRequests,
+                        NnStatesEvaluated = nnStatesEvaluated,
+                        PriorNodesRequested = priorNodesRequested,
+                        PriorActionsApplied = priorActionsApplied,
+                        PriorActionsRequested = priorActionsRequested,
+                        PriorInferencesRequested = priorInferencesRequested,
+                        PriorActionsPerDepth = priorActionsPerDepth,
+                        PriorInferencesPerDepth = priorInferencesPerDepth,
+                    };
+
+                    gameResults.Add(result);
+
+                    if (progressPath is not null && _options.ProgressInterval > 0)
+                    {
+                        lock (progressLock)
+                        {
+                            var completed = gameResults.Count;
+                            if (completed % _options.ProgressInterval == 0 || completed >= requestedGames)
+                            {
+                                SaveProgress(
+                                    progressPath,
+                                    gameResults,
+                                    failedGames.Count,
+                                    resumedElapsed + totalStopwatch.Elapsed,
+                                    nnUrls,
+                                    playerLabels);
+                            }
+                        }
+                    }
+
+                    if (!_quiet)
+                    {
+                        var winnerLabel = winnerSeat == 0
+                            ? "draw"
+                            : $"P{winnerSeat}({winnerAi})";
+                        Console.WriteLine(
+                            $"Game {gameIndex + 1}: winner={winnerLabel}, turns={turns}, " +
+                            $"{gameStopwatch.Elapsed.TotalSeconds:F1}s");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    failedGames.Add((gameIndex + 1, ex));
+                    if (!_quiet)
+                    {
+                        Console.Error.WriteLine(
+                            $"Game {gameIndex + 1}: FAILED — {ex.GetType().Name}: {ex.Message}");
+                    }
+                }
+            });
+        }
 
         totalStopwatch.Stop();
 
@@ -626,7 +704,7 @@ internal class BenchmarkRunner
         {
             Games = completedGames,
             TotalGames = completedGames.Count,
-            TotalElapsed = totalStopwatch.Elapsed,
+            TotalElapsed = resumedElapsed + totalStopwatch.Elapsed,
             PlayerAis = _options.Players,
             PlayerLabels = playerLabels,
         };
@@ -639,19 +717,77 @@ internal class BenchmarkRunner
         if (_options.OutputPath is not null)
         {
             ExportResults(stats, _options.OutputPath);
+            progressPath?.Delete();
         }
 
         DisposeNnClients();
 
-        // Only fail the benchmark if more than half the games failed.
-        // A few sporadic failures (e.g. from edge-case states the NN server
-        // cannot tokenize) are tolerable — the partial results are still valid.
-        if (failedGames.Count > (int)_options.NumberOfGames / 2)
+        if (completedGames.Count != requestedGames)
         {
             throw new InvalidOperationException(
-                $"{failedGames.Count}/{_options.NumberOfGames} game(s) failed. " +
+                $"Benchmark completed {completedGames.Count}/{requestedGames} required games after " +
+                $"{failedGames.Count} failed attempt(s). " +
                 $"First error: {failedGames.First().Error.Message}");
         }
+    }
+
+    internal static int ResolveParallelism(BenchmarkOptions options) =>
+        options.Parallelism > 0
+            ? options.Parallelism
+            : UsesNn(options.Players) || UsesServer(options.Players)
+                ? Math.Min(4, Environment.ProcessorCount)
+                : Environment.ProcessorCount;
+
+    private bool ProgressMatches(
+        BenchmarkProgress progress,
+        IReadOnlyList<string> nnUrls,
+        IReadOnlyList<string> playerLabels) =>
+        progress.Version == 1 &&
+        progress.TargetGames == (int)_options.NumberOfGames &&
+        progress.Seed == _options.Seed &&
+        progress.MapConfig == (_options.MapConfig ?? "standard") &&
+        progress.PlayerAis.SequenceEqual(_options.Players) &&
+        progress.PlayerLabels.SequenceEqual(playerLabels) &&
+        progress.NnUrls.SequenceEqual(nnUrls) &&
+        progress.SearchTimeMs == _options.SearchTimeMs &&
+        progress.MaxRolloutDepth == _options.MaxRolloutDepth;
+
+    private static BenchmarkProgress LoadProgress(FileInfo path)
+    {
+        var progress = JsonSerializer.Deserialize<BenchmarkProgress>(
+            File.ReadAllText(path.FullName), JsonOptions);
+        return progress ?? throw new InvalidDataException($"Invalid benchmark progress file: {path.FullName}");
+    }
+
+    private void SaveProgress(
+        FileInfo path,
+        IEnumerable<BenchmarkGameResult> games,
+        int failedAttempts,
+        TimeSpan elapsed,
+        string[] nnUrls,
+        string[] playerLabels)
+    {
+        var progress = new BenchmarkProgress
+        {
+            TargetGames = checked((int)_options.NumberOfGames),
+            Seed = _options.Seed,
+            MapConfig = _options.MapConfig ?? "standard",
+            PlayerAis = _options.Players,
+            PlayerLabels = playerLabels,
+            NnUrls = nnUrls,
+            SearchTimeMs = _options.SearchTimeMs,
+            MaxRolloutDepth = _options.MaxRolloutDepth,
+            Games = games.OrderBy(game => game.GameNumber).ToList(),
+            FailedAttempts = failedAttempts,
+            ElapsedSeconds = elapsed.TotalSeconds,
+        };
+        Directory.CreateDirectory(path.DirectoryName ?? ".");
+        var temporaryPath = path.FullName + ".tmp";
+        File.WriteAllText(
+            temporaryPath,
+            JsonSerializer.Serialize(progress, JsonOptions),
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        File.Move(temporaryPath, path.FullName, overwrite: true);
     }
 
     /// <summary>
@@ -672,7 +808,6 @@ internal class BenchmarkRunner
                 CatanStateLeafEvaluatorPool.Get(nnUrl),
                 null,
                 1,
-                0,
                 32,
                 500,
                 1000),
@@ -691,7 +826,6 @@ internal class BenchmarkRunner
                 null,
                 null,
                 null,
-                int.MaxValue,
                 int.MaxValue,
                 32,
                 500,
@@ -717,7 +851,7 @@ internal class BenchmarkRunner
             AiKind.ServerMctsNn => new ServerPlayer(
                 _options.ServerUrl, "mcts-nn-ai", _options.MapConfig ?? "standard",
                 _options.Players.Length, _options.SearchTimeMs, _options.MaxRolloutDepth,
-                nnUrl, _options.ServerMaxPriorDepth),
+                nnUrl),
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, $"Unknown AI kind: {kind}"),
         };
     }

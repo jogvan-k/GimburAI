@@ -21,7 +21,6 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDis
     private readonly int _searchTimeMs;
     private readonly int _maxRolloutDepth;
     private readonly string? _nnUrl;
-    private readonly int? _maxPriorDepth;
 
     public int TotalNnRequests { get; private set; }
     public int TotalNnStatesEvaluated { get; private set; }
@@ -43,7 +42,6 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDis
     /// <param name="searchTimeMs">MCTS search time limit in ms.</param>
     /// <param name="maxRolloutDepth">Maximum MCTS rollout depth.</param>
     /// <param name="nnUrl">NN inference server URL (required for mcts-nn-ai).</param>
-    /// <param name="maxPriorDepth">Max prior depth (for mcts-nn-ai).</param>
     public ServerPlayer(
         string serverUrl,
         string aiMode,
@@ -51,8 +49,7 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDis
         int playerCount,
         int searchTimeMs,
         int maxRolloutDepth = 500,
-        string? nnUrl = null,
-        int? maxPriorDepth = null)
+        string? nnUrl = null)
     {
         _http = new HttpClient
         {
@@ -65,7 +62,6 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDis
         _searchTimeMs = searchTimeMs;
         _maxRolloutDepth = maxRolloutDepth;
         _nnUrl = nnUrl;
-        _maxPriorDepth = maxPriorDepth;
     }
 
     public CatanState? Act(CatanState state, Random rng)
@@ -91,7 +87,6 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDis
             SearchTimeMs = _searchTimeMs,
             MaxRolloutDepth = _maxRolloutDepth,
             NnUrl = _nnUrl,
-            MaxPriorDepth = _maxPriorDepth,
         };
 
         var response = _http.PostAsJsonAsync("choose-action", request, JsonOptions)
@@ -168,7 +163,6 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDis
         public required string State { get; init; }
         public int? SearchTimeMs { get; init; }
         public int? MaxRolloutDepth { get; init; }
-        public int? MaxPriorDepth { get; init; }
         public string? NnUrl { get; init; }
     }
 

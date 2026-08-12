@@ -117,7 +117,7 @@ type LogInfo =
         val mutable priorNodesSkipped: int
         /// Number of responses returned for nodes the search no longer tracks.
         val mutable priorResponsesOrphaned: int
-        /// Number of selection paths that hit the maxPriorDepth horizon.
+        /// Number of selection paths that hit a structural evaluation horizon.
         val mutable horizonSkips: int
         val mutable leafEvaluationsSubmitted: int
         val mutable leafEvaluationsApplied: int

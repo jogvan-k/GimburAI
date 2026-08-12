@@ -128,7 +128,6 @@ internal record SimulationOptions
     /// Nodes deeper than this are left with uniform priors.
     /// Defaults to int.MaxValue (no limit).
     /// </summary>
-    public int MaxPriorDepth { get; init; } = int.MaxValue;
 
     /// <summary>
     /// Maximum games simulated concurrently. Zero selects the existing default:
@@ -1382,7 +1381,6 @@ internal class SimulationRunner
                 : null,
             placement ? leafBoundary : null,
             int.MaxValue,
-            _options.MaxPriorDepth,
             _options.MaxPendingEvaluations,
             _options.LeafEvaluationTimeoutMs,
             _options.DrainTimeoutMs);
@@ -1573,7 +1571,6 @@ internal class SimulationRunner
             null,
             leafBoundary,
             int.MaxValue,
-            _options.MaxPriorDepth,
             _options.MaxPendingEvaluations,
             _options.LeafEvaluationTimeoutMs,
             _options.DrainTimeoutMs);
@@ -1955,9 +1952,13 @@ internal class SimulationRunner
                  s.ReachedTerminal,
                 s.PriorNodesRequested,
                 s.PriorActionsApplied,
-                s.PriorActionsRequested,
-                s.PriorInferencesRequested,
-                s.PriorNodesSkipped,
+                 s.PriorActionsRequested,
+                 s.PriorInferencesRequested,
+                 priorModelInvocationsPerDepth = s.PriorInferencesPerDepth != null
+                    ? s.PriorInferencesPerDepth.OrderBy(kv => kv.Key)
+                        .ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
+                    : null,
+                 s.PriorNodesSkipped,
                 permutations = symmetryPerms.Length > 0
                     ? symmetryPerms.Select(p => BoardSymmetry.PermuteState(s.SerializedState, p)).ToArray()
                     : Array.Empty<string>(),
@@ -1966,6 +1967,9 @@ internal class SimulationRunner
                 ? game.PriorActionsPerDepth.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
                 : null,
             priorInferencesPerDepth = game.PriorInferencesPerDepth != null
+                ? game.PriorInferencesPerDepth.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
+                : null,
+            priorModelInvocationsPerDepth = game.PriorInferencesPerDepth != null
                 ? game.PriorInferencesPerDepth.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
                 : null,
             evaluationDiagnostics = game.EvaluationDiagnostics,
@@ -2021,6 +2025,10 @@ internal class SimulationRunner
                 s.PriorActionsApplied,
                 s.PriorActionsRequested,
                 s.PriorInferencesRequested,
+                priorModelInvocationsPerDepth = s.PriorInferencesPerDepth != null
+                    ? s.PriorInferencesPerDepth.OrderBy(kv => kv.Key)
+                        .ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
+                    : null,
                 s.PriorNodesSkipped,
                 s.ModelValue,
                 s.ValueTarget,
@@ -2044,6 +2052,9 @@ internal class SimulationRunner
                 ? game.PriorActionsPerDepth.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
                 : null,
             priorInferencesPerDepth = game.PriorInferencesPerDepth != null
+                ? game.PriorInferencesPerDepth.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
+                : null,
+            priorModelInvocationsPerDepth = game.PriorInferencesPerDepth != null
                 ? game.PriorInferencesPerDepth.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
                 : null,
             evaluationDiagnostics = game.EvaluationDiagnostics,
@@ -2095,6 +2106,10 @@ internal class SimulationRunner
                 s.PriorActionsApplied,
                 s.PriorActionsRequested,
                 s.PriorInferencesRequested,
+                priorModelInvocationsPerDepth = s.PriorInferencesPerDepth != null
+                    ? s.PriorInferencesPerDepth.OrderBy(kv => kv.Key)
+                        .ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
+                    : null,
                 s.PriorNodesSkipped,
                 s.ModelValue,
                 s.ValueTarget,
@@ -2149,10 +2164,18 @@ internal class SimulationRunner
                 s.PriorActionsApplied,
                 s.PriorActionsRequested,
                 s.PriorInferencesRequested,
+                priorModelInvocationsPerDepth = s.PriorInferencesPerDepth != null
+                    ? s.PriorInferencesPerDepth.OrderBy(kv => kv.Key)
+                        .ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
+                    : null,
                 s.PriorNodesSkipped,
                 permutations = symmetryPerms.Select(p =>
                     BoardSymmetry.PermuteState(s.SerializedState, p)).ToArray(),
             }).ToArray(),
+            priorModelInvocationsPerDepth = game.PriorInferencesPerDepth != null
+                ? game.PriorInferencesPerDepth.OrderBy(kv => kv.Key)
+                    .ToDictionary(kv => kv.Key.ToString(), kv => kv.Value)
+                : null,
             evaluationDiagnostics = game.EvaluationDiagnostics,
         };
     }

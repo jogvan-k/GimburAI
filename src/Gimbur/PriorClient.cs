@@ -309,17 +309,6 @@ public sealed class PriorClient : IPriorClient, IDisposable
         _disposed = true;
         _pollThread.Join(timeout: TimeSpan.FromSeconds(2));
 
-        // Print diagnostic summary to help debug prior delivery issues.
-        Console.WriteLine(
-            $"[PriorClient] mode={_mode} | " +
-            $"enqueued={Interlocked.Read(ref _enqueueFireCount)} " +
-            $"enqueueErrors={Interlocked.Read(ref _enqueueErrorCount)} | " +
-            $"pollSuccess={Interlocked.Read(ref _pollSuccessCount)} " +
-            $"pollEmpty={Interlocked.Read(ref _pollEmptyCount)} " +
-            $"pollErrors={Interlocked.Read(ref _pollErrorCount)} | " +
-            $"responsesReceived={Interlocked.Read(ref _pollResponsesReceived)} " +
-            $"mailboxSize={_mailbox.Count}");
-
         _http.Dispose();
         _enqueueThrottle.Dispose();
     }
@@ -329,9 +318,6 @@ public sealed class PriorClient : IPriorClient, IDisposable
     private void PollLoop()
     {
         const string endpoint = "state/prior-collect";
-        var lastDiagnosticAt = DateTime.UtcNow;
-        var diagnosticInterval = TimeSpan.FromSeconds(30);
-
         while (!_disposed)
         {
             try
@@ -379,23 +365,6 @@ public sealed class PriorClient : IPriorClient, IDisposable
             {
                 // Server unreachable — will retry on next poll.
                 Interlocked.Increment(ref _pollErrorCount);
-            }
-
-            // Periodic diagnostic dump for pooled clients (which are never disposed
-            // and so never reach the Dispose() summary). Helps verify the pool is
-            // actually delivering priors to active MCTS searches.
-            if (_pooled && DateTime.UtcNow - lastDiagnosticAt >= diagnosticInterval)
-            {
-                lastDiagnosticAt = DateTime.UtcNow;
-                Console.WriteLine(
-                    $"[PriorClient pooled] mode={_mode} | " +
-                    $"enqueued={Interlocked.Read(ref _enqueueFireCount)} " +
-                    $"enqueueErrors={Interlocked.Read(ref _enqueueErrorCount)} | " +
-                    $"pollSuccess={Interlocked.Read(ref _pollSuccessCount)} " +
-                    $"pollEmpty={Interlocked.Read(ref _pollEmptyCount)} " +
-                    $"pollErrors={Interlocked.Read(ref _pollErrorCount)} | " +
-                    $"responsesReceived={Interlocked.Read(ref _pollResponsesReceived)} " +
-                    $"mailboxSize={_mailbox.Count}");
             }
 
             Thread.Sleep(PollIntervalMs);

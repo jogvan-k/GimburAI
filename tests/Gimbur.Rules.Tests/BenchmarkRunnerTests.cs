@@ -58,6 +58,19 @@ internal sealed class BenchmarkRunnerTests
     }
 
     [Test]
+    public void ExplicitParallelismIsNotLimitedToProcessorCount()
+    {
+        var options = new BenchmarkOptions
+        {
+            NumberOfGames = 1,
+            Players = [AiKind.Random, AiKind.Greedy],
+            Parallelism = Environment.ProcessorCount + 4,
+        };
+
+        Assert.That(BenchmarkRunner.ResolveParallelism(options), Is.EqualTo(Environment.ProcessorCount + 4));
+    }
+
+    [Test]
     public void BenchmarkCompetitorMetadataResolvesPerPlayer()
     {
         var options = new BenchmarkOptions

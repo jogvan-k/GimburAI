@@ -778,7 +778,6 @@ LeafBoundary = state =>
 | PriorClient          | IPriorClient option                    | None           | Async prior client for NN-guided search (see below) |
 | LeafEvaluator        | ILeafEvaluator option                  | None           | Async per-player neural leaf values                 |
 | LeafBoundary         | (ICoreState -> bool) option            | None           | Deterministic result-state horizon predicate ([details](#leaf-boundary-horizon)) |
-| MaxPriorDepth        | int                                    | Int32.MaxValue | Deepest node that requests priors                    |
 | MaxPendingEvaluations| int                                    | 32             | Maximum reserved neural leaf requests                |
 | LeafEvaluationTimeoutMs | int                                 | 500            | Per-request timeout before rollout fallback          |
 | DrainTimeoutMs       | int                                    | 1000           | Bounded post-deadline response drain                 |

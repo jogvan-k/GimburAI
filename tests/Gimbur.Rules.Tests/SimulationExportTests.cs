@@ -131,6 +131,57 @@ public class SimulationExportTests
     }
 
     [Test]
+    public void GameStateExport_LabelsPriorModelInvocationsPerDepth()
+    {
+        var perDepth = new Dictionary<int, int> { [0] = 1, [1] = 7 };
+        var game = new GameResult
+        {
+            Seed = 42,
+            Map = "mini",
+            Players = 2,
+            Winner = 1,
+            Turns = 3,
+            SearchTimeMs = 1,
+            MaxSimulations = 1,
+            MaxRolloutDepth = 1,
+            ActionRolloutLimit = 1,
+            BoardSerialized = "board",
+            PriorInferencesPerDepth = perDepth,
+            States =
+            [
+                new StateRecord
+                {
+                    PlayerTurn = 1,
+                    TurnNumber = 1,
+                    Stage = "r",
+                    SerializedState = "state",
+                    Scores = [2.0, 3.0],
+                    Wins = [1.0, 0.0],
+                    Actions = [],
+                    PriorInferencesPerDepth = perDepth,
+                },
+            ],
+        };
+
+        var json = JsonSerializer.Serialize(
+            SimulationRunner.BuildGameJsonObject(game, ImmutableArray<SymmetryPermutation>.Empty),
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        using var document = JsonDocument.Parse(json);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(
+                document.RootElement.GetProperty("priorModelInvocationsPerDepth").GetProperty("1")
+                    .GetInt32(),
+                Is.EqualTo(7));
+            Assert.That(
+                document.RootElement.GetProperty("states")[0]
+                    .GetProperty("priorModelInvocationsPerDepth").GetProperty("0").GetInt32(),
+                Is.EqualTo(1));
+        });
+    }
+
+    [Test]
     public void GameStateActions_UseDescriptiveDomainNames()
     {
         var state = new CatanState(GameConfig.Mini, 2, new Random(42));

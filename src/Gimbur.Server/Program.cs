@@ -84,7 +84,6 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
     // 6. Configure MCTS with optional NN prior client.
     var searchTimeMs = req.SearchTimeMs ?? 1000;
     var maxRolloutDepth = req.MaxRolloutDepth ?? 500;
-    var maxPriorDepth = req.MaxPriorDepth ?? int.MaxValue;
 
     PriorClient? priorClient = null;
     if (aiMode == "mcts-nn-ai")
@@ -110,7 +109,6 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
                 : null,
             leafBoundary: null,
             maxTreeDepth: int.MaxValue,
-            maxPriorDepth: maxPriorDepth,
             maxPendingEvaluations: 32,
             leafEvaluationTimeoutMs: 500,
             drainTimeoutMs: 1000);
@@ -247,7 +245,6 @@ record ChooseActionRequest
     public int? MaxRolloutDepth { get; init; }
 
     /// <summary>Maximum tree depth for NN prior requests (default: unlimited).</summary>
-    public int? MaxPriorDepth { get; init; }
 
     /// <summary>
     /// URL of the Python NN inference server. Required when aiMode is "mcts-nn-ai".

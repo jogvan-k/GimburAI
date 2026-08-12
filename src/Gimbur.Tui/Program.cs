@@ -262,7 +262,6 @@ internal static class Program
             null,
             null,
             System.Int32.MaxValue,
-            System.Int32.MaxValue,
             32,
             500,
             1000);
@@ -572,7 +571,8 @@ internal static class Program
     {
         var playerValues = _nnClient!.PredictSingleAsync(
             state.SerializeCompact()).GetAwaiter().GetResult();
-        return playerValues[state.CurrentPlayer - 1];
+        return playerValues[CanonicalPlayerSlot(
+            state.CurrentPlayer, state.CurrentPlayer, state.PlayerCount)];
     }
 
     /// <summary>
@@ -587,7 +587,12 @@ internal static class Program
     {
         var actingPlayer = state.CurrentPlayer;
         var allStates = new List<string>();
-        var descriptors = new List<(CatanAction Action, int StartIndex, int Count, int[]? Weights)>();
+        var descriptors = new List<(
+            CatanAction Action,
+            int StartIndex,
+            int Count,
+            int[]? Weights,
+            int[] CanonicalSlots)>();
 
         foreach (var action in actions)
         {
@@ -596,19 +601,24 @@ internal static class Program
                 var resultState = (CatanState)det.State();
                 var idx = allStates.Count;
                 allStates.Add(resultState.SerializeCompact());
-                descriptors.Add((action, idx, 1, null));
+                descriptors.Add((action, idx, 1, null,
+                    [CanonicalPlayerSlot(actingPlayer, resultState.CurrentPlayer, state.PlayerCount)]));
             }
             else if (action is CatanStochasticAction stoch)
             {
                 var outcomes = stoch.Outcomes();
                 var idx = allStates.Count;
                 var weights = new int[outcomes.Length];
+                var canonicalSlots = new int[outcomes.Length];
                 for (var j = 0; j < outcomes.Length; j++)
                 {
                     weights[j] = outcomes[j].Item1;
-                    allStates.Add(((CatanState)outcomes[j].Item2).SerializeCompact());
+                    var outcomeState = (CatanState)outcomes[j].Item2;
+                    canonicalSlots[j] = CanonicalPlayerSlot(
+                        actingPlayer, outcomeState.CurrentPlayer, state.PlayerCount);
+                    allStates.Add(outcomeState.SerializeCompact());
                 }
-                descriptors.Add((action, idx, outcomes.Length, weights));
+                descriptors.Add((action, idx, outcomes.Length, weights, canonicalSlots));
             }
         }
 
@@ -625,7 +635,7 @@ internal static class Program
             float score;
             if (desc.Weights is null)
             {
-                score = playerValues[desc.StartIndex][actingPlayer - 1];
+                score = playerValues[desc.StartIndex][desc.CanonicalSlots[0]];
             }
             else
             {
@@ -635,7 +645,7 @@ internal static class Program
                 {
                     var w = desc.Weights[j];
                     totalWeight += w;
-                    weightedSum += w * playerValues[desc.StartIndex + j][actingPlayer - 1];
+                    weightedSum += w * playerValues[desc.StartIndex + j][desc.CanonicalSlots[j]];
                 }
                 score = totalWeight > 0 ? weightedSum / totalWeight : 0;
             }
@@ -645,6 +655,10 @@ internal static class Program
 
         return result;
     }
+
+    private static int CanonicalPlayerSlot(
+        int absolutePlayer, int currentPlayer, int playerCount) =>
+        (absolutePlayer - currentPlayer + playerCount) % playerCount;
 
     /// <summary>
     /// Computes NN win rates for a set of spatial placement actions and returns

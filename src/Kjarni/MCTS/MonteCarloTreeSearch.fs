@@ -25,7 +25,6 @@ type MonteCarloTreeSearch(config: MCTSConfig) =
                 config.LeafEvaluator,
                 config.LeafBoundary,
                 config.MaxTreeDepth,
-                config.MaxPriorDepth,
                 config.MaxPendingEvaluations,
                 config.LeafEvaluationTimeoutMs,
                 config.DrainTimeoutMs

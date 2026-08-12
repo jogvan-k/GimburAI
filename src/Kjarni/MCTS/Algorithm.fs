@@ -454,7 +454,7 @@ type PriorStats =
     val mutable priorNodesSkipped: int
     /// Number of responses returned for nodes the search no longer tracks.
     val mutable priorResponsesOrphaned: int
-    /// Number of selection paths that hit the maxPriorDepth horizon.
+    /// Number of selection paths that hit a structural evaluation horizon.
     val mutable horizonSkips: int
   end
 
@@ -529,7 +529,7 @@ let propagateTerminals (visitedStates: MCTSState list) =
 
     propagate visitedStates
 
-let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float, actionRolloutLimit: int, priorClient: IPriorClient option, leafEvaluator: ILeafEvaluator option, leafBoundary: (ICoreState -> bool) option, maxTreeDepth: int, maxPriorDepth: int, maxPendingEvaluations: int, leafEvaluationTimeoutMs: int, drainTimeoutMs: int) =
+let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float, actionRolloutLimit: int, priorClient: IPriorClient option, leafEvaluator: ILeafEvaluator option, leafBoundary: (ICoreState -> bool) option, maxTreeDepth: int, maxPendingEvaluations: int, leafEvaluationTimeoutMs: int, drainTimeoutMs: int) =
     // Normalise the option to guard against C# passing Some(null).
     let priorClient =
         match priorClient with
@@ -680,7 +680,7 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
     let requestPrior (node: MCTSState) (depth: int) =
         match priorClient, nodeRegistry, layoutRegistry with
         | Some client, Some nodeReg, Some layoutReg ->
-            if depth <= maxPriorDepth && not (Array.isEmpty node.Actions) && node.Priors.IsNone && not (nodeReg.ContainsKey(node.NodeId)) then
+            if not (Array.isEmpty node.Actions) && node.Priors.IsNone && not (nodeReg.ContainsKey(node.NodeId)) then
                 if not (client.ShouldRequestPrior(node.State)) then
                     priorStats.priorNodesSkipped <- priorStats.priorNodesSkipped + 1
                 else
@@ -740,6 +740,23 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                     priorStats.priorResponsesOrphaned <- priorStats.priorResponsesOrphaned + 1
                     ()
         | _ -> ()
+
+    let evaluateWithPrior (nodes: MCTSState[]) depth =
+        for node in nodes do
+            requestPrior node depth
+        let deadline = timer.ElapsedMilliseconds + int64 leafEvaluationTimeoutMs
+        let hasPending () =
+            match nodeRegistry with
+            | Some registry ->
+                nodes
+                |> Array.exists (fun node ->
+                    node.ValueEstimates.IsNone && registry.ContainsKey(node.NodeId))
+            | None -> false
+        while hasPending () && timer.ElapsedMilliseconds < deadline && beforeDeadline () do
+            collectPriors ()
+            if hasPending () then Thread.Sleep(1)
+        collectPriors ()
+        nodes |> Array.map (fun node -> node.ValueEstimates)
 
     // Re-submit prior requests for already-expanded nodes along the
     // selection path that are missing priors (e.g. from tree reuse where
@@ -821,6 +838,12 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                     if Array.isEmpty state.Actions then
                         backPropagatePath evaluationPath
                             (oneHotOutcome(state.State.PlayerTurn, state.State.NumberOfPlayers))
+                    elif priorClient.IsSome then
+                        let outcome =
+                            match (evaluateWithPrior [| state |] depth).[0] with
+                            | Some estimate -> estimate
+                            | None -> simulate 0 state
+                        backPropagatePath evaluationPath outcome
                     elif not (enqueueLeaf evaluationPath [| state |] [| 1 |] Array.empty depth) then
                         backPropagatePath evaluationPath (simulate 0 state)
                 | Stochastic action ->
@@ -837,11 +860,24 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                             if Array.isEmpty state.Actions then
                                 Some(fst outcomes.[index], oneHotOutcome(state.State.PlayerTurn, state.State.NumberOfPlayers))
                             else None)
-                    if nonterminal.Length > 0
-                       && enqueueLeaf evaluationPath
-                            (nonterminal |> Array.map snd)
-                            (nonterminal |> Array.map (fun (index, _) -> fst outcomes.[index]))
-                            exact depth then ()
+                    if nonterminal.Length > 0 && priorClient.IsSome then
+                        let nonterminalStates = nonterminal |> Array.map snd
+                        let values = evaluateWithPrior nonterminalStates depth
+                        let evaluated =
+                            Array.map3 (fun (index, _) state value ->
+                                fst outcomes.[index],
+                                match value with
+                                | Some estimate -> estimate
+                                | None -> simulate 0 state)
+                                nonterminal nonterminalStates values
+                        Array.append evaluated exact
+                        |> weightedOutcome
+                        |> backPropagatePath evaluationPath
+                    elif nonterminal.Length > 0
+                         && enqueueLeaf evaluationPath
+                              (nonterminal |> Array.map snd)
+                              (nonterminal |> Array.map (fun (index, _) -> fst outcomes.[index]))
+                              exact depth then ()
                     else
                         let weighted =
                             states
@@ -863,14 +899,17 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                 | HorizonAction _ ->
                     priorStats.horizonSkips <- priorStats.horizonSkips + 1
                     let evaluationPath = { path with Edges = selectedEdge :: path.Edges }
-                    if not (enqueueLeaf evaluationPath [| expandedState |] [| 1 |] Array.empty depth) then
+                    if priorClient.IsSome then
+                        let outcome =
+                            match (evaluateWithPrior [| expandedState |] depth).[0] with
+                            | Some estimate -> estimate
+                            | None -> simulate maxRolloutDepth expandedState
+                        backPropagatePath evaluationPath outcome
+                    elif not (enqueueLeaf evaluationPath [| expandedState |] [| 1 |] Array.empty depth) then
                         let outcome = simulate maxRolloutDepth expandedState
                         backPropagatePath expandedPath outcome
                     collectPriors ()
                 | StochasticAction stochasticOutcomes ->
-                    for stochasticOutcome in stochasticOutcomes do
-                        requestPrior stochasticOutcome.State depth
-
                     let evaluationPath =
                         { States = path.States
                           Edges = selectedEdge :: path.Edges }
@@ -884,13 +923,29 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                                     outcome.ProbabilityWeight,
                                     oneHotOutcome (outcome.State.State.PlayerTurn, outcome.State.State.NumberOfPlayers))
                             else None)
-                    if nonterminal.Length > 0
-                       && enqueueLeaf
-                            evaluationPath
-                            (nonterminal |> Array.map (fun outcome -> outcome.State))
-                            (nonterminal |> Array.map (fun outcome -> outcome.ProbabilityWeight))
-                            exactOutcomes
-                            depth then
+                    if nonterminal.Length > 0 && priorClient.IsSome then
+                        let outcomeStates = nonterminal |> Array.map (fun outcome -> outcome.State)
+                        let values = evaluateWithPrior outcomeStates depth
+                        let evaluated =
+                            Array.map3 (fun outcome state value ->
+                                let resolved =
+                                    match value with
+                                    | Some estimate -> estimate
+                                    | None -> simulate maxRolloutDepth state
+                                backPropagate [ state ] resolved
+                                outcome.ProbabilityWeight, resolved)
+                                nonterminal outcomeStates values
+                        let outcome = Array.append evaluated exactOutcomes |> weightedOutcome
+                        backPropagatePath evaluationPath outcome
+                        for stochasticOutcome in stochasticOutcomes do
+                            propagateTerminals (stochasticOutcome.State :: path.States)
+                    elif nonterminal.Length > 0
+                         && enqueueLeaf
+                              evaluationPath
+                              (nonterminal |> Array.map (fun outcome -> outcome.State))
+                              (nonterminal |> Array.map (fun outcome -> outcome.ProbabilityWeight))
+                              exactOutcomes
+                              depth then
                         ()
                     else
                         let evaluateOutcome (outcomeState: MCTSState) =
@@ -917,18 +972,18 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                     propagateTerminals expandedPath.States
                     collectPriors ()
                 | _ ->
-                    // Phase 3 — Prior request: enqueue async NN evaluation for the
-                    // expanded node's actions.
-                    requestPrior expandedState depth
-                    collectPriors ()
                     let evaluationPath = { path with Edges = selectedEdge :: path.Edges }
-                    match expandedState.ValueEstimates with
-                    | Some outcome ->
+                    if priorClient.IsSome then
+                        let outcome =
+                            match (evaluateWithPrior [| expandedState |] depth).[0] with
+                            | Some estimate -> estimate
+                            | None -> simulate maxRolloutDepth expandedState
                         backPropagate [ expandedState ] outcome
                         backPropagatePath evaluationPath outcome
                         propagateTerminals expandedPath.States
-                    | None when enqueueLeaf evaluationPath [| expandedState |] [| 1 |] Array.empty depth -> ()
-                    | None ->
+                    elif enqueueLeaf evaluationPath [| expandedState |] [| 1 |] Array.empty depth then
+                        ()
+                    else
                         let outcome = simulate maxRolloutDepth expandedState
                         backPropagatePath expandedPath outcome
                         propagateTerminals expandedPath.States
@@ -941,7 +996,15 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
                 propagateTerminals path.States
             else
                 let evaluationPath = { path with States = List.tail path.States }
-                if not (enqueueLeaf evaluationPath [| expandedState |] [| 1 |] Array.empty path.States.Length) then
+                if priorClient.IsSome then
+                    let outcome =
+                        match (evaluateWithPrior [| expandedState |] path.States.Length).[0] with
+                        | Some estimate -> estimate
+                        | None -> simulate maxRolloutDepth expandedState
+                    backPropagate [ expandedState ] outcome
+                    backPropagatePath evaluationPath outcome
+                    propagateTerminals path.States
+                elif not (enqueueLeaf evaluationPath [| expandedState |] [| 1 |] Array.empty path.States.Length) then
                     let outcome = simulate maxRolloutDepth expandedState
                     backPropagatePath path outcome
                     propagateTerminals path.States
@@ -949,7 +1012,13 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
         | Horizon (path, horizonState) ->
             resubmitPriors path.States
             priorStats.horizonSkips <- priorStats.horizonSkips + 1
-            if not (enqueueLeaf path [| horizonState |] [| 1 |] Array.empty path.States.Length) then
+            if priorClient.IsSome then
+                let outcome =
+                    match (evaluateWithPrior [| horizonState |] path.States.Length).[0] with
+                    | Some estimate -> estimate
+                    | None -> simulate maxRolloutDepth horizonState
+                backPropagatePath { path with States = horizonState :: path.States } outcome
+            elif not (enqueueLeaf path [| horizonState |] [| 1 |] Array.empty path.States.Length) then
                 let outcome = simulate maxRolloutDepth horizonState
                 backPropagatePath { path with States = horizonState :: path.States } outcome
             collectPriors ()

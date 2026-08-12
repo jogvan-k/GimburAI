@@ -148,6 +148,37 @@ type ValueRespondPriorClient(valueEstimates: float[]) =
         member _.Flush(_knownNodeIds: IReadOnlySet<int64>) =
             _responses.Clear()
 
+type CombinedRespondPriorClient(valueEstimates: float[]) =
+    let responses = Queue<PriorResponse>()
+    let mutable requests = 0
+
+    member _.Requests = requests
+
+    interface IPriorClient with
+        member _.ShouldRequestPrior(_parentState) = true
+        member _.RequestPrior(nodeId, _parentState, states, _actingPlayer, _depth) =
+            requests <- requests + 1
+            responses.Enqueue(PriorResponse(nodeId, Array.create states.Length 1., valueEstimates))
+            1
+        member _.CollectPriors(knownNodeIds: IReadOnlySet<int64>) =
+            let matched = responses |> Seq.filter (fun r -> knownNodeIds.Contains(r.NodeId)) |> Seq.toArray
+            let remaining = responses |> Seq.filter (fun r -> not (knownNodeIds.Contains(r.NodeId))) |> Seq.toArray
+            responses.Clear()
+            for response in remaining do responses.Enqueue(response)
+            matched
+        member _.Flush(_knownNodeIds: IReadOnlySet<int64>) = responses.Clear()
+
+type RejectingLeafEvaluator() =
+    let mutable enqueues = 0
+    member _.Enqueues = enqueues
+    interface ILeafEvaluator with
+        member _.Enqueue(_, _, _) =
+            enqueues <- enqueues + 1
+            false
+        member _.Collect(_) = Array.empty
+        member _.WaitForResults(_) = false
+        member _.Cancel(_) = ()
+
 
 // ────────────────────────────────────────────────────────────────
 // MCTSState.NodeId uniqueness
@@ -639,6 +670,30 @@ type PriorSearchIntegrationTests() =
         mcts.RunSimulation(mctsRoot) |> ignore
 
         mctsRoot.ValueEstimates |> should equal (Some [| 0.25; 0.75 |])
+
+    [<Test>]
+    member _.CombinedPriorResponseSuppliesExpandedNodePolicyAndValueWithoutLeafRequest() =
+        let child = node_builder(p2, 1, 0, 10, node_builder(p1, 2, 0, 20))
+        let root = MCTSState(node_builder(p1, 0, 0, 0, child).build())
+        let client = CombinedRespondPriorClient([| 0.7; 0.3 |])
+        let leaf = RejectingLeafEvaluator()
+        let mcts =
+            MonteCarloTreeSearch(
+                { MCTSConfig.Default with
+                    MaxSimulations = 1
+                    PriorClient = Some (client :> IPriorClient)
+                    LeafEvaluator = Some (leaf :> ILeafEvaluator) })
+
+        mcts.RunSimulation(root) |> ignore
+
+        leaf.Enqueues |> should equal 0
+        root.ActionStats.[0].CompletedVisits |> should equal 1
+        root.ActionStats.[0].ValueSums |> should equal [| 0.7; 0.3 |]
+        match root.Actions.[0] with
+        | DeterministicAction expanded ->
+            expanded.Priors.IsSome |> should equal true
+            expanded.ValueEstimates |> should equal (Some [| 0.7; 0.3 |])
+        | _ -> Assert.Fail "Expected deterministic child expansion"
 
     [<TestCaseSource("InvalidValueEstimates")>]
     member _.SearchWithInvalidValueResponse_RejectsValues(valueEstimates: float[]) =

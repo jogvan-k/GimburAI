@@ -182,13 +182,6 @@ internal static class RootCommandFactory
                           "The game loop ends when the best action is a HorizonAction.",
         };
 
-        var maxPriorDepthOption = new Option<int>("--max-prior-depth")
-        {
-            Description = "Maximum tree depth for NN prior requests (default: unlimited). " +
-                          "Nodes deeper than this use uniform priors, reducing wasted inference work.",
-            DefaultValueFactory = _ => int.MaxValue,
-        };
-
         var parallelismOption = new Option<int>("--parallelism")
         {
             Description = "Maximum games simulated concurrently (default: 4 with NN priors, otherwise all processors)",
@@ -227,7 +220,6 @@ internal static class RootCommandFactory
           priorOption,
           nnUrlOption,
           placementOnlyOption,
-          maxPriorDepthOption,
           parallelismOption,
           maxPendingEvaluationsOption,
           leafEvaluationTimeoutOption,
@@ -260,7 +252,6 @@ internal static class RootCommandFactory
             bool prior = parseResult.GetValue(priorOption);
             string nnUrl = parseResult.GetValue(nnUrlOption)!;
             bool placementOnly = parseResult.GetValue(placementOnlyOption);
-            int maxPriorDepth = parseResult.GetValue(maxPriorDepthOption);
             int parallelism = parseResult.GetValue(parallelismOption);
             int maxPendingEvaluations = parseResult.GetValue(maxPendingEvaluationsOption);
             int leafEvaluationTimeoutMs = parseResult.GetValue(leafEvaluationTimeoutOption);
@@ -325,8 +316,6 @@ internal static class RootCommandFactory
                     nnUrl = ConfigLoader.GetString(cfg, "nnUrl") ?? nnUrl;
                 if (!WasProvided(parseResult, "--placement-only"))
                     placementOnly = ConfigLoader.GetBool(cfg, "placementOnly") ?? placementOnly;
-                if (!WasProvided(parseResult, "--max-prior-depth"))
-                    maxPriorDepth = ConfigLoader.GetInt(cfg, "maxPriorDepth") ?? maxPriorDepth;
                 if (!WasProvided(parseResult, "--parallelism"))
                     parallelism = ConfigLoader.GetInt(cfg, "parallelism") ?? parallelism;
                 if (!WasProvided(parseResult, "--max-pending-evaluations"))
@@ -377,7 +366,6 @@ internal static class RootCommandFactory
                 Prior = prior,
                 NnUrl = nnUrl,
                 PlacementOnly = placementOnly,
-                MaxPriorDepth = maxPriorDepth,
                 Parallelism = parallelism,
                 MaxPendingEvaluations = maxPendingEvaluations,
                 LeafEvaluationTimeoutMs = leafEvaluationTimeoutMs,
@@ -431,6 +419,11 @@ internal static class RootCommandFactory
         {
             Description = "Maximum benchmark games run concurrently",
             DefaultValueFactory = _ => 0,
+        };
+        var progressIntervalOption = new Option<int>("--progress-interval")
+        {
+            Description = "Save resumable benchmark progress every N completed games (0 disables)",
+            DefaultValueFactory = _ => 10,
         };
 
         var playersOption = new Option<string[]>("--ai")
@@ -486,15 +479,11 @@ internal static class RootCommandFactory
             DefaultValueFactory = _ => "http://localhost:5123",
         };
 
-        var serverMaxPriorDepthOption = new Option<int?>("--server-max-prior-depth")
-        {
-            Description = "Max tree depth for NN prior requests (server-mcts-nn only)",
-        };
-
         var command = new Command("benchmark", "Run AI-vs-AI games and compute win rates.")
         {
             noOfGamesOption,
             benchmarkParallelismOption,
+            progressIntervalOption,
             playersOption,
             outputOption,
             searchTimeOption,
@@ -504,7 +493,6 @@ internal static class RootCommandFactory
             nnUrlsOption,
             playerLabelsOption,
             serverUrlOption,
-            serverMaxPriorDepthOption,
         };
 
         command.SetAction(parseResult =>
@@ -517,6 +505,7 @@ internal static class RootCommandFactory
 
             uint noOfGames = parseResult.GetValue(noOfGamesOption);
             int parallelism = parseResult.GetValue(benchmarkParallelismOption);
+            int progressInterval = parseResult.GetValue(progressIntervalOption);
             int seed = parseResult.GetValue(globals.Seed) ?? new Random().Next();
             string? mapConfig = parseResult.GetValue(globals.MapConfiguration);
             string? verbosity = ParseVerbosity(parseResult, globals);
@@ -529,7 +518,6 @@ internal static class RootCommandFactory
             string[]? nnUrls = parseResult.GetValue(nnUrlsOption);
             string[]? playerLabels = parseResult.GetValue(playerLabelsOption);
             string serverUrl = parseResult.GetValue(serverUrlOption)!;
-            int? serverMaxPriorDepth = parseResult.GetValue(serverMaxPriorDepthOption);
 
             // ── Apply config file defaults for benchmark ─────────────
             if (cfg.ValueKind == JsonValueKind.Object)
@@ -538,6 +526,8 @@ internal static class RootCommandFactory
                     noOfGames = ConfigLoader.GetUInt(cfg, "games") ?? noOfGames;
                 if (!WasProvided(parseResult, "--parallelism"))
                     parallelism = ConfigLoader.GetInt(cfg, "parallelism") ?? parallelism;
+                if (!WasProvided(parseResult, "--progress-interval"))
+                    progressInterval = ConfigLoader.GetInt(cfg, "progressInterval") ?? progressInterval;
                 if (!WasProvided(parseResult, "--seed"))
                     seed = ConfigLoader.GetInt(cfg, "seed") ?? seed;
                 if (!WasProvided(parseResult, "--map-config"))
@@ -568,8 +558,6 @@ internal static class RootCommandFactory
                     playerLabels = ConfigLoader.GetStringArray(cfg, "playerLabels") ?? playerLabels;
                 if (!WasProvided(parseResult, "--server-url"))
                     serverUrl = ConfigLoader.GetString(cfg, "serverUrl") ?? serverUrl;
-                if (!WasProvided(parseResult, "--server-max-prior-depth"))
-                    serverMaxPriorDepth = ConfigLoader.GetInt(cfg, "serverMaxPriorDepth") ?? serverMaxPriorDepth;
                 if (!WasProvided(parseResult, "--verbosity", "-v") && !WasProvided(parseResult, "-q") && !WasProvided(parseResult, "--verbose"))
                     verbosity = ConfigLoader.GetString(cfg, "verbosity") ?? verbosity;
             }
@@ -607,8 +595,8 @@ internal static class RootCommandFactory
                 NnUrls = nnUrls,
                 PlayerLabels = playerLabels,
                 ServerUrl = serverUrl,
-                ServerMaxPriorDepth = serverMaxPriorDepth,
                 Parallelism = parallelism,
+                ProgressInterval = progressInterval,
             };
 
             try
