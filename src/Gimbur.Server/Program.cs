@@ -175,6 +175,12 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
             PriorActionsApplied = logInfo.priorActionsApplied,
             PriorActionsRequested = logInfo.priorActionsRequested,
             PriorInferencesRequested = logInfo.priorInferencesRequested,
+            PriorActionsPerDepth = logInfo.priorActionsPerDepth is { Count: > 0 }
+                ? new Dictionary<int, int>(logInfo.priorActionsPerDepth)
+                : null,
+            PriorModelInvocationsPerDepth = logInfo.priorInferencesPerDepth is { Count: > 0 }
+                ? new Dictionary<int, int>(logInfo.priorInferencesPerDepth)
+                : null,
             LeafEvaluationBatches = logInfo.leafEvaluationBatches,
             LeafEvaluationStates = logInfo.leafEvaluationStates,
             AllActions = allActions,
@@ -244,8 +250,6 @@ record ChooseActionRequest
     /// <summary>Maximum rollout depth (default: 500).</summary>
     public int? MaxRolloutDepth { get; init; }
 
-    /// <summary>Maximum tree depth for NN prior requests (default: unlimited).</summary>
-
     /// <summary>
     /// URL of the Python NN inference server. Required when aiMode is "mcts-nn-ai".
     /// </summary>
@@ -270,6 +274,8 @@ record ChooseActionResponse
     public int PriorActionsApplied { get; init; }
     public int PriorActionsRequested { get; init; }
     public int PriorInferencesRequested { get; init; }
+    public Dictionary<int, int>? PriorActionsPerDepth { get; init; }
+    public Dictionary<int, int>? PriorModelInvocationsPerDepth { get; init; }
     public int LeafEvaluationBatches { get; init; }
     public int LeafEvaluationStates { get; init; }
     public required List<ActionInfo> AllActions { get; init; }

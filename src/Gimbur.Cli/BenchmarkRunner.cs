@@ -161,6 +161,8 @@ internal interface IPriorStatsProvider : INnStatsProvider
     int TotalPriorActionsApplied { get; }
     int TotalPriorActionsRequested { get; }
     int TotalPriorInferencesRequested { get; }
+    Dictionary<int, int>? TotalPriorActionsPerDepth { get; }
+    Dictionary<int, int>? TotalPriorInferencesPerDepth { get; }
 }
 
 internal static class BenchmarkConfidence
@@ -993,6 +995,8 @@ internal class BenchmarkRunner
                 priorActionsApplied += priorStats.TotalPriorActionsApplied;
                 priorActionsRequested += priorStats.TotalPriorActionsRequested;
                 priorInferencesRequested += priorStats.TotalPriorInferencesRequested;
+                AddDepthCounts(ref priorActionsPerDepth, priorStats.TotalPriorActionsPerDepth);
+                AddDepthCounts(ref priorInferencesPerDepth, priorStats.TotalPriorInferencesPerDepth);
             }
         }
 
@@ -1005,6 +1009,19 @@ internal class BenchmarkRunner
         return (state.WinnerPlayer, state.TurnNumber, nnRequests, nnStatesEvaluated,
             priorNodesRequested, priorActionsApplied, priorActionsRequested,
             priorInferencesRequested, priorActionsPerDepth, priorInferencesPerDepth);
+    }
+
+    private static void AddDepthCounts(
+        ref Dictionary<int, int>? aggregate,
+        IReadOnlyDictionary<int, int>? counts)
+    {
+        if (counts is not { Count: > 0 }) return;
+        aggregate ??= new Dictionary<int, int>();
+        foreach (var (depth, count) in counts)
+        {
+            aggregate.TryGetValue(depth, out var existing);
+            aggregate[depth] = existing + count;
+        }
     }
 
     private GameConfig ResolveGameConfig()

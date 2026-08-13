@@ -140,4 +140,23 @@ internal sealed class BenchmarkRunnerTests
         });
     }
 
+    [Test]
+    public void ServerPlayer_AggregatesPriorDepthDiagnostics()
+    {
+        Dictionary<int, int>? totals = new() { [0] = 2, [1] = 3 };
+
+        totals = ServerPlayer.AddDepthCounts(totals, new Dictionary<int, int>
+        {
+            [1] = 4,
+            [2] = 5,
+        });
+
+        Assert.That(totals, Is.EqualTo(new Dictionary<int, int>
+        {
+            [0] = 2,
+            [1] = 7,
+            [2] = 5,
+        }));
+    }
+
 }

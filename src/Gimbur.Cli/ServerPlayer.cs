@@ -28,6 +28,8 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDis
     public int TotalPriorActionsApplied { get; private set; }
     public int TotalPriorActionsRequested { get; private set; }
     public int TotalPriorInferencesRequested { get; private set; }
+    public Dictionary<int, int>? TotalPriorActionsPerDepth { get; private set; }
+    public Dictionary<int, int>? TotalPriorInferencesPerDepth { get; private set; }
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -112,6 +114,10 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDis
         TotalPriorActionsApplied += result.PriorActionsApplied;
         TotalPriorActionsRequested += result.PriorActionsRequested;
         TotalPriorInferencesRequested += result.PriorInferencesRequested;
+        TotalPriorActionsPerDepth = AddDepthCounts(
+            TotalPriorActionsPerDepth, result.PriorActionsPerDepth);
+        TotalPriorInferencesPerDepth = AddDepthCounts(
+            TotalPriorInferencesPerDepth, result.PriorModelInvocationsPerDepth);
 
         // Find the matching action by (typeTag, arg1, arg2).
         for (var i = 0; i < actions.Length; i++)
@@ -142,6 +148,20 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDis
     public void Dispose()
     {
         _http.Dispose();
+    }
+
+    internal static Dictionary<int, int>? AddDepthCounts(
+        Dictionary<int, int>? aggregate,
+        IReadOnlyDictionary<int, int>? counts)
+    {
+        if (counts is not { Count: > 0 }) return aggregate;
+        aggregate ??= new Dictionary<int, int>();
+        foreach (var (depth, count) in counts)
+        {
+            aggregate.TryGetValue(depth, out var existing);
+            aggregate[depth] = existing + count;
+        }
+        return aggregate;
     }
 
     private static CatanAction UnwrapCoreAction(CoreAction coreAction)
@@ -180,6 +200,8 @@ internal sealed class ServerPlayer : IBenchmarkPlayer, IPriorStatsProvider, IDis
         public int PriorActionsApplied { get; init; }
         public int PriorActionsRequested { get; init; }
         public int PriorInferencesRequested { get; init; }
+        public Dictionary<int, int>? PriorActionsPerDepth { get; init; }
+        public Dictionary<int, int>? PriorModelInvocationsPerDepth { get; init; }
         public int LeafEvaluationBatches { get; init; }
         public int LeafEvaluationStates { get; init; }
     }
