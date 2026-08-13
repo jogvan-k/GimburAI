@@ -224,7 +224,7 @@ let extractionKey (state: MCTSState) actionIndex =
         | Some priors when actionIndex < priors.Length -> priors.[actionIndex]
         | _ -> 1. / float state.Actions.Length
     let stats = state.ActionStats.[actionIndex]
-    extractionEvaluator state actionIndex, stats.CompletedVisits + stats.PendingVisits, prior
+    stats.CompletedVisits + stats.PendingVisits, extractionEvaluator state actionIndex, prior
 
 let extractBestPath (root: MCTSState) =
     let mutable path = List.empty

@@ -25,15 +25,15 @@ public enum PriorMode
 /// Asynchronous prior client for NN-guided MCTS search.
 /// Implements <see cref="IPriorClient"/> by communicating with the Python
 /// inference server via HTTP. Prior requests are fire-and-forget; completed
-/// results are collected via a background polling thread that deposits
-/// responses into a local mailbox.
+/// results are collected via a background polling thread that routes responses
+/// by globally unique node ID.
 ///
 /// Uses the complete parent-state policy/value model for every game phase.
 /// </summary>
 public sealed class PriorClient : IPriorClient, IDisposable
 {
     private readonly HttpClient _http;
-    private readonly ConcurrentQueue<PriorResponse> _mailbox = new();
+    private readonly ConcurrentDictionary<long, PriorResponse> _completed = new();
     private readonly Thread _pollThread;
     private volatile bool _disposed;
     private readonly PriorMode _mode;
@@ -42,21 +42,9 @@ public sealed class PriorClient : IPriorClient, IDisposable
     /// <summary>
     /// When true, this client is owned by a pool and shared across many
     /// concurrent MCTS searches (typically one per HTTP request to
-    /// Gimbur.Server). Enables the orphan soft cap in <see cref="CollectPriors"/>
-    /// since a pooled client's mailbox can otherwise grow unboundedly
-    /// from stale responses owned by completed searches.
+    /// Gimbur.Server).
     /// </summary>
-    private readonly bool _pooled;
-
     /// <summary>
-    /// Soft cap on the local mailbox size. When the mailbox grows beyond this,
-    /// <see cref="CollectPriors"/> opportunistically drops the oldest stale
-    /// entries (responses for NodeIds not in the active known set) to bound
-    /// memory growth from orphan responses left by completed searches.
-    /// Only relevant for pooled clients.
-    /// </summary>
-    private const int MailboxSoftCap = 4096;
-
     // ── Diagnostic counters (thread-safe via Interlocked) ────────────────
     private long _pollSuccessCount;
     private long _pollResponsesReceived;
@@ -93,7 +81,6 @@ public sealed class PriorClient : IPriorClient, IDisposable
     public PriorClient(string baseUrl, PriorMode mode = PriorMode.State, bool pooled = false)
     {
         _mode = mode;
-        _pooled = pooled;
         _http = new HttpClient { BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/") };
 
         // Start background thread that polls the server for completed results.
@@ -241,42 +228,29 @@ public sealed class PriorClient : IPriorClient, IDisposable
 
     /// <summary>
     /// Return completed prior responses whose NodeId is in the given set.
-    /// Responses for unknown node IDs are left in the mailbox so that other
-    /// concurrent callers (e.g. parallel games sharing this client) can
-    /// collect their own responses on a subsequent call.
+    /// Responses for unknown node IDs remain keyed for their owning search.
     /// </summary>
     public PriorResponse[] CollectPriors(IReadOnlySet<long> knownNodeIds)
     {
-        var results = new List<PriorResponse>();
-        var putBack = new List<PriorResponse>();
-        while (_mailbox.TryDequeue(out var item))
-        {
-            if (knownNodeIds.Contains(item.NodeId))
-                results.Add(item);
-            else
-                putBack.Add(item);
-        }
+        return CollectMatching(_completed, knownNodeIds);
+    }
 
-        // Re-enqueue responses that didn't match any known node ID, but bound
-        // total mailbox size to prevent unbounded growth from orphan responses
-        // left by completed pooled-client searches.
-        if (_pooled && putBack.Count > MailboxSoftCap)
+    internal static PriorResponse[] CollectMatching(
+        ConcurrentDictionary<long, PriorResponse> completed,
+        IReadOnlySet<long> knownNodeIds)
+    {
+        var results = new List<PriorResponse>(knownNodeIds.Count);
+        foreach (var nodeId in knownNodeIds)
         {
-            // Drop the oldest (front of the list, which corresponds to earlier
-            // dequeue order) and keep only the most recent MailboxSoftCap orphans.
-            putBack.RemoveRange(0, putBack.Count - MailboxSoftCap);
+            if (completed.TryRemove(nodeId, out var response))
+                results.Add(response);
         }
-
-        foreach (var item in putBack)
-            _mailbox.Enqueue(item);
         return results.ToArray();
     }
 
     /// <summary>
-    /// Drop pending responses belonging to a completed search, identified
-    /// by the node IDs the caller still tracks. Responses for unknown
-    /// node IDs (which may belong to other concurrent searches sharing
-    /// this client) are preserved in the mailbox.
+    /// Drop pending responses belonging to a completed search. Responses for
+    /// unknown node IDs remain available to other concurrent searches.
     ///
     /// Never clears the server-side queue: that queue is shared across
     /// all concurrent callers and clearing it would discard pending
@@ -284,23 +258,10 @@ public sealed class PriorClient : IPriorClient, IDisposable
     /// </summary>
     public void Flush(IReadOnlySet<long> knownNodeIds)
     {
-        var keep = new List<PriorResponse>();
-        while (_mailbox.TryDequeue(out var item))
-        {
-            if (!knownNodeIds.Contains(item.NodeId))
-            {
-                keep.Add(item);
-            }
-        }
-
-        foreach (var item in keep)
-        {
-            _mailbox.Enqueue(item);
-        }
-
         foreach (var nodeId in knownNodeIds)
         {
             _pendingState.TryRemove(nodeId, out _);
+            _completed.TryRemove(nodeId, out _);
         }
     }
 
@@ -348,8 +309,8 @@ public sealed class PriorClient : IPriorClient, IDisposable
                                     var flattened = MapFullStatePolicy(
                                         pendingState.Serializer, priors,
                                         pendingState.LegalPolicyIndices, pendingState.OutcomeCounts);
-                                    _mailbox.Enqueue(new PriorResponse(
-                                        nodeId, flattened, valueEstimates, priors));
+                                    _completed[nodeId] = new PriorResponse(
+                                        nodeId, flattened, valueEstimates, priors);
                                 }
                                 Interlocked.Increment(ref _pollResponsesReceived);
                             }

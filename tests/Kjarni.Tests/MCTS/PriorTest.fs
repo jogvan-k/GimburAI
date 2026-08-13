@@ -321,6 +321,19 @@ type PUCTActionEvaluatorTests() =
 
         extractBestPath root |> should equal [ 0 ]
 
+    [<Test>]
+    member _.ExtractBestPath_PrefersVisitsOverHigherQ() =
+        let root = MCTSState(termNode p1 0)
+        root.Actions <-
+            [| Unexplored(Deterministic(action(termNode p1 0, termNode p2 1)))
+               Unexplored(Deterministic(action(termNode p1 0, termNode p2 2))) |]
+        root.ActionStats.[0].CompletedVisits <- 10
+        root.ActionStats.[0].ValueSums.[0] <- 4.
+        root.ActionStats.[1].CompletedVisits <- 1
+        root.ActionStats.[1].ValueSums.[0] <- 1.
+
+        extractBestPath root |> should equal [ 0 ]
+
 // ────────────────────────────────────────────────────────────────
 // explorationRate — PUCT formula
 // ────────────────────────────────────────────────────────────────

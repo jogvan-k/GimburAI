@@ -373,14 +373,12 @@ details.
 
 ## Best Path Extraction
 
-After the search loop, `extractBestPath` greedily follows the highest-valued
-action at each node using pure exploitation (no exploration term):
+After the search loop, `extractBestPath` greedily follows the most-visited
+action at each node. Q value and prior break visit-count ties:
 
 ```
-extractionEvaluator(player, action):
-    Terminal(outcome)           → outcome[player]
-    any other action            → edge.ValueSums[player] / edge.CompletedVisits
-                                  (or 0 if unvisited)
+extractionKey(player, action):
+    (completed + pending visits, Q(player), prior)
 ```
 
 Extraction continues through deterministic actions and stops when it encounters
