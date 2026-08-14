@@ -12,6 +12,8 @@ from test_data_loader import MINI_BOARD, MINI_STATE_ONLY
 
 from gimbur_nn.game_config import MINI_2P
 from gimbur_nn.serve import (
+    _PRIOR_QUEUE_CAPACITY,
+    InferenceDiagnostics,
     LeafCancelRequest,
     LeafEnqueueRequest,
     LeafRequest,
@@ -70,6 +72,31 @@ def test_batch_window_collects_request_arriving_after_first_dequeue() -> None:
         return batch
 
     assert [request.id for request in asyncio.run(collect())] == ["first", "second"]
+
+
+def test_inference_diagnostics_reports_batch_and_stage_averages() -> None:
+    diagnostics = InferenceDiagnostics()
+    diagnostics.record(
+        states=4,
+        queue_wait_ms=8.0,
+        tokenize_ms=2.0,
+        transfer_ms=1.0,
+        forward_ms=5.0,
+    )
+    diagnostics.record(
+        states=2,
+        queue_wait_ms=4.0,
+        tokenize_ms=1.0,
+        transfer_ms=0.5,
+        forward_ms=3.0,
+    )
+
+    snapshot = diagnostics.snapshot()
+    assert snapshot["batches"] == 2
+    assert snapshot["states"] == 6
+    assert snapshot["average_batch_size"] == 3
+    assert snapshot["average_queue_wait_ms"] == 2
+    assert snapshot["average_forward_ms"] == 4
 
 
 def test_predict_player_gathers_from_one_unrotated_vector_inference(monkeypatch) -> None:
@@ -234,10 +261,10 @@ def test_leaf_enqueue_reports_dropped_request_id() -> None:
     async def fill_and_drop() -> object:
         await enqueue(
             LeafEnqueueRequest(
-                requests=[
-                    LeafRequest(id=f"queued-{i}", states=["state"], priority=10)
-                    for i in range(4096)
-                ]
+                    requests=[
+                        LeafRequest(id=f"queued-{i}", states=["state"], priority=10)
+                        for i in range(_PRIOR_QUEUE_CAPACITY)
+                    ]
             )
         )
         return await enqueue(

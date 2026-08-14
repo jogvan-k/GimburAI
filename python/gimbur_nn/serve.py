@@ -22,13 +22,14 @@ import heapq
 import json
 import logging
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Generic, TypeVar
 
 import torch
 import torch.nn.functional as F
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -118,6 +119,8 @@ class PriorRequest(BaseModel):
     priority: int
     """Depth from root; lower = more important."""
 
+    _queued_at_ns: int = PrivateAttr(default=0)
+
 
 class PriorEnqueueRequest(BaseModel):
     """Request body for /state/prior-enqueue."""
@@ -152,6 +155,8 @@ class LeafRequest(BaseModel):
     states: list[str]
     priority: int
 
+    _queued_at_ns: int = PrivateAttr(default=0)
+
 
 class LeafEnqueueRequest(BaseModel):
     requests: list[LeafRequest]
@@ -177,7 +182,7 @@ class LeafCancelResponse(BaseModel):
 
 # ── Priority queue for async prior inference ──────────────────────────────────
 
-_PRIOR_QUEUE_CAPACITY = 4096
+_PRIOR_QUEUE_CAPACITY = 16384 # 4096
 
 T = TypeVar("T")
 
@@ -213,6 +218,7 @@ class PriorQueue(Generic[T]):
     def enqueue_with_evicted(self, req: T) -> tuple[bool, T | None]:
         """Add a request and return any lower-priority request it evicted."""
         priority: int = req.priority  # type: ignore[union-attr]
+        req._queued_at_ns = time.perf_counter_ns()  # type: ignore[union-attr]
         with self._lock:
             if len(self._heap) < self._capacity:
                 heapq.heappush(self._heap, (priority, self._seq, req))
@@ -245,6 +251,7 @@ class PriorQueue(Generic[T]):
     def enqueue_without_eviction(self, req: T) -> bool:
         """Add a request only when capacity is available."""
         priority: int = req.priority  # type: ignore[union-attr]
+        req._queued_at_ns = time.perf_counter_ns()  # type: ignore[union-attr]
         with self._lock:
             if len(self._heap) >= self._capacity:
                 return False
@@ -310,6 +317,52 @@ class PriorQueue(Generic[T]):
     def pending_count(self) -> int:
         with self._lock:
             return len(self._heap)
+
+
+class InferenceDiagnostics:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.batches = 0
+        self.states = 0
+        self.queue_wait_ms = 0.0
+        self.tokenize_ms = 0.0
+        self.transfer_ms = 0.0
+        self.forward_ms = 0.0
+
+    def record(
+        self,
+        *,
+        states: int,
+        queue_wait_ms: float,
+        tokenize_ms: float,
+        transfer_ms: float,
+        forward_ms: float,
+    ) -> None:
+        with self._lock:
+            self.batches += 1
+            self.states += states
+            self.queue_wait_ms += queue_wait_ms
+            self.tokenize_ms += tokenize_ms
+            self.transfer_ms += transfer_ms
+            self.forward_ms += forward_ms
+
+    def snapshot(self) -> dict[str, float | int]:
+        with self._lock:
+            batches = self.batches
+            states = self.states
+            return {
+                "batches": batches,
+                "states": states,
+                "average_batch_size": states / batches if batches else 0.0,
+                "average_queue_wait_ms": self.queue_wait_ms / states if states else 0.0,
+                "average_tokenize_ms": self.tokenize_ms / batches if batches else 0.0,
+                "average_transfer_ms": self.transfer_ms / batches if batches else 0.0,
+                "average_forward_ms": self.forward_ms / batches if batches else 0.0,
+                "total_queue_wait_ms": self.queue_wait_ms,
+                "total_tokenize_ms": self.tokenize_ms,
+                "total_transfer_ms": self.transfer_ms,
+                "total_forward_ms": self.forward_ms,
+            }
 
 
 async def _dequeue_with_window(
@@ -452,6 +505,8 @@ def create_app(
     tokenizer = StateTokenizer(state_game_cfg)
     prior_queue: PriorQueue[PriorRequest] = PriorQueue()
     leaf_queue: PriorQueue[LeafRequest] = PriorQueue()
+    prior_diagnostics = InferenceDiagnostics()
+    leaf_diagnostics = InferenceDiagnostics()
     if batch_window_ms < 0:
         raise ValueError("batch_window_ms must be non-negative")
 
@@ -459,6 +514,10 @@ def create_app(
 
         def _infer_prior_batch(batch: list[PriorRequest]) -> list[PriorResponseItem]:
             """Return complete parent-state policies and canonical values."""
+            started_ns = time.perf_counter_ns()
+            queue_wait_ms = sum(
+                max(0, started_ns - req._queued_at_ns) / 1_000_000 for req in batch
+            )
             valid: list[tuple[int, PriorRequest]] = []
             results: list[PriorResponseItem | None] = [None] * len(batch)
             tokens: list[torch.Tensor] = []
@@ -469,12 +528,25 @@ def create_app(
                 except (KeyError, ValueError):
                     results[index] = PriorResponseItem(id=req.id, priors=[])
 
+            tokenized_ns = time.perf_counter_ns()
+            transfer_ms = 0.0
+            forward_ms = 0.0
+
             if tokens:
+                transfer_start = time.perf_counter_ns()
                 token_ids = torch.stack(tokens).to(state_device)
+                if state_device.type == "cuda":
+                    torch.cuda.synchronize(state_device)
+                transferred_ns = time.perf_counter_ns()
                 with torch.no_grad():
                     output = state_model(token_ids)
                     values = F.softmax(_extract_logits(output, "value").float(), dim=-1)
                     policies = F.softmax(_extract_logits(output, "policy").float(), dim=-1)
+                if state_device.type == "cuda":
+                    torch.cuda.synchronize(state_device)
+                forwarded_ns = time.perf_counter_ns()
+                transfer_ms = (transferred_ns - transfer_start) / 1_000_000
+                forward_ms = (forwarded_ns - transferred_ns) / 1_000_000
                 for batch_index, (result_index, req) in enumerate(valid):
                     player_values = values[batch_index].cpu().tolist()
                     results[result_index] = PriorResponseItem(
@@ -484,11 +556,19 @@ def create_app(
                         player_win_probabilities=player_values,
                     )
 
+            prior_diagnostics.record(
+                states=len(valid),
+                queue_wait_ms=queue_wait_ms,
+                tokenize_ms=(tokenized_ns - started_ns) / 1_000_000,
+                transfer_ms=transfer_ms,
+                forward_ms=forward_ms,
+            )
+
             return [result for result in results if result is not None]
 
         async def _prior_worker() -> None:
             """Background task that continuously processes the prior queue."""
-            batch_size = 32
+            batch_size = 512 #32
             while True:
                 batch = await _dequeue_with_window(prior_queue, batch_size, batch_window_ms)
                 if batch:
@@ -504,6 +584,12 @@ def create_app(
 
         def _infer_leaf_batch(batch: list[LeafRequest]) -> list[LeafResponseItem]:
             """Flatten requests so one model call evaluates every stochastic outcome."""
+            started_ns = time.perf_counter_ns()
+            queue_wait_ms = sum(
+                max(0, started_ns - request._queued_at_ns) / 1_000_000
+                for request in batch
+                for _ in request.states
+            )
             valid: list[tuple[int, LeafRequest]] = []
             results: list[LeafResponseItem | None] = [None] * len(batch)
             token_batches: list[torch.Tensor] = []
@@ -521,13 +607,33 @@ def create_app(
                 except (KeyError, ValueError):
                     results[index] = LeafResponseItem(id=request.id, values=[])
 
+            tokenized_ns = time.perf_counter_ns()
+            transfer_ms = 0.0
+            forward_ms = 0.0
+
             if not token_batches:
+                leaf_diagnostics.record(
+                    states=0,
+                    queue_wait_ms=queue_wait_ms,
+                    tokenize_ms=(tokenized_ns - started_ns) / 1_000_000,
+                    transfer_ms=0.0,
+                    forward_ms=0.0,
+                )
                 return [result for result in results if result is not None]
+            transfer_start = time.perf_counter_ns()
             token_ids = torch.cat(token_batches).to(state_device)
+            if state_device.type == "cuda":
+                torch.cuda.synchronize(state_device)
+            transferred_ns = time.perf_counter_ns()
             with torch.no_grad():
                 probabilities = F.softmax(
                     _extract_logits(state_model(token_ids), "value").float(), dim=-1
                 )
+            if state_device.type == "cuda":
+                torch.cuda.synchronize(state_device)
+            forwarded_ns = time.perf_counter_ns()
+            transfer_ms = (transferred_ns - transfer_start) / 1_000_000
+            forward_ms = (forwarded_ns - transferred_ns) / 1_000_000
             values = probabilities.cpu().tolist()
             offset = 0
             for result_index, request in valid:
@@ -536,6 +642,13 @@ def create_app(
                     id=request.id, values=values[offset : offset + count]
                 )
                 offset += count
+            leaf_diagnostics.record(
+                states=token_ids.shape[0],
+                queue_wait_ms=queue_wait_ms,
+                tokenize_ms=(tokenized_ns - started_ns) / 1_000_000,
+                transfer_ms=transfer_ms,
+                forward_ms=forward_ms,
+            )
             return [result for result in results if result is not None]
 
         async def _leaf_worker() -> None:
@@ -709,6 +822,17 @@ def create_app(
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/diagnostics")
+    async def diagnostics() -> dict[str, object]:
+        return {
+            "prior": prior_diagnostics.snapshot(),
+            "leaf": leaf_diagnostics.snapshot(),
+            "queues": {
+                "prior_pending": prior_queue.pending_count(),
+                "leaf_pending": leaf_queue.pending_count(),
+            },
+        }
 
     return app
 

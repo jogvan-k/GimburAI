@@ -35,6 +35,10 @@ public sealed class PriorClient : IPriorClient, IDisposable
     private readonly HttpClient _http;
     private readonly ConcurrentDictionary<long, PriorResponse> _completed = new();
     private readonly Thread _pollThread;
+    private readonly Thread _senderThread;
+    private readonly BlockingCollection<PriorRequestItem> _enqueueQueue = new(
+        new ConcurrentQueue<PriorRequestItem>(), EnqueueQueueCapacity);
+    private readonly CancellationTokenSource _shutdown = new();
     private volatile bool _disposed;
     private readonly PriorMode _mode;
     private readonly ConcurrentDictionary<long, PendingStateRequest> _pendingState = new();
@@ -54,16 +58,9 @@ public sealed class PriorClient : IPriorClient, IDisposable
     private long _enqueueErrorCount;
 
     /// <summary>
-    /// Limits the number of concurrent fire-and-forget HTTP enqueue requests
-    /// to prevent exhausting file descriptors when the MCTS engine expands
-    /// many nodes in parallel.
-    /// </summary>
-    private readonly SemaphoreSlim _enqueueThrottle = new(MaxConcurrentEnqueues);
-
-    /// <summary>
-    /// Maximum number of concurrent in-flight enqueue HTTP requests.
-    /// </summary>
-    private const int MaxConcurrentEnqueues = 20;
+    private const int EnqueueQueueCapacity = 16384;
+    private const int EnqueueBatchSize = 64;
+    private const int EnqueueBatchWindowMs = 1;
 
     /// <summary>
     /// Minimum interval between server polls (milliseconds).
@@ -79,9 +76,18 @@ public sealed class PriorClient : IPriorClient, IDisposable
     };
 
     public PriorClient(string baseUrl, PriorMode mode = PriorMode.State, bool pooled = false)
+        : this(baseUrl, new HttpClientHandler(), mode, pooled)
+    {
+    }
+
+    internal PriorClient(
+        string baseUrl,
+        HttpMessageHandler handler,
+        PriorMode mode = PriorMode.State,
+        bool pooled = false)
     {
         _mode = mode;
-        _http = new HttpClient { BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/") };
+        _http = new HttpClient(handler) { BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/") };
 
         // Start background thread that polls the server for completed results.
         _pollThread = new Thread(PollLoop)
@@ -90,6 +96,12 @@ public sealed class PriorClient : IPriorClient, IDisposable
             Name = pooled ? "PriorClient-Poll-Pooled" : "PriorClient-Poll",
         };
         _pollThread.Start();
+        _senderThread = new Thread(SenderLoop)
+        {
+            IsBackground = true,
+            Name = pooled ? "PriorClient-Send-Pooled" : "PriorClient-Send",
+        };
+        _senderThread.Start();
     }
 
     /// <summary>
@@ -133,49 +145,73 @@ public sealed class PriorClient : IPriorClient, IDisposable
         if (outcomeCounts.Sum() != states.Length)
             return 0;
 
-        var request = new PriorEnqueuePayload
+        var request = new PriorRequestItem
         {
-            Requests =
-            [
-                new PriorRequestItem
-                {
-                    Id = nodeId.ToString(),
-                    ParentState = CatanStateSerializer.SerializeCompact((CatanState)parentState),
-                    Priority = depth,
-                }
-            ],
+            Id = nodeId.ToString(),
+            ParentState = CatanStateSerializer.SerializeCompact((CatanState)parentState),
+            Priority = depth,
         };
 
-        Interlocked.Increment(ref _enqueueFireCount);
         _pendingState[nodeId] = new PendingStateRequest(
             legalIndices, outcomeCounts, parent.NumberOfPlayers, parent.CurrentPlayer, serializer);
-        _ = EnqueueAsync(
-            "state/prior-enqueue",
-            request,
-            () => _pendingState.TryRemove(nodeId, out _));
+        if (!_enqueueQueue.TryAdd(request))
+        {
+            _pendingState.TryRemove(nodeId, out _);
+            Interlocked.Increment(ref _enqueueErrorCount);
+            return 0;
+        }
+        Interlocked.Increment(ref _enqueueFireCount);
 
         return 1;
     }
 
-    private async Task EnqueueAsync<T>(
-        string endpoint,
-        T request,
-        Action? onFailure)
+    private void SenderLoop()
     {
-        await _enqueueThrottle.WaitAsync();
+        var token = _shutdown.Token;
+        while (!token.IsCancellationRequested)
+        {
+            try
+            {
+                if (!_enqueueQueue.TryTake(out var first, 5, token))
+                    continue;
+                if (token.WaitHandle.WaitOne(EnqueueBatchWindowMs))
+                    break;
+                var batch = new List<PriorRequestItem>(EnqueueBatchSize) { first };
+                while (batch.Count < EnqueueBatchSize && _enqueueQueue.TryTake(out var next))
+                    batch.Add(next);
+                SendEnqueueBatch(batch, token);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (InvalidOperationException) when (_enqueueQueue.IsCompleted)
+            {
+                break;
+            }
+        }
+    }
+
+    private void SendEnqueueBatch(List<PriorRequestItem> batch, CancellationToken token)
+    {
         try
         {
-            using var response = await _http.PostAsJsonAsync(endpoint, request, JsonOptions);
+            using var response = _http.PostAsJsonAsync(
+                "state/prior-enqueue",
+                new PriorEnqueuePayload { Requests = batch.ToArray() },
+                JsonOptions,
+                token).GetAwaiter().GetResult();
             response.EnsureSuccessStatusCode();
+        }
+        catch (OperationCanceledException) when (_disposed)
+        {
         }
         catch
         {
-            onFailure?.Invoke();
-            Interlocked.Increment(ref _enqueueErrorCount);
-        }
-        finally
-        {
-            _enqueueThrottle.Release();
+            Interlocked.Add(ref _enqueueErrorCount, batch.Count);
+            foreach (var request in batch)
+                if (long.TryParse(request.Id, out var nodeId))
+                    _pendingState.TryRemove(nodeId, out _);
         }
     }
 
@@ -268,10 +304,14 @@ public sealed class PriorClient : IPriorClient, IDisposable
     public void Dispose()
     {
         _disposed = true;
+        _enqueueQueue.CompleteAdding();
+        _shutdown.Cancel();
+        _senderThread.Join(timeout: TimeSpan.FromSeconds(2));
         _pollThread.Join(timeout: TimeSpan.FromSeconds(2));
 
         _http.Dispose();
-        _enqueueThrottle.Dispose();
+        _enqueueQueue.Dispose();
+        _shutdown.Dispose();
     }
 
     // ── Background polling ───────────────────────────────────────────────────
