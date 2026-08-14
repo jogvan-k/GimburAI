@@ -14,6 +14,11 @@
     "benchmarkPrecisions": ["fp32"],
     "promotionPrecision": "fp32"
   },
+  "monitoring": {
+    "enabled": false,
+    "intervalSeconds": 120,
+    "outputDir": "pipeline/results/monitoring"
+  },
   "gen0Milestones": [200, 400, 600, 800, 1000],
   "simulate": {
     "games": 1000,

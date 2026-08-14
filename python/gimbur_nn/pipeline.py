@@ -109,6 +109,13 @@ class InferenceConfig:
 
 
 @dataclass
+class MonitoringConfig:
+    enabled: bool = False
+    interval_seconds: float = 120.0
+    output_dir: str | None = None
+
+
+@dataclass
 class GimburServerConfig:
     """Parameters for the C# Gimbur.Server (MCTS game server)."""
 
@@ -220,6 +227,7 @@ class PipelineConfig:
     train: TrainConfig = field(default_factory=TrainConfig)
     serve: ServeConfig = field(default_factory=ServeConfig)
     inference: InferenceConfig = field(default_factory=InferenceConfig)
+    monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     gimbur_server: GimburServerConfig = field(default_factory=GimburServerConfig)
     benchmarks: list[BenchmarkConfig] = field(
         default_factory=lambda: [
@@ -293,6 +301,8 @@ def _load_config(path: Path) -> PipelineConfig:
         cfg.serve = _load_section(ServeConfig, raw["serve"])
     if "inference" in raw:
         cfg.inference = _load_section(InferenceConfig, raw["inference"])
+    if "monitoring" in raw:
+        cfg.monitoring = _load_section(MonitoringConfig, raw["monitoring"])
     if "gimburServer" in raw:
         cfg.gimbur_server = _load_section(GimburServerConfig, raw["gimburServer"])
     if "benchmarks" in raw:
@@ -319,6 +329,8 @@ def _load_config(path: Path) -> PipelineConfig:
         raise ValueError("benchmarkPrecisions must be unique.")
     if "fp16" in precisions and not cfg.inference.export_fp16:
         raise ValueError("FP16 inference requires inference.exportFp16=true.")
+    if cfg.monitoring.interval_seconds <= 0:
+        raise ValueError("monitoring.intervalSeconds must be positive.")
     if cfg.gen0_milestones:
         if cfg.gen0_milestones != sorted(set(cfg.gen0_milestones)):
             raise ValueError("gen0Milestones must be strictly increasing and unique.")
@@ -570,14 +582,26 @@ def _detect_resume_gen(cfg: PipelineConfig) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _run(args: list[str], *, label: str, cwd: Path | None = None) -> None:
+def _run(
+    args: list[str],
+    *,
+    label: str,
+    cwd: Path | None = None,
+    monitor_cfg: PipelineConfig | None = None,
+    inference_url: str | None = None,
+) -> None:
     """Run a command, streaming stdout and capturing stderr. Raises on non-zero exit."""
     print(f"\n{'=' * 60}")
     print(f"  {label}")
     print(f"  $ {' '.join(args)}")
     print(f"{'=' * 60}\n", flush=True)
 
-    result = subprocess.run(args, cwd=cwd, stderr=subprocess.PIPE, text=True)
+    monitor = _MonitorProcess(monitor_cfg, label, inference_url) if monitor_cfg else None
+    try:
+        result = subprocess.run(args, cwd=cwd, stderr=subprocess.PIPE, text=True)
+    finally:
+        if monitor:
+            monitor.stop()
     if result.returncode != 0:
         stderr_msg = result.stderr.strip() if result.stderr else ""
         detail = f"{label} failed with exit code {result.returncode}"
@@ -689,6 +713,7 @@ class _ServerProcess:
             self._proc.kill()
             self._proc.wait()
         self._proc = None
+
 
     @staticmethod
     def _check_port_available(host: str, port: int) -> None:
@@ -826,6 +851,49 @@ class _ServerProcess:
                 pass
             time.sleep(0.5)
         raise RuntimeError(f"Inference server did not become healthy within {timeout}s")
+
+
+class _MonitorProcess:
+    def __init__(self, cfg: PipelineConfig, step: str, inference_url: str | None = None) -> None:
+        self._proc: subprocess.Popen[bytes] | None = None
+        if not cfg.monitoring.enabled:
+            return
+        output_dir = Path(cfg.monitoring.output_dir or Path(cfg.results_dir) / "monitoring")
+        safe_step = "".join(
+            character if character.isalnum() else "-" for character in step
+        ).strip("-")
+        output = output_dir / f"{safe_step}.jsonl"
+        args = [
+            sys.executable,
+            "-m",
+            f"{cfg.python_module}.monitor",
+            "--output",
+            str(output),
+            "--interval-seconds",
+            str(cfg.monitoring.interval_seconds),
+            "--step",
+            step,
+        ]
+        if inference_url:
+            args.extend(["--inference-url", inference_url])
+        self._proc = subprocess.Popen(args)
+
+    def stop(self) -> None:
+        if self._proc is None:
+            return
+        self._proc.send_signal(signal.SIGTERM)
+        try:
+            self._proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+            self._proc.wait()
+        self._proc = None
+
+    def __enter__(self) -> _MonitorProcess:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.stop()
 
 
 class _GimburServerProcess:
@@ -1068,7 +1136,11 @@ def _step_simulate(
 
     if requested_games <= remaining:
         # No oversampling — just run and wait.
-        result = subprocess.run(args, cwd=project_root, stderr=subprocess.PIPE, text=True)
+        monitor = _MonitorProcess(cfg, f"gen{gen}-simulate", nn_url)
+        try:
+            result = subprocess.run(args, cwd=project_root, stderr=subprocess.PIPE, text=True)
+        finally:
+            monitor.stop()
         if result.returncode != 0:
             stderr_msg = result.stderr.strip() if result.stderr else ""
             detail = f"{label} failed with exit code {result.returncode}"
@@ -1086,6 +1158,7 @@ def _step_simulate(
         stderr=None,
         start_new_session=True,
     )
+    monitor = _MonitorProcess(cfg, f"gen{gen}-simulate", nn_url)
     try:
         while proc.poll() is None:
             count = _count_json_files(out_dir)
@@ -1126,6 +1199,8 @@ def _step_simulate(
             os.killpg(proc.pid, signal.SIGKILL)
             proc.wait()
         raise
+    finally:
+        monitor.stop()
 
 
 def _count_json_files(directory: Path) -> int:
@@ -1234,7 +1309,7 @@ def _step_train(
         str(config_path),
     ]
 
-    _run(args, label=f"Gen {gen}: Train", cwd=project_root)
+    _run(args, label=f"Gen {gen}: Train", cwd=project_root, monitor_cfg=cfg)
     _ensure_inference_artifacts(cfg, out_path, project_root)
 
 
@@ -1336,6 +1411,8 @@ def _step_benchmark(
                 args,
                 label=f"Gen {gen}: Benchmark '{result_name}' ({bench.games} games)",
                 cwd=project_root,
+                monitor_cfg=cfg,
+                inference_url=nn_url,
             )
 
             # Parse results.
@@ -1437,6 +1514,8 @@ def _run_promotion_match(
             ],
             label=f"Gen {gen} attempt {attempt}: promotion {name} ({gate.games} games)",
             cwd=project_root,
+            monitor_cfg=cfg,
+            inference_url=challenger_url,
         )
     finally:
         if gate.ai in _SERVER_AI_KINDS:

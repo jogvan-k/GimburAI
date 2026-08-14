@@ -101,6 +101,27 @@ def test_pipeline_rejects_fp16_without_export(tmp_path) -> None:
         _load_config(path)
 
 
+def test_pipeline_loads_monitoring_interval(tmp_path) -> None:
+    path = tmp_path / "pipeline.json"
+    path.write_text(
+        json.dumps(
+            {
+                "monitoring": {
+                    "enabled": True,
+                    "intervalSeconds": 120,
+                    "outputDir": "metrics",
+                }
+            }
+        )
+    )
+
+    config = _load_config(path)
+
+    assert config.monitoring.enabled
+    assert config.monitoring.interval_seconds == 120
+    assert config.monitoring.output_dir == "metrics"
+
+
 def test_precision_benchmark_names_are_distinct_when_comparing_precisions() -> None:
     config = PipelineConfig()
     config.inference.benchmark_precisions = ["fp32", "fp16"]

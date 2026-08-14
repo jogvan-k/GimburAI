@@ -70,6 +70,13 @@ the window; fractional millisecond values are supported.
 dynamic batch shapes, then performs a one-state warmup before the health endpoint
 becomes available. Startup can take several minutes on the first compilation.
 
+The optional `monitoring` section starts a pipeline-managed resource monitor for
+each simulation, training, and benchmark subprocess. It writes append-only JSONL
+records for utilization over each configured interval, including system/process
+CPU and memory, NVIDIA GPU utilization/power/temperature, and inference
+`/diagnostics` deltas when available. `intervalSeconds: 120` records two-minute
+intervals and flushes a final partial interval when a step stops.
+
 ## Promotion And Benchmarks
 
 Promotion remains optional. Generation 0 bootstraps the champion; later
