@@ -96,6 +96,8 @@ class ServeConfig:
     port: int = 8000
     host: str = "127.0.0.1"
     log_level: str = "warning"
+    batch_window_ms: float = 0.0
+    compile_model: bool = False
 
 
 @dataclass
@@ -598,6 +600,8 @@ def _build_serve_config(
         "gameConfig": game_config,
         "model": str(model_path),
         "modelConfig": model_config,
+        "batchWindowMs": serve_cfg.batch_window_ms,
+        "compileModel": serve_cfg.compile_model,
     }
 
 
@@ -655,7 +659,11 @@ class _ServerProcess:
                 serve_cfg.host,
                 "--log-level",
                 serve_cfg.log_level,
+                "--batch-window-ms",
+                str(serve_cfg.batch_window_ms),
             ]
+            if serve_cfg.compile_model:
+                args.append("--compile-model")
             args.extend(["--model", str(model_path), "--model-config", model_config])
 
         print(f"\n--- Starting inference server: {' '.join(args)}")
@@ -664,7 +672,7 @@ class _ServerProcess:
         # Wait for health check.
         url = f"http://{serve_cfg.host}:{serve_cfg.port}/health"
         try:
-            self._wait_for_health(url, timeout=60)
+            self._wait_for_health(url, timeout=300 if serve_cfg.compile_model else 60)
         except Exception:
             self.stop()
             raise

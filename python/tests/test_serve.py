@@ -22,6 +22,7 @@ from gimbur_nn.serve import (
     PriorRequest,
     PriorResponseItem,
     _checkpoint_precision,
+    _dequeue_with_window,
     _load_checkpoint,
     create_app,
 )
@@ -52,6 +53,23 @@ def test_prior_response_can_carry_full_player_distribution() -> None:
     )
 
     assert response.player_win_probabilities == [0.6, 0.4]
+
+
+def test_batch_window_collects_request_arriving_after_first_dequeue() -> None:
+    queue: PriorQueue[PriorRequest] = PriorQueue()
+    queue.enqueue(PriorRequest(id="first", parent_state="state", priority=0))
+
+    async def collect() -> list[PriorRequest]:
+        async def enqueue_second() -> None:
+            await asyncio.sleep(0.0005)
+            queue.enqueue(PriorRequest(id="second", parent_state="state", priority=0))
+
+        producer = asyncio.create_task(enqueue_second())
+        batch = await _dequeue_with_window(queue, batch_size=32, batch_window_ms=1.5)
+        await producer
+        return batch
+
+    assert [request.id for request in asyncio.run(collect())] == ["first", "second"]
 
 
 def test_predict_player_gathers_from_one_unrotated_vector_inference(monkeypatch) -> None:

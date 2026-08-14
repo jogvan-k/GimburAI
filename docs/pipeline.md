@@ -62,6 +62,14 @@ self-play, `benchmarkPrecisions` runs separately named benchmark variants, and
 `promotionPrecision` selects the model used by promotion gates. FP16 serving
 requires CUDA.
 
+`serve.batchWindowMs` optionally waits after the first queued prior or leaf
+request arrives, allowing nearby requests to share one GPU batch. `0` disables
+the window; fractional millisecond values are supported.
+
+`serve.compileModel` compiles the CUDA inference model with `torch.compile` and
+dynamic batch shapes, then performs a one-state warmup before the health endpoint
+becomes available. Startup can take several minutes on the first compilation.
+
 ## Promotion And Benchmarks
 
 Promotion remains optional. Generation 0 bootstraps the champion; later

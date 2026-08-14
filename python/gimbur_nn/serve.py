@@ -312,6 +312,17 @@ class PriorQueue(Generic[T]):
             return len(self._heap)
 
 
+async def _dequeue_with_window(
+    queue: PriorQueue[T], batch_size: int, batch_window_ms: float
+) -> list[T]:
+    batch = queue.dequeue_batch(batch_size)
+    if not batch or len(batch) >= batch_size or batch_window_ms <= 0:
+        return batch
+    await asyncio.sleep(batch_window_ms / 1000.0)
+    batch.extend(queue.dequeue_batch(batch_size - len(batch)))
+    return batch
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -344,6 +355,8 @@ _CONFIG_KEY_MAP: dict[str, str] = {
     "port": "port",
     "host": "host",
     "logLevel": "log_level",
+    "batchWindowMs": "batch_window_ms",
+    "compileModel": "compile_model",
 }
 """Maps camelCase JSON config keys to argparse dest names."""
 
@@ -355,6 +368,8 @@ _ARG_DEFAULTS: dict[str, object] = {
     "port": 8000,
     "host": "127.0.0.1",
     "log_level": "info",
+    "batch_window_ms": 0.0,
+    "compile_model": False,
 }
 """Default values for argparse arguments, used to detect explicit CLI overrides."""
 
@@ -397,6 +412,18 @@ def parse_args() -> argparse.Namespace:
         help="Uvicorn log level. Use 'warning' to suppress HTTP 200/202 access logs.",
     )
     parser.add_argument(
+        "--batch-window-ms",
+        type=float,
+        default=0.0,
+        help="Milliseconds to collect additional async requests after the first arrives.",
+    )
+    parser.add_argument(
+        "--compile-model",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Compile the model with torch.compile before serving.",
+    )
+    parser.add_argument(
         "--config",
         type=Path,
         default=None,
@@ -409,6 +436,7 @@ def create_app(
     state_model: GimburTransformer,
     state_device: torch.device,
     state_game_cfg: GameConfig,
+    batch_window_ms: float = 0.0,
 ) -> FastAPI:
     """Build the full-state inference application."""
 
@@ -424,6 +452,8 @@ def create_app(
     tokenizer = StateTokenizer(state_game_cfg)
     prior_queue: PriorQueue[PriorRequest] = PriorQueue()
     leaf_queue: PriorQueue[LeafRequest] = PriorQueue()
+    if batch_window_ms < 0:
+        raise ValueError("batch_window_ms must be non-negative")
 
     if state_model is not None:
 
@@ -460,7 +490,7 @@ def create_app(
             """Background task that continuously processes the prior queue."""
             batch_size = 32
             while True:
-                batch = prior_queue.dequeue_batch(batch_size)
+                batch = await _dequeue_with_window(prior_queue, batch_size, batch_window_ms)
                 if batch:
                     # Run inference in a thread pool to avoid blocking the event loop.
                     loop = asyncio.get_running_loop()
@@ -510,7 +540,7 @@ def create_app(
 
         async def _leaf_worker() -> None:
             while True:
-                batch = leaf_queue.dequeue_batch(32)
+                batch = await _dequeue_with_window(leaf_queue, 32, batch_window_ms)
                 if batch:
                     loop = asyncio.get_running_loop()
                     results = await loop.run_in_executor(None, _infer_leaf_batch, batch)
@@ -733,15 +763,27 @@ def main() -> None:
     loaded_state_model.to(device)
     loaded_state_model.eval()
     param_count = sum(p.numel() for p in loaded_state_model.parameters())
+    if args.compile_model:
+        if device.type != "cuda":
+            raise SystemExit("Error: compiled inference requires CUDA.")
+        loaded_state_model = torch.compile(loaded_state_model, dynamic=True)
+        warmup = torch.zeros(
+            (1, state_game_cfg.state_token_size), dtype=torch.long, device=device
+        )
+        with torch.no_grad():
+            loaded_state_model(warmup)
+        torch.cuda.synchronize()
     print(
         f"Loaded model ({args.model_config}) for {args.game_config} "
-        f"({param_count:,} parameters, {precision}) on {device}"
+        f"({param_count:,} parameters, {precision}, "
+        f"compiled={args.compile_model}) on {device}"
     )
 
     app = create_app(
         state_model=loaded_state_model,
         state_device=device,
         state_game_cfg=state_game_cfg,
+        batch_window_ms=args.batch_window_ms,
     )
     try:
         import uvicorn

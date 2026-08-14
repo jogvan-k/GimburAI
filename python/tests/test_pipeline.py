@@ -12,6 +12,7 @@ from gimbur_nn.pipeline import (
     SimulateConfig,
     TrainConfig,
     _benchmark_score,
+    _build_serve_config,
     _count_json_files,
     _discard_stop_reason,
     _ensure_inference_artifacts,
@@ -262,6 +263,23 @@ def test_simulate_config_loads_parallelism() -> None:
     assert config.drain_timeout_ms == 750
     assert config.max_errors_per_game == 3
     assert config.max_discard_rate == 0.1
+
+
+def test_serve_config_loads_fractional_batch_window() -> None:
+    config = _load_section(
+        type(PipelineConfig().serve), {"batchWindowMs": 1.5, "compileModel": True}
+    )
+
+    assert config.batch_window_ms == 1.5
+    assert config.compile_model
+    generated = _build_serve_config(
+        serve_cfg=config,
+        game_config="mini_2p",
+        model_path=Path("model.fp16.pt"),
+        model_config="small",
+    )
+    assert generated["batchWindowMs"] == 1.5
+    assert generated["compileModel"] is True
 
 
 def test_accepted_count_excludes_discarded_files(tmp_path) -> None:

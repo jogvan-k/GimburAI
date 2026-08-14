@@ -56,7 +56,9 @@
   "serve": {
     "port": 8000,
     "host": "127.0.0.1",
-    "logLevel": "warning"
+    "logLevel": "warning",
+    "batchWindowMs": 0.0,
+    "compileModel": false
   },
   "promotion": {
     "enabled": true,
