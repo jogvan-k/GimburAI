@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import signal
@@ -14,6 +15,44 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 _stop = False
+
+CSV_COLUMNS = [
+    "timestamp",
+    "step",
+    "interval_seconds",
+    "system_cpu_percent",
+    "memory_used_mib",
+    "memory_total_mib",
+    "memory_percent",
+    "gpu_utilization_percent",
+    "gpu_memory_utilization_percent",
+    "gpu_memory_used_mib",
+    "gpu_memory_total_mib",
+    "gpu_power_watts",
+    "gpu_temperature_c",
+    "pipeline_cpu_percent",
+    "pipeline_rss_mib",
+    "inference_cpu_percent",
+    "inference_rss_mib",
+    "gimbur_cpu_percent",
+    "gimbur_rss_mib",
+    "gimbur_server_cpu_percent",
+    "gimbur_server_rss_mib",
+    "prior_batches",
+    "prior_states",
+    "prior_states_per_second",
+    "prior_average_batch_size",
+    "prior_average_queue_wait_ms",
+    "prior_average_forward_ms",
+    "leaf_batches",
+    "leaf_states",
+    "leaf_states_per_second",
+    "leaf_average_batch_size",
+    "leaf_average_queue_wait_ms",
+    "leaf_average_forward_ms",
+    "prior_queue_pending",
+    "leaf_queue_pending",
+]
 
 
 def _stop_handler(_signum: int, _frame: object) -> None:
@@ -154,6 +193,72 @@ def build_interval_record(
     }
 
 
+def _process_role(process: dict) -> str | None:
+    name = process["name"]
+    if name == "gimbur":
+        return "gimbur"
+    if name == "Gimbur.Server":
+        return "gimbur_server"
+    if name == "python":
+        return "inference" if process["rssMiB"] > 500 else "pipeline"
+    return None
+
+
+def flatten_record(record: dict) -> dict[str, object]:
+    memory = record["memory"]
+    gpu = record["gpu"] or {}
+    inference = record["inference"] or {}
+    prior = inference.get("prior", {})
+    leaf = inference.get("leaf", {})
+    queues = inference.get("queues", {})
+    roles = {
+        role: {"cpuPercent": 0.0, "rssMiB": 0.0}
+        for role in ("pipeline", "inference", "gimbur", "gimbur_server")
+    }
+    for process in record["processes"]:
+        role = _process_role(process)
+        if role:
+            roles[role]["cpuPercent"] += process["cpuPercent"]
+            roles[role]["rssMiB"] += process["rssMiB"]
+    return {
+        "timestamp": record["timestamp"],
+        "step": record["step"],
+        "interval_seconds": record["intervalSeconds"],
+        "system_cpu_percent": record["systemCpuPercent"],
+        "memory_used_mib": memory["usedMiB"],
+        "memory_total_mib": memory["totalMiB"],
+        "memory_percent": memory["percent"],
+        "gpu_utilization_percent": gpu.get("utilizationPercent", ""),
+        "gpu_memory_utilization_percent": gpu.get("memoryUtilizationPercent", ""),
+        "gpu_memory_used_mib": gpu.get("memoryUsedMiB", ""),
+        "gpu_memory_total_mib": gpu.get("memoryTotalMiB", ""),
+        "gpu_power_watts": gpu.get("powerWatts", ""),
+        "gpu_temperature_c": gpu.get("temperatureC", ""),
+        "pipeline_cpu_percent": roles["pipeline"]["cpuPercent"],
+        "pipeline_rss_mib": roles["pipeline"]["rssMiB"],
+        "inference_cpu_percent": roles["inference"]["cpuPercent"],
+        "inference_rss_mib": roles["inference"]["rssMiB"],
+        "gimbur_cpu_percent": roles["gimbur"]["cpuPercent"],
+        "gimbur_rss_mib": roles["gimbur"]["rssMiB"],
+        "gimbur_server_cpu_percent": roles["gimbur_server"]["cpuPercent"],
+        "gimbur_server_rss_mib": roles["gimbur_server"]["rssMiB"],
+        "prior_batches": prior.get("batches", ""),
+        "prior_states": prior.get("states", ""),
+        "prior_states_per_second": prior.get("statesPerSecond", ""),
+        "prior_average_batch_size": prior.get("averageBatchSize", ""),
+        "prior_average_queue_wait_ms": prior.get("averageQueueWaitMs", ""),
+        "prior_average_forward_ms": prior.get("averageForwardMs", ""),
+        "leaf_batches": leaf.get("batches", ""),
+        "leaf_states": leaf.get("states", ""),
+        "leaf_states_per_second": leaf.get("statesPerSecond", ""),
+        "leaf_average_batch_size": leaf.get("averageBatchSize", ""),
+        "leaf_average_queue_wait_ms": leaf.get("averageQueueWaitMs", ""),
+        "leaf_average_forward_ms": leaf.get("averageForwardMs", ""),
+        "prior_queue_pending": queues.get("prior_pending", ""),
+        "leaf_queue_pending": queues.get("leaf_pending", ""),
+    }
+
+
 def run(output: Path, interval_seconds: float, step: str, inference_url: str | None) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     while not _stop:
@@ -176,13 +281,18 @@ def run(output: Path, interval_seconds: float, step: str, inference_url: str | N
             inference_end=_inference(inference_url),
             step=step,
         )
-        with output.open("a") as handle:
-            handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+        row = flatten_record(record)
+        write_header = not output.exists() or output.stat().st_size == 0
+        with output.open("a", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=CSV_COLUMNS)
+            if write_header:
+                writer.writeheader()
+            writer.writerow(row)
             handle.flush()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Log interval resource utilization as JSONL.")
+    parser = argparse.ArgumentParser(description="Log interval resource utilization as CSV.")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--interval-seconds", type=float, default=120)
     parser.add_argument("--step", required=True)

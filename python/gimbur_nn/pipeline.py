@@ -862,7 +862,7 @@ class _MonitorProcess:
         safe_step = "".join(
             character if character.isalnum() else "-" for character in step
         ).strip("-")
-        output = output_dir / f"{safe_step}.jsonl"
+        output = output_dir / f"{safe_step}.csv"
         args = [
             sys.executable,
             "-m",

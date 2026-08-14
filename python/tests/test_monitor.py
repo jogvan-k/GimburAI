@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import json
+import csv
 import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-from gimbur_nn.monitor import build_interval_record
+from gimbur_nn.monitor import CSV_COLUMNS, build_interval_record, flatten_record
 
 
 def test_build_interval_record_calculates_cpu_and_process_usage() -> None:
@@ -28,10 +28,15 @@ def test_build_interval_record_calculates_cpu_and_process_usage() -> None:
     assert process["name"] == "gimbur"
     assert process["rssMiB"] == 2
     assert process["threads"] == 3
+    flat = flatten_record(record)
+    assert list(flat) == CSV_COLUMNS
+    assert flat["timestamp"] == record["timestamp"]
+    assert flat["gimbur_cpu_percent"] > 0
+    assert flat["gimbur_rss_mib"] == 2
 
 
 def test_monitor_flushes_partial_interval_on_sigterm(tmp_path: Path) -> None:
-    output = tmp_path / "monitor.jsonl"
+    output = tmp_path / "monitor.csv"
     process = subprocess.Popen(
         [
             sys.executable,
@@ -49,7 +54,9 @@ def test_monitor_flushes_partial_interval_on_sigterm(tmp_path: Path) -> None:
     process.send_signal(signal.SIGTERM)
     assert process.wait(timeout=5) == 0
 
-    records = [json.loads(line) for line in output.read_text().splitlines()]
+    with output.open(newline="") as handle:
+        records = list(csv.DictReader(handle))
     assert len(records) == 1
     assert records[0]["step"] == "test"
-    assert 0 < records[0]["intervalSeconds"] < 5
+    assert 0 < float(records[0]["interval_seconds"]) < 5
+    assert list(records[0]) == CSV_COLUMNS

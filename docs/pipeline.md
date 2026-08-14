@@ -71,11 +71,12 @@ dynamic batch shapes, then performs a one-state warmup before the health endpoin
 becomes available. Startup can take several minutes on the first compilation.
 
 The optional `monitoring` section starts a pipeline-managed resource monitor for
-each simulation, training, and benchmark subprocess. It writes append-only JSONL
+each simulation, training, and benchmark subprocess. It writes append-only CSV
 records for utilization over each configured interval, including system/process
 CPU and memory, NVIDIA GPU utilization/power/temperature, and inference
 `/diagnostics` deltas when available. `intervalSeconds: 120` records two-minute
-intervals and flushes a final partial interval when a step stops.
+intervals and flushes a final partial interval when a step stops. The first CSV
+column is an ISO-8601 UTC timestamp and each file includes a stable header row.
 
 ## Promotion And Benchmarks
 
