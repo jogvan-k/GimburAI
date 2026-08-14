@@ -55,6 +55,13 @@ The pipeline starts `gimbur_nn.serve` with one model. Serving exposes full-state
 parent policy/value prediction and state leaf-value batching under `/state/...`.
 There are no placement endpoints or placement model arguments.
 
+The optional `inference` section can export an inference-only FP16 checkpoint
+beside each FP32 training checkpoint (`model.fp16.pt`). FP32 remains authoritative
+for training and resume. `simulationPrecision` selects the model used for neural
+self-play, `benchmarkPrecisions` runs separately named benchmark variants, and
+`promotionPrecision` selects the model used by promotion gates. FP16 serving
+requires CUDA.
+
 ## Promotion And Benchmarks
 
 Promotion remains optional. Generation 0 bootstraps the champion; later

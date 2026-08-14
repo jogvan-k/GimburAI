@@ -99,6 +99,14 @@ class ServeConfig:
 
 
 @dataclass
+class InferenceConfig:
+    export_fp16: bool = False
+    simulation_precision: str = "fp32"
+    benchmark_precisions: list[str] = field(default_factory=lambda: ["fp32"])
+    promotion_precision: str = "fp32"
+
+
+@dataclass
 class GimburServerConfig:
     """Parameters for the C# Gimbur.Server (MCTS game server)."""
 
@@ -209,6 +217,7 @@ class PipelineConfig:
     simulate: SimulateConfig = field(default_factory=SimulateConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
     serve: ServeConfig = field(default_factory=ServeConfig)
+    inference: InferenceConfig = field(default_factory=InferenceConfig)
     gimbur_server: GimburServerConfig = field(default_factory=GimburServerConfig)
     benchmarks: list[BenchmarkConfig] = field(
         default_factory=lambda: [
@@ -280,6 +289,8 @@ def _load_config(path: Path) -> PipelineConfig:
         cfg.train = _load_section(TrainConfig, raw["train"])
     if "serve" in raw:
         cfg.serve = _load_section(ServeConfig, raw["serve"])
+    if "inference" in raw:
+        cfg.inference = _load_section(InferenceConfig, raw["inference"])
     if "gimburServer" in raw:
         cfg.gimbur_server = _load_section(GimburServerConfig, raw["gimburServer"])
     if "benchmarks" in raw:
@@ -298,6 +309,14 @@ def _load_config(path: Path) -> PipelineConfig:
             cfg.promotion.hybrid = _load_section(PromotionGateConfig, promotion_raw["hybrid"])
 
     _validate_promotion_config(cfg)
+    precisions = [cfg.inference.simulation_precision, cfg.inference.promotion_precision]
+    precisions.extend(cfg.inference.benchmark_precisions)
+    if not cfg.inference.benchmark_precisions or any(p not in ("fp32", "fp16") for p in precisions):
+        raise ValueError("Inference precisions must be fp32 or fp16, with benchmarks non-empty.")
+    if len(set(cfg.inference.benchmark_precisions)) != len(cfg.inference.benchmark_precisions):
+        raise ValueError("benchmarkPrecisions must be unique.")
+    if "fp16" in precisions and not cfg.inference.export_fp16:
+        raise ValueError("FP16 inference requires inference.exportFp16=true.")
     if cfg.gen0_milestones:
         if cfg.gen0_milestones != sorted(set(cfg.gen0_milestones)):
             raise ValueError("gen0Milestones must be strictly increasing and unique.")
@@ -375,6 +394,31 @@ def _data_path(cfg: PipelineConfig, gen: int) -> Path:
 
 def _model_path(cfg: PipelineConfig, gen: int) -> Path:
     return Path(cfg.model_dir) / f"gen{gen}.pt"
+
+
+def _precision_model_path(model: Path, precision: str) -> Path:
+    return model if precision == "fp32" else model.with_name(f"{model.stem}.fp16{model.suffix}")
+
+
+def _ensure_inference_artifacts(cfg: PipelineConfig, model: Path, project_root: Path) -> None:
+    if not cfg.inference.export_fp16 or not model.is_file():
+        return
+    destination = _precision_model_path(model, "fp16")
+    if destination.is_file() and destination.stat().st_mtime_ns >= model.stat().st_mtime_ns:
+        return
+    _run(
+        [
+            sys.executable,
+            "-m",
+            f"{cfg.python_module}.quantize",
+            "--source",
+            str(model),
+            "--out",
+            str(destination),
+        ],
+        label="Export FP16 inference model",
+        cwd=project_root,
+    )
 
 
 def _results_path(cfg: PipelineConfig, gen: int, name: str) -> Path:
@@ -480,7 +524,15 @@ def _benchmark_complete(cfg: PipelineConfig, gen: int) -> bool:
     When *phase* is given, only benchmarks matching that phase are
     checked.  Otherwise all benchmarks are checked.
     """
-    return all(_results_path(cfg, gen, bench.name).is_file() for bench in cfg.benchmarks)
+    return all(
+        _results_path(cfg, gen, _precision_benchmark_name(cfg, bench.name, precision)).is_file()
+        for bench in cfg.benchmarks
+        for precision in cfg.inference.benchmark_precisions
+    )
+
+
+def _precision_benchmark_name(cfg: PipelineConfig, name: str, precision: str) -> str:
+    return name if cfg.inference.benchmark_precisions == ["fp32"] else f"{name}-{precision}"
 
 
 def _generation_complete(cfg: PipelineConfig, gen: int) -> bool:
@@ -903,6 +955,25 @@ def _step_simulate(
     _reload_config(cfg)
     out_dir = _data_path(cfg, gen)
     out_dir.mkdir(parents=True, exist_ok=True)
+    simulation_precision = (
+        cfg.inference.simulation_precision if nn_url is not None else "non-neural"
+    )
+    precision_marker = out_dir / ".inference-precision"
+    existing = _count_json_files(out_dir)
+    if precision_marker.is_file():
+        recorded_precision = precision_marker.read_text().strip()
+        if recorded_precision != simulation_precision:
+            raise RuntimeError(
+                f"Simulation data at {out_dir} uses {recorded_precision}, "
+                f"but configuration requests {simulation_precision}."
+            )
+    elif existing > 0 and simulation_precision != "non-neural":
+        raise RuntimeError(
+            f"Simulation data at {out_dir} predates inference precision tracking; "
+            "archive it or add a matching .inference-precision marker before resuming."
+        )
+    else:
+        precision_marker.write_text(simulation_precision + "\n")
 
     # Skip if this generation is below the skip threshold.
     if cfg.skip_until_gen is not None and gen < cfg.skip_until_gen:
@@ -912,8 +983,6 @@ def _step_simulate(
     sim = sim_override or cfg.simulate
     configured_games = cfg.gen0_games if gen == 0 and cfg.gen0_games is not None else sim.games
     target_games = target_games_override or configured_games
-    existing = _count_json_files(out_dir)
-
     if existing >= target_games:
         print(f"  Simulate: {existing}/{target_games} games already exist, skipping.")
         return
@@ -1106,6 +1175,7 @@ def _step_train(
     )
     if out_path.is_file() and not interrupted:
         print(f"  Train: Model already exists at {out_path}, skipping.")
+        _ensure_inference_artifacts(cfg, out_path, project_root)
         return
 
     replay_start = max(0, gen - max(1, tr.replay_generations) + 1)
@@ -1157,6 +1227,7 @@ def _step_train(
     ]
 
     _run(args, label=f"Gen {gen}: Train", cwd=project_root)
+    _ensure_inference_artifacts(cfg, out_path, project_root)
 
 
 def _step_benchmark(
@@ -1168,6 +1239,7 @@ def _step_benchmark(
     all_results: dict[int, dict[str, Any]] | None = None,
     output_path_for: Callable[[str], Path] | None = None,
     config_prefix: str | None = None,
+    precision: str = "fp32",
 ) -> dict[str, Any]:
     """Run benchmarks for a generation. Returns aggregated results.
 
@@ -1198,19 +1270,20 @@ def _step_benchmark(
                     cwd=project_root,
                 )
                 started_game_server = True
+            result_name = _precision_benchmark_name(cfg, bench.name, precision)
             out_path = (
-                output_path_for(bench.name)
+                output_path_for(result_name)
                 if output_path_for is not None
-                else _results_path(cfg, gen, bench.name)
+                else _results_path(cfg, gen, result_name)
             )
             out_path.parent.mkdir(parents=True, exist_ok=True)
 
             # If results already exist, load and skip.
             if out_path.is_file():
-                print(f"  Benchmark '{bench.name}': results already exist, skipping.")
-                gen_results[bench.name] = json.loads(out_path.read_text())
+                print(f"  Benchmark '{result_name}': results already exist, skipping.")
+                gen_results[result_name] = json.loads(out_path.read_text())
                 if all_results is not None:
-                    all_results.setdefault(gen, {})[bench.name] = gen_results[bench.name]
+                    all_results.setdefault(gen, {})[result_name] = gen_results[result_name]
                     _save_summary(cfg, all_results)
                     _save_progress_chart(cfg, all_results)
                 continue
@@ -1238,7 +1311,7 @@ def _step_benchmark(
             bench_config["progressInterval"] = bench.progress_interval
 
             config_name = config_prefix or f"benchmark_gen{gen}"
-            config_path = _write_config(cfg, f"{config_name}_{bench.name}", bench_config)
+            config_path = _write_config(cfg, f"{config_name}_{result_name}", bench_config)
 
             args = [
                 "dotnet",
@@ -1253,19 +1326,19 @@ def _step_benchmark(
 
             _run(
                 args,
-                label=f"Gen {gen}: Benchmark '{bench.name}' ({bench.games} games)",
+                label=f"Gen {gen}: Benchmark '{result_name}' ({bench.games} games)",
                 cwd=project_root,
             )
 
             # Parse results.
             if not out_path.exists():
                 raise RuntimeError(
-                    f"Benchmark '{bench.name}' completed without writing {out_path}."
+                    f"Benchmark '{result_name}' completed without writing {out_path}."
                 )
             results = json.loads(out_path.read_text())
-            gen_results[bench.name] = results
+            gen_results[result_name] = results
             if all_results is not None:
-                all_results.setdefault(gen, {})[bench.name] = results
+                all_results.setdefault(gen, {})[result_name] = results
                 _save_summary(cfg, all_results)
                 _save_progress_chart(cfg, all_results)
 
@@ -1305,7 +1378,9 @@ def _run_promotion_match(
 ) -> tuple[dict[str, Any], float]:
     _reload_config(cfg)
     gate = getattr(cfg.promotion, name.split("-", 1)[0])
-    out_path = _promotion_attempt_path(cfg, gen, attempt) / f"{name}.json"
+    precision = cfg.inference.promotion_precision
+    artifact_name = f"{name}-{precision}"
+    out_path = _promotion_attempt_path(cfg, gen, attempt) / f"{artifact_name}.json"
     if out_path.is_file():
         try:
             result = json.loads(out_path.read_text())
@@ -1337,7 +1412,9 @@ def _run_promotion_match(
         bench_config["serverUrl"] = f"http://{gs.host}:{gs.port}"
         gimbur_server.start(gimbur_server_cfg=cfg.gimbur_server, cwd=project_root)
 
-    config_path = _write_config(cfg, f"promotion_gen{gen}_attempt{attempt}_{name}", bench_config)
+    config_path = _write_config(
+        cfg, f"promotion_gen{gen}_attempt{attempt}_{artifact_name}", bench_config
+    )
     try:
         _run(
             [
@@ -1393,6 +1470,10 @@ def _promote_candidate(cfg: PipelineConfig, gen: int, attempt: int) -> dict[str,
     legacy = _model_path(cfg, gen)
     legacy.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, legacy)
+    if cfg.inference.export_fp16:
+        source_fp16 = _precision_model_path(source, "fp16")
+        shutil.copy2(source_fp16, _precision_model_path(destination, "fp16"))
+        shutil.copy2(source_fp16, _precision_model_path(legacy, "fp16"))
     manifest: dict[str, Any] = {
         "generation": gen,
         "attempt": attempt,
@@ -1435,15 +1516,17 @@ def _start_complete_model_server(
     serve_cfg: ServeConfig,
     model: Path,
     project_root: Path,
+    precision: str = "fp32",
 ) -> str:
     original_port_offset = serve_cfg.port - cfg.serve.port
     _reload_config(cfg)
+    _ensure_inference_artifacts(cfg, model, project_root)
     serve_cfg = replace(cfg.serve, port=cfg.serve.port + original_port_offset)
     server.start(
         serve_cfg=serve_cfg,
         game_config=cfg.game_config,
         python_module=cfg.python_module,
-        model_path=model,
+        model_path=_precision_model_path(model, precision),
         model_config=cfg.model_config,
         cwd=project_root,
     )
@@ -1470,6 +1553,7 @@ def _run_promotion_gates(
             challenger_cfg,
             _candidate_model_path(cfg, gen, attempt),
             project_root,
+            cfg.inference.promotion_precision,
         )
         champion_url = _start_complete_model_server(
             champion_server,
@@ -1477,6 +1561,7 @@ def _run_promotion_gates(
             champion_cfg,
             Path(champion["model"]),
             project_root,
+            cfg.inference.promotion_precision,
         )
         for name, gate in (("direct", cfg.promotion.direct), ("hybrid", cfg.promotion.hybrid)):
             if not gate.enabled:
@@ -1559,6 +1644,7 @@ def _run_promoted_generation(
                     cfg.serve,
                     Path(champion["model"]),
                     project_root,
+                    cfg.inference.simulation_precision,
                 )
             _step_simulate(
                 cfg,
@@ -1628,26 +1714,25 @@ def _run_promoted_benchmarks(
     if not model.is_file():
         raise FileNotFoundError(f"Promoted model file is missing: {model}")
 
-    nn_url = _start_complete_model_server(
-        server,
-        cfg,
-        cfg.serve,
-        model,
-        project_root,
-    )
     try:
-        results = _step_benchmark(
-            cfg,
-            gen,
-            project_root,
-            nn_url,
-            gimbur_server=gimbur_server,
-            all_results=all_results,
-        )
-        if results:
-            all_results.setdefault(gen, {}).update(results)
-            _save_summary(cfg, all_results)
-            _save_progress_chart(cfg, all_results)
+        for precision in cfg.inference.benchmark_precisions:
+            nn_url = _start_complete_model_server(
+                server, cfg, cfg.serve, model, project_root, precision
+            )
+            results = _step_benchmark(
+                cfg,
+                gen,
+                project_root,
+                nn_url,
+                gimbur_server=gimbur_server,
+                all_results=all_results,
+                precision=precision,
+            )
+            if results:
+                all_results.setdefault(gen, {}).update(results)
+                _save_summary(cfg, all_results)
+                _save_progress_chart(cfg, all_results)
+            server.stop()
     finally:
         server.stop()
 
@@ -1708,17 +1793,27 @@ def _run_gen0_milestones(
             config_suffix=f"_bootstrap_{games}",
         )
 
-        nn_url = _start_complete_model_server(server, cfg, cfg.serve, model_path, project_root)
         try:
-            results = _step_benchmark(
-                cfg,
-                0,
-                project_root,
-                nn_url,
-                gimbur_server=gimbur_server,
-                output_path_for=lambda name, games=games: _bootstrap_result_path(cfg, games, name),
-                config_prefix=f"benchmark_bootstrap_{games}",
-            )
+            results = {}
+            for precision in cfg.inference.benchmark_precisions:
+                nn_url = _start_complete_model_server(
+                    server, cfg, cfg.serve, model_path, project_root, precision
+                )
+                results.update(
+                    _step_benchmark(
+                        cfg,
+                        0,
+                        project_root,
+                        nn_url,
+                        gimbur_server=gimbur_server,
+                        output_path_for=lambda name, games=games: _bootstrap_result_path(
+                            cfg, games, name
+                        ),
+                        config_prefix=f"benchmark_bootstrap_{games}",
+                        precision=precision,
+                    )
+                )
+                server.stop()
         finally:
             server.stop()
 
@@ -1746,11 +1841,22 @@ def _run_gen0_milestones(
     champion.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(final_model, champion)
     shutil.copy2(final_model, _model_path(cfg, 0))
+    if cfg.inference.export_fp16:
+        shutil.copy2(
+            _precision_model_path(final_model, "fp16"),
+            _precision_model_path(champion, "fp16"),
+        )
+        shutil.copy2(
+            _precision_model_path(final_model, "fp16"),
+            _precision_model_path(_model_path(cfg, 0), "fp16"),
+        )
     for bench in cfg.benchmarks:
-        source = _bootstrap_result_path(cfg, final_games, bench.name)
-        destination = _results_path(cfg, 0, bench.name)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+        for precision in cfg.inference.benchmark_precisions:
+            name = _precision_benchmark_name(cfg, bench.name, precision)
+            source = _bootstrap_result_path(cfg, final_games, name)
+            destination = _results_path(cfg, 0, name)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
     _write_json_atomic(
         _champion_manifest_path(cfg),
         {"generation": 0, "attempt": 0, "games": final_games, "model": str(champion)},
@@ -1784,24 +1890,26 @@ def _save_bootstrap_progress_chart(
     fig, ax = plt.subplots(figsize=(11, 6))
     games = sorted(summary_by_games)
     for benchmark in cfg.benchmarks:
-        points: list[tuple[int, float]] = []
-        for game_count in games:
-            result = summary_by_games[game_count].get("benchmarks", {}).get(benchmark.name)
-            if not result:
-                continue
-            rates = result.get("winRates", {})
-            candidate = next(
-                (rate for label, rate in rates.items() if label == benchmark.ai[0]), None
-            )
-            if candidate is not None:
-                points.append((game_count, candidate))
-        if points:
-            ax.plot(
-                [point[0] for point in points],
-                [point[1] * 100 for point in points],
-                marker="o",
-                label=benchmark.name,
-            )
+        for precision in cfg.inference.benchmark_precisions:
+            name = _precision_benchmark_name(cfg, benchmark.name, precision)
+            points: list[tuple[int, float]] = []
+            for game_count in games:
+                result = summary_by_games[game_count].get("benchmarks", {}).get(name)
+                if not result:
+                    continue
+                rates = result.get("winRates", {})
+                candidate = next(
+                    (rate for label, rate in rates.items() if label == benchmark.ai[0]), None
+                )
+                if candidate is not None:
+                    points.append((game_count, candidate))
+            if points:
+                ax.plot(
+                    [point[0] for point in points],
+                    [point[1] * 100 for point in points],
+                    marker="o",
+                    label=name,
+                )
     ax.axhline(50, color="gray", linestyle="--", linewidth=1)
     ax.set_xlabel("Cumulative Gen-0 self-play games")
     ax.set_ylabel("Win rate (%)")
@@ -2034,7 +2142,8 @@ def _save_progress_chart(cfg: PipelineConfig, all_results: dict[int, dict[str, A
     bench_subjects: dict[str, str] = {}
     for bench in cfg.benchmarks:
         subject = bench.ai[0].lower()
-        bench_subjects[bench.name] = subject
+        for precision in cfg.inference.benchmark_precisions:
+            bench_subjects[_precision_benchmark_name(cfg, bench.name, precision)] = subject
 
     # Collect series: bench_name -> [(gen, win_rate, confidence margin), ...]
     series: dict[str, list[tuple[int, float, float | None]]] = {}
@@ -2173,11 +2282,12 @@ def _run_single_generation(
                 f"Model for gen {gen - 1} not found at {prev_model}. "
                 f"Cannot run gen {gen} with NN prior."
             )
+        _ensure_inference_artifacts(cfg, prev_model, project_root)
         server.start(
             serve_cfg=cfg.serve,
             game_config=cfg.game_config,
             python_module=cfg.python_module,
-            model_path=prev_model,
+            model_path=_precision_model_path(prev_model, cfg.inference.simulation_precision),
             model_config=cfg.model_config,
             pipeline_cfg=cfg,
             cwd=project_root,
@@ -2202,28 +2312,30 @@ def _run_single_generation(
         print(f"WARNING: Model not found at {model_path}, skipping benchmarks.")
         return
 
+    gen_results = {}
     if not bench_already_done:
-        server.start(
-            serve_cfg=cfg.serve,
-            game_config=cfg.game_config,
-            python_module=cfg.python_module,
-            model_path=model_path,
-            model_config=cfg.model_config,
-            pipeline_cfg=cfg,
-            cwd=project_root,
-        )
-
-    gen_results = _step_benchmark(
-        cfg,
-        gen,
-        project_root,
-        f"http://{cfg.serve.host}:{cfg.serve.port}",
-        gimbur_server=gimbur_server,
-        all_results=all_results,
-    )
-
-    if not bench_already_done:
-        server.stop()
+        for precision in cfg.inference.benchmark_precisions:
+            server.start(
+                serve_cfg=cfg.serve,
+                game_config=cfg.game_config,
+                python_module=cfg.python_module,
+                model_path=_precision_model_path(model_path, precision),
+                model_config=cfg.model_config,
+                pipeline_cfg=cfg,
+                cwd=project_root,
+            )
+            gen_results.update(
+                _step_benchmark(
+                    cfg,
+                    gen,
+                    project_root,
+                    f"http://{cfg.serve.host}:{cfg.serve.port}",
+                    gimbur_server=gimbur_server,
+                    all_results=all_results,
+                    precision=precision,
+                )
+            )
+            server.stop()
 
     # --- Report ---
     if gen_results:
@@ -2276,9 +2388,11 @@ def run_pipeline(cfg: PipelineConfig, start_gen: int, project_root: Path) -> Non
                 if gen not in all_results:
                     gen_results: dict[str, Any] = {}
                     for bench in cfg.benchmarks:
-                        rp = _results_path(cfg, gen, bench.name)
-                        if rp.is_file():
-                            gen_results[bench.name] = json.loads(rp.read_text())
+                        for precision in cfg.inference.benchmark_precisions:
+                            name = _precision_benchmark_name(cfg, bench.name, precision)
+                            rp = _results_path(cfg, gen, name)
+                            if rp.is_file():
+                                gen_results[name] = json.loads(rp.read_text())
                     if gen_results:
                         all_results[gen] = gen_results
                 gen += 1

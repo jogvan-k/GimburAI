@@ -21,6 +21,7 @@ from gimbur_nn.serve import (
     PriorQueue,
     PriorRequest,
     PriorResponseItem,
+    _checkpoint_precision,
     _load_checkpoint,
     create_app,
 )
@@ -33,6 +34,13 @@ def test_prediction_responses_use_player_probabilities() -> None:
         policy_probabilities=[[0.4, 0.6]],
     )
     assert set(state.model_dump()) == {"player_win_probabilities", "policy_probabilities"}
+
+
+def test_checkpoint_precision_defaults_to_fp32_and_accepts_fp16() -> None:
+    assert _checkpoint_precision({}) == "fp32"
+    assert _checkpoint_precision({"inference_precision": "fp16"}) == "fp16"
+    with pytest.raises(ValueError, match="unsupported inference precision"):
+        _checkpoint_precision({"inference_precision": "int8"})
 
 
 def test_prior_response_can_carry_full_player_distribution() -> None:

@@ -8,6 +8,12 @@
   "modelDir": "pipeline/models",
   "resultsDir": "pipeline/results",
   "generations": 10,
+  "inference": {
+    "exportFp16": false,
+    "simulationPrecision": "fp32",
+    "benchmarkPrecisions": ["fp32"],
+    "promotionPrecision": "fp32"
+  },
   "gen0Milestones": [200, 400, 600, 800, 1000],
   "simulate": {
     "games": 1000,

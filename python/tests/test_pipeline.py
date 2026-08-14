@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -13,10 +14,13 @@ from gimbur_nn.pipeline import (
     _benchmark_score,
     _count_json_files,
     _discard_stop_reason,
+    _ensure_inference_artifacts,
     _evaluate_promotion_gate,
     _generation_complete,
     _load_config,
     _load_section,
+    _precision_benchmark_name,
+    _precision_model_path,
     _reload_config,
     _run_gen0_milestones,
     _save_progress_chart,
@@ -63,6 +67,45 @@ def test_pipeline_config_loads_gen0_milestones(tmp_path) -> None:
 
     assert config.gen0_milestones == [200, 400, 600]
     assert config.gen0_games == 600
+
+
+def test_pipeline_config_loads_fp16_inference_settings(tmp_path) -> None:
+    path = tmp_path / "pipeline.json"
+    path.write_text(
+        json.dumps(
+            {
+                "inference": {
+                    "exportFp16": True,
+                    "simulationPrecision": "fp16",
+                    "benchmarkPrecisions": ["fp32", "fp16"],
+                    "promotionPrecision": "fp16",
+                }
+            }
+        )
+    )
+
+    config = _load_config(path)
+
+    assert config.inference.export_fp16
+    assert config.inference.simulation_precision == "fp16"
+    assert config.inference.benchmark_precisions == ["fp32", "fp16"]
+    assert _precision_model_path(Path("model.pt"), "fp16") == Path("model.fp16.pt")
+
+
+def test_pipeline_rejects_fp16_without_export(tmp_path) -> None:
+    path = tmp_path / "pipeline.json"
+    path.write_text(json.dumps({"inference": {"simulationPrecision": "fp16"}}))
+
+    with pytest.raises(ValueError, match="exportFp16"):
+        _load_config(path)
+
+
+def test_precision_benchmark_names_are_distinct_when_comparing_precisions() -> None:
+    config = PipelineConfig()
+    config.inference.benchmark_precisions = ["fp32", "fp16"]
+
+    assert _precision_benchmark_name(config, "nn", "fp32") == "nn-fp32"
+    assert _precision_benchmark_name(config, "nn", "fp16") == "nn-fp16"
 
 
 def test_pipeline_config_reloads_in_place(tmp_path) -> None:
@@ -268,6 +311,20 @@ def test_step_simulate_writes_discard_policy_config(tmp_path, monkeypatch) -> No
     assert config["greedyPrior"] is True
 
 
+def test_step_simulate_rejects_untracked_neural_data_precision(tmp_path) -> None:
+    cfg = PipelineConfig(
+        data_dir=str(tmp_path / "data"),
+        model_dir=str(tmp_path / "models"),
+        simulate=SimulateConfig(games=2),
+    )
+    data = tmp_path / "data/gen1"
+    data.mkdir(parents=True)
+    (data / "game.json").write_text("{}")
+
+    with pytest.raises(RuntimeError, match="predates inference precision tracking"):
+        _step_simulate(cfg, 1, tmp_path, "http://localhost:8000")
+
+
 def test_step_train_passes_value_blending_and_state_sampling(tmp_path, monkeypatch) -> None:
     cfg = PipelineConfig(
         data_dir=str(tmp_path / "data"),
@@ -321,6 +378,25 @@ def test_step_train_skips_completed_epoch_checkpoint(tmp_path, monkeypatch) -> N
     )
 
     _step_train(cfg, 0, tmp_path)
+
+
+def test_ensure_inference_artifacts_exports_missing_fp16(tmp_path, monkeypatch) -> None:
+    model = tmp_path / "model.pt"
+    model.write_text("fp32")
+    cfg = PipelineConfig(model_dir=str(tmp_path))
+    cfg.inference.export_fp16 = True
+    calls: list[list[str]] = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        Path(args[-1]).write_text("fp16")
+
+    monkeypatch.setattr("gimbur_nn.pipeline._run", run)
+
+    _ensure_inference_artifacts(cfg, model, tmp_path)
+
+    assert (tmp_path / "model.fp16.pt").read_text() == "fp16"
+    assert calls[0][-4:] == ["--source", str(model), "--out", str(tmp_path / "model.fp16.pt")]
 
 
 def test_complete_mode_generates_state_sim_and_one_train_config(tmp_path, monkeypatch) -> None:

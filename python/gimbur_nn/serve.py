@@ -53,6 +53,13 @@ def _load_checkpoint(path: Path, device: torch.device) -> dict:
     return raw
 
 
+def _checkpoint_precision(checkpoint: dict) -> str:
+    precision = checkpoint.get("inference_precision", "fp32")
+    if precision not in ("fp32", "fp16"):
+        raise ValueError(f"unsupported inference precision {precision!r}")
+    return precision
+
+
 def _extract_logits(
     output: torch.Tensor | dict[str, torch.Tensor], head: str = "value"
 ) -> torch.Tensor:
@@ -436,8 +443,8 @@ def create_app(
                 token_ids = torch.stack(tokens).to(state_device)
                 with torch.no_grad():
                     output = state_model(token_ids)
-                    values = F.softmax(_extract_logits(output, "value"), dim=-1)
-                    policies = F.softmax(_extract_logits(output, "policy"), dim=-1)
+                    values = F.softmax(_extract_logits(output, "value").float(), dim=-1)
+                    policies = F.softmax(_extract_logits(output, "policy").float(), dim=-1)
                 for batch_index, (result_index, req) in enumerate(valid):
                     player_values = values[batch_index].cpu().tolist()
                     results[result_index] = PriorResponseItem(
@@ -488,7 +495,9 @@ def create_app(
                 return [result for result in results if result is not None]
             token_ids = torch.cat(token_batches).to(state_device)
             with torch.no_grad():
-                probabilities = F.softmax(_extract_logits(state_model(token_ids), "value"), dim=-1)
+                probabilities = F.softmax(
+                    _extract_logits(state_model(token_ids), "value").float(), dim=-1
+                )
             values = probabilities.cpu().tolist()
             offset = 0
             for result_index, request in valid:
@@ -549,8 +558,8 @@ def create_app(
 
             with torch.no_grad():
                 output = state_model(token_ids)
-                probs = F.softmax(_extract_logits(output, "value"), dim=-1)
-                policy_probs = F.softmax(_extract_logits(output, "policy"), dim=-1)
+                probs = F.softmax(_extract_logits(output, "value").float(), dim=-1)
+                policy_probs = F.softmax(_extract_logits(output, "policy").float(), dim=-1)
 
             return PredictResponse(
                 player_win_probabilities=probs.cpu().tolist(),
@@ -597,7 +606,7 @@ def create_app(
 
             with torch.no_grad():
                 output = state_model(token_ids)
-                probs = F.softmax(_extract_logits(output), dim=-1)
+                probs = F.softmax(_extract_logits(output).float(), dim=-1)
 
             win_probs = [float(probs[i, player - 1]) for i, player in enumerate(request.players)]
             return PredictPlayerResponse(win_probabilities=win_probs)
@@ -710,14 +719,23 @@ def main() -> None:
         state_ckpt = _load_checkpoint(args.model, device)
     except ValueError as exc:
         raise SystemExit(f"Error: {exc}") from exc
+    precision = _checkpoint_precision(state_ckpt)
+    if precision == "fp16" and device.type != "cuda":
+        raise SystemExit("Error: FP16 inference checkpoints require CUDA.")
+    if state_ckpt.get("game_config") not in (None, args.game_config):
+        raise SystemExit("Error: checkpoint game_config does not match --game-config.")
+    if state_ckpt.get("model_config") not in (None, args.model_config):
+        raise SystemExit("Error: checkpoint model_config does not match --model-config.")
     loaded_state_model = GimburTransformer(state_game_cfg, state_model_cfg)
+    if precision == "fp16":
+        loaded_state_model.half()
     loaded_state_model.load_state_dict(state_ckpt["model_state_dict"])
     loaded_state_model.to(device)
     loaded_state_model.eval()
     param_count = sum(p.numel() for p in loaded_state_model.parameters())
     print(
         f"Loaded model ({args.model_config}) for {args.game_config} "
-        f"({param_count:,} parameters) on {device}"
+        f"({param_count:,} parameters, {precision}) on {device}"
     )
 
     app = create_app(
