@@ -2,6 +2,9 @@ module KjarniTest.MCTS.PriorTest
 
 open System
 open System.Collections.Generic
+open System.Collections.Concurrent
+open System.Threading
+open System.Threading.Tasks
 open NUnit.Framework
 open FsUnit
 
@@ -178,6 +181,36 @@ type RejectingLeafEvaluator() =
         member _.Collect(_) = Array.empty
         member _.WaitForResults(_) = false
         member _.Cancel(_) = ()
+
+type DelayedCombinedPriorClient(valueEstimates: float[]) =
+    let requests = ConcurrentDictionary<int64, int>()
+    let responses = ConcurrentQueue<PriorResponse>()
+    let release = new ManualResetEventSlim(false)
+
+    member _.RequestCount = requests.Count
+    member _.Release() = release.Set()
+
+    interface IPriorClient with
+        member _.ShouldRequestPrior(_parentState) = true
+        member _.RequestPrior(nodeId, _parentState, states, _actingPlayer, _depth) =
+            requests.[nodeId] <- states.Length
+            1
+        member _.CollectPriors(knownNodeIds: IReadOnlySet<int64>) =
+            if release.IsSet then
+                for KeyValue(nodeId, stateCount) in requests do
+                    if knownNodeIds.Contains(nodeId) && (requests.TryRemove(nodeId) |> fst) then
+                        responses.Enqueue(
+                            PriorResponse(nodeId, Array.create stateCount 1., valueEstimates))
+            let matched = ResizeArray<PriorResponse>()
+            let keep = ResizeArray<PriorResponse>()
+            let mutable response = Unchecked.defaultof<PriorResponse>
+            while responses.TryDequeue(&response) do
+                if knownNodeIds.Contains(response.NodeId) then matched.Add(response)
+                else keep.Add(response)
+            for item in keep do responses.Enqueue(item)
+            matched.ToArray()
+        member _.Flush(knownNodeIds: IReadOnlySet<int64>) =
+            for nodeId in knownNodeIds do requests.TryRemove(nodeId) |> ignore
 
 
 // ────────────────────────────────────────────────────────────────
@@ -707,6 +740,34 @@ type PriorSearchIntegrationTests() =
             expanded.Priors.IsSome |> should equal true
             expanded.ValueEstimates |> should equal (Some [| 0.7; 0.3 |])
         | _ -> Assert.Fail "Expected deterministic child expansion"
+
+    [<Test>]
+    member _.CombinedPriorSearchQueuesSeveralPendingNodesBeforeWaiting() =
+        let root =
+            MCTSState(
+                node_builder(p1, 0, 0, 0, [
+                    node_builder(p2, 1, 0, 10, node_builder(p1, 2, 0, 20))
+                    node_builder(p2, 1, 0, 11, node_builder(p1, 2, 0, 21))
+                    node_builder(p2, 1, 0, 12, node_builder(p1, 2, 0, 22))
+                ]).build())
+        let client = DelayedCombinedPriorClient([| 0.6; 0.4 |])
+        let mcts =
+            MonteCarloTreeSearch(
+                { MCTSConfig.Default with
+                    MaxSimulations = 3
+                    MaxPendingEvaluations = 3
+                    PriorClient = Some (client :> IPriorClient)
+                    LeafEvaluationTimeoutMs = 1000 })
+        let task = Task.Run(fun () -> mcts.RunSimulation(root) |> ignore)
+
+        let queued = SpinWait.SpinUntil((fun () -> client.RequestCount >= 4), 1000)
+        queued |> should equal true // root plus three expanded children
+        root.ActionStats |> Array.sumBy (fun stats -> stats.PendingVisits) |> should equal 3
+        client.Release()
+        task.Wait(2000) |> should equal true
+
+        root.Rollouts |> should equal 3
+        root.ActionStats |> Array.sumBy (fun stats -> stats.PendingVisits) |> should equal 0
 
     [<TestCaseSource("InvalidValueEstimates")>]
     member _.SearchWithInvalidValueResponse_RejectsValues(valueEstimates: float[]) =

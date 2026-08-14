@@ -141,6 +141,7 @@ type MCTSConfig =
       LeafEvaluator: ILeafEvaluator option
       LeafBoundary: (ICoreState -> bool) option
       MaxTreeDepth: int
+      /// Maximum pending neural evaluation groups per search.
       MaxPendingEvaluations: int
       LeafEvaluationTimeoutMs: int
       DrainTimeoutMs: int }
