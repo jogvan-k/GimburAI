@@ -150,6 +150,8 @@ class PromotionGateConfig:
     ai: str = "nn-placement-state"
     minimum_improvement_vs_greedy: float = 0.0
     minimum_improvement_vs_champion: float = 0.0
+    minimum_score_vs_greedy: float | None = None
+    minimum_score_vs_champion: float | None = None
     search_time_ms: int | None = None
     parallelism: int | None = None
     progress_interval: int = 10
@@ -365,6 +367,14 @@ def _validate_promotion_config(cfg: PipelineConfig) -> None:
             raise ValueError(f"Promotion {name} greedy improvement is below -0.5.")
         if gate.minimum_improvement_vs_champion < -0.5:
             raise ValueError(f"Promotion {name} champion improvement is below -0.5.")
+        for opponent, score in (
+            ("greedy", gate.minimum_score_vs_greedy),
+            ("champion", gate.minimum_score_vs_champion),
+        ):
+            if score is not None and not 0 <= score <= 1:
+                raise ValueError(
+                    f"Promotion {name} minimum score versus {opponent} must be in [0, 1]."
+                )
 
 
 def _to_camel(snake: str) -> str:
@@ -1528,8 +1538,16 @@ def _run_promotion_match(
 def _evaluate_promotion_gate(
     gate: PromotionGateConfig, greedy_score: float | None, champion_score: float
 ) -> dict[str, Any]:
-    greedy_required = 0.5 + gate.minimum_improvement_vs_greedy
-    champion_required = 0.5 + gate.minimum_improvement_vs_champion
+    greedy_required = (
+        gate.minimum_score_vs_greedy
+        if gate.minimum_score_vs_greedy is not None
+        else 0.5 + gate.minimum_improvement_vs_greedy
+    )
+    champion_required = (
+        gate.minimum_score_vs_champion
+        if gate.minimum_score_vs_champion is not None
+        else 0.5 + gate.minimum_improvement_vs_champion
+    )
     passed_greedy = not gate.compare_with_greedy or (
         greedy_score is not None and greedy_score >= greedy_required
     )

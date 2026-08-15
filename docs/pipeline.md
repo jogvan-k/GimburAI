@@ -85,6 +85,11 @@ challengers may be tested against greedy and the current champion using direct
 and MCTS benchmark gates. Draws count as half a win. Failed gates may append
 additional self-play games and retrain up to `maxRetries`.
 
+Promotion gates accept explicit `minimumScoreVsGreedy` and
+`minimumScoreVsChampion` values in `[0,1]`, allowing promotion below 50% when
+desired. If omitted, the legacy requirement remains
+`0.5 + minimumImprovementVs...`.
+
 Normal benchmarks run after training and write one result per configured entry.
 `summary.json` and `progress.png` track results across generations. Baseline
 benchmarks, chart-only regeneration, resume detection, and per-generation

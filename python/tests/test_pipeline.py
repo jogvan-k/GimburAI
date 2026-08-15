@@ -222,6 +222,36 @@ def test_promotion_gate_can_skip_greedy_comparison() -> None:
     assert result["greedyScore"] is None
 
 
+def test_promotion_gate_accepts_explicit_sub_fifty_percent_score() -> None:
+    gate = PromotionGateConfig(
+        minimum_score_vs_greedy=0.30,
+        minimum_score_vs_champion=0.40,
+    )
+
+    result = _evaluate_promotion_gate(gate, 0.33, 0.42)
+
+    assert result["passed"]
+    assert result["greedyRequired"] == 0.30
+    assert result["championRequired"] == 0.40
+
+
+def test_pipeline_rejects_invalid_explicit_promotion_score(tmp_path) -> None:
+    path = tmp_path / "pipeline.json"
+    path.write_text(
+        json.dumps(
+            {
+                "promotion": {
+                    "enabled": True,
+                    "direct": {"minimumScoreVsGreedy": 1.01},
+                }
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="minimum score versus greedy"):
+        _load_config(path)
+
+
 def test_promotion_benchmark_score_counts_draws_and_requires_exact_games() -> None:
     result = {
         "totalGames": 10,
