@@ -37,6 +37,10 @@ def test_train_config_loads_replay_window() -> None:
     assert config.replay_generations == 5
 
 
+def test_train_config_defaults_to_two_retained_checkpoints() -> None:
+    assert TrainConfig().checkpoint_retention == 2
+
+
 def test_pipeline_config_loads_nested_promotion_defaults_and_overrides(tmp_path) -> None:
     path = tmp_path / "pipeline.json"
     path.write_text(
@@ -537,6 +541,16 @@ def test_summary_preserves_confidence_metadata(tmp_path) -> None:
     benchmark = json.loads((tmp_path / "summary.json").read_text())[0]["benchmarks"]["hybrid"]
     assert benchmark["confidence95Margin"]["nn-placement-state"] == 0.009796
     assert benchmark["worstCaseConfidence95Margin"]["nn-placement-state"] == 0.0098
+
+
+def test_summary_write_is_atomic_and_preserves_list_schema(tmp_path) -> None:
+    cfg = PipelineConfig(results_dir=str(tmp_path))
+
+    _save_summary(cfg, {0: {}})
+
+    assert json.loads((tmp_path / "summary.json").read_text()) == [
+        {"generation": 0, "benchmarks": {}}
+    ]
 
 
 def test_benchmark_config_loads_parallelism() -> None:

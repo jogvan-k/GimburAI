@@ -105,6 +105,7 @@ _CONFIG_KEYS: dict[str, str] = {
     "testSplit": "test_split",
     "logInterval": "log_interval",
     "checkpointDir": "checkpoint_dir",
+    "checkpointRetention": "checkpoint_retention",
     "valueLossWeight": "value_loss_weight",
     "policyLossWeight": "policy_loss_weight",
     "mctsValueWeightStart": "mcts_value_weight_start",
@@ -228,6 +229,12 @@ def parse_args() -> argparse.Namespace:
         help="Directory for per-epoch checkpoints and stats.jsonl.",
     )
     parser.add_argument(
+        "--checkpoint-retention",
+        type=int,
+        default=2,
+        help="Number of latest epoch checkpoints to retain (0 keeps all).",
+    )
+    parser.add_argument(
         "--epochs",
         type=int,
         default=0,
@@ -271,6 +278,7 @@ _ARG_DEFAULTS: dict[str, object] = {
     "out": Path("model.pt"),
     "resume": None,
     "checkpoint_dir": None,
+    "checkpoint_retention": 2,
     "epochs": 0,
     "patience": 5,
     "batch_size": 64,
@@ -325,6 +333,18 @@ def _save_epoch_checkpoint(
         temporary,
     )
     temporary.replace(path)
+
+
+def _prune_epoch_checkpoints(directory: Path, retention: int) -> None:
+    if retention <= 0:
+        return
+    checkpoints = []
+    for path in directory.glob("epoch_*.pt"):
+        suffix = path.stem.removeprefix("epoch_")
+        if suffix.isdigit():
+            checkpoints.append((int(suffix), path))
+    for _, path in sorted(checkpoints)[:-retention]:
+        path.unlink()
 
 
 def _save_final_model(
@@ -649,6 +669,7 @@ def main() -> None:
             _save_epoch_checkpoint(
                 ckpt_path, epoch, model, optimizer, best_val_loss, epochs_without_improvement
             )
+            _prune_epoch_checkpoints(checkpoint_dir, args.checkpoint_retention)
             assert stats_path is not None
             _append_epoch_stats(stats_path, epoch, train_loss, val_loss, is_best, elapsed)
 

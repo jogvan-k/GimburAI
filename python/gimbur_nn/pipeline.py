@@ -79,6 +79,7 @@ class TrainConfig:
     test_split: float = 0.0
     log_interval: int = 50
     checkpoint_dir: bool = True
+    checkpoint_retention: int = 2
     resume_from_previous: bool = True
     replay_generations: int = 3
     value_loss_weight: float = 1.0
@@ -1294,6 +1295,7 @@ def _step_train(
         "mctsValueWeightEnd": tr.mcts_value_weight_end,
         "victoryPointSamplingStatistic": tr.victory_point_sampling_statistic,
         "victoryPointSamplingUpperPercentage": tr.victory_point_sampling_upper_percentage,
+        "checkpointRetention": tr.checkpoint_retention,
     }
     # Enable per-epoch checkpointing if configured.
     if checkpoint_dir is not None:
@@ -2209,7 +2211,10 @@ def _save_summary(cfg: PipelineConfig, all_results: dict[int, dict[str, Any]]) -
             }
         summary.append(entry)
 
-    summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+    with tempfile.NamedTemporaryFile("w", dir=summary_path.parent, delete=False) as handle:
+        handle.write(json.dumps(summary, indent=2) + "\n")
+        temporary = Path(handle.name)
+    os.replace(temporary, summary_path)
     print(f"Summary saved to {summary_path}")
 
 
