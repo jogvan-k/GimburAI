@@ -149,11 +149,13 @@ public sealed class PriorClient : IPriorClient, IDisposable
         {
             Id = nodeId.ToString(),
             ParentState = CatanStateSerializer.SerializeCompact((CatanState)parentState),
+            LegalPolicyIndices = legalIndices,
             Priority = depth,
         };
 
         _pendingState[nodeId] = new PendingStateRequest(
-            legalIndices, outcomeCounts, parent.NumberOfPlayers, parent.CurrentPlayer, serializer);
+            legalIndices, outcomeCounts, parent.NumberOfPlayers, parent.CurrentPlayer,
+            serializer.PolicySize);
         if (!_enqueueQueue.TryAdd(request))
         {
             _pendingState.TryRemove(nodeId, out _);
@@ -347,10 +349,12 @@ public sealed class PriorClient : IPriorClient, IDisposable
                                     valueEstimates = RestoreAbsolutePlayerOrder(
                                         valueEstimates, pendingState.ActingPlayer);
                                     var flattened = MapFullStatePolicy(
-                                        pendingState.Serializer, priors,
-                                        pendingState.LegalPolicyIndices, pendingState.OutcomeCounts);
+                                        priors, pendingState.OutcomeCounts);
+                                    var densePriors = ToDensePolicy(
+                                        priors, pendingState.LegalPolicyIndices,
+                                        pendingState.PolicySize);
                                     _completed[nodeId] = new PriorResponse(
-                                        nodeId, flattened, valueEstimates, priors);
+                                        nodeId, flattened, valueEstimates, densePriors);
                                 }
                                 Interlocked.Increment(ref _pollResponsesReceived);
                             }
@@ -373,15 +377,12 @@ public sealed class PriorClient : IPriorClient, IDisposable
     }
 
     internal static double[] MapFullStatePolicy(
-        CatanPolicySerializer serializer,
         IReadOnlyList<double> policy,
-        IReadOnlyList<int> legalPolicyIndices,
         IReadOnlyList<int> outcomeCounts)
     {
-        if (legalPolicyIndices.Count != outcomeCounts.Count)
-            throw new ArgumentException("Each legal action must have an outcome count.", nameof(outcomeCounts));
-
-        var actionPriors = serializer.MaskAndNormalize(policy, legalPolicyIndices);
+        var actionPriors = policy.Count == outcomeCounts.Count
+            ? Normalize(policy)
+            : Enumerable.Repeat(1.0 / outcomeCounts.Count, outcomeCounts.Count).ToArray();
         var flattened = new double[outcomeCounts.Sum()];
         var offset = 0;
         for (var actionIndex = 0; actionIndex < actionPriors.Length; actionIndex++)
@@ -390,6 +391,33 @@ public sealed class PriorClient : IPriorClient, IDisposable
             offset += outcomeCounts[actionIndex];
         }
         return flattened;
+    }
+
+    private static double[] Normalize(IReadOnlyList<double> policy)
+    {
+        var result = policy.Select(value => double.IsFinite(value) && value >= 0 ? value : 0).ToArray();
+        var total = result.Sum();
+        if (total > 0 && double.IsFinite(total))
+        {
+            for (var i = 0; i < result.Length; i++)
+                result[i] /= total;
+        }
+        else if (result.Length > 0)
+        {
+            Array.Fill(result, 1.0 / result.Length);
+        }
+        return result;
+    }
+
+    private static double[] ToDensePolicy(
+        IReadOnlyList<double> policy,
+        IReadOnlyList<int> legalPolicyIndices,
+        int policySize)
+    {
+        var dense = new double[policySize];
+        for (var i = 0; i < policy.Count && i < legalPolicyIndices.Count; i++)
+            dense[legalPolicyIndices[i]] += policy[i];
+        return dense;
     }
 
     // ── JSON payload types ───────────────────────────────────────────────────
@@ -407,6 +435,9 @@ public sealed class PriorClient : IPriorClient, IDisposable
         [JsonPropertyName("parent_state")]
         public string ParentState { get; init; } = "";
 
+        [JsonPropertyName("legal_policy_indices")]
+        public int[] LegalPolicyIndices { get; init; } = [];
+
         public int Priority { get; init; }
     }
 
@@ -415,7 +446,7 @@ public sealed class PriorClient : IPriorClient, IDisposable
         int[] OutcomeCounts,
         int PlayerCount,
         int ActingPlayer,
-        CatanPolicySerializer Serializer);
+        int PolicySize);
 
     // Shared response payloads (same format for both modes)
     private sealed class PriorCollectPayload

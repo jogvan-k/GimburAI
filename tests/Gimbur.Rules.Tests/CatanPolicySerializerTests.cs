@@ -207,17 +207,10 @@ internal sealed class CatanPolicySerializerTests
     }
 
     [Test]
-    public void PriorFullStateMapping_MasksNormalizesAndRepeatsStochasticOutcomes()
+    public void PriorFullStateMapping_NormalizesAndRepeatsStochasticOutcomes()
     {
-        var serializer = new CatanPolicySerializer(BoardTopology.Mini, 2);
-        var policy = new double[serializer.PolicySize];
-        policy[serializer.ControlsOffset] = 3;
-        policy[serializer.ControlsOffset + 1] = 1;
-
         var mapped = PriorClient.MapFullStatePolicy(
-            serializer,
-            policy,
-            [serializer.ControlsOffset, serializer.ControlsOffset + 1],
+            [3, 1],
             [3, 1]);
 
         Assert.That(mapped, Is.EqualTo(new[] { 0.75, 0.75, 0.75, 0.25 }));
@@ -226,13 +219,7 @@ internal sealed class CatanPolicySerializerTests
     [Test]
     public void PriorFullStateMapping_InvalidWidthFallsBackToUniformActions()
     {
-        var serializer = new CatanPolicySerializer(BoardTopology.Mini, 2);
-
-        var mapped = PriorClient.MapFullStatePolicy(
-            serializer,
-            new double[serializer.PolicySize - 1],
-            [serializer.ControlsOffset, serializer.ControlsOffset + 1],
-            [2, 1]);
+        var mapped = PriorClient.MapFullStatePolicy([1], [2, 1]);
 
         Assert.That(mapped, Is.EqualTo(new[] { 0.5, 0.5, 0.5 }));
     }

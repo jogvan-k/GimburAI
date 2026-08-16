@@ -116,6 +116,9 @@ class PriorRequest(BaseModel):
     parent_state: str
     """Serialized parent decision state."""
 
+    legal_policy_indices: list[int]
+    """Complete-policy indices in the client's legal-action order."""
+
     priority: int
     """Depth from root; lower = more important."""
 
@@ -146,6 +149,16 @@ class PriorCollectResponse(BaseModel):
     """Response body for /state/prior-collect."""
 
     responses: list[PriorResponseItem]
+
+
+def _legal_policy_softmax(logits: torch.Tensor, legal_indices: list[int]) -> torch.Tensor:
+    """Softmax one policy row over legal actions only, preserving their order."""
+    if not legal_indices:
+        return logits.new_empty(0)
+    if min(legal_indices) < 0 or max(legal_indices) >= logits.shape[-1]:
+        raise ValueError("legal policy index is outside the policy vocabulary")
+    indices = torch.tensor(legal_indices, device=logits.device, dtype=torch.long)
+    return F.softmax(logits.index_select(0, indices), dim=-1)
 
 
 class LeafRequest(BaseModel):
@@ -541,7 +554,7 @@ def create_app(
                 with torch.no_grad():
                     output = state_model(token_ids)
                     values = F.softmax(_extract_logits(output, "value").float(), dim=-1)
-                    policies = F.softmax(_extract_logits(output, "policy").float(), dim=-1)
+                    policy_logits = _extract_logits(output, "policy").float()
                 if state_device.type == "cuda":
                     torch.cuda.synchronize(state_device)
                 forwarded_ns = time.perf_counter_ns()
@@ -549,9 +562,12 @@ def create_app(
                 forward_ms = (forwarded_ns - transferred_ns) / 1_000_000
                 for batch_index, (result_index, req) in enumerate(valid):
                     player_values = values[batch_index].cpu().tolist()
+                    legal_priors = _legal_policy_softmax(
+                        policy_logits[batch_index], req.legal_policy_indices
+                    )
                     results[result_index] = PriorResponseItem(
                         id=req.id,
-                        priors=policies[batch_index].cpu().tolist(),
+                        priors=legal_priors.cpu().tolist(),
                         value_estimate=player_values[0],
                         player_win_probabilities=player_values,
                     )

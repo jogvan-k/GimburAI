@@ -25,6 +25,7 @@ from gimbur_nn.serve import (
     PriorResponseItem,
     _checkpoint_precision,
     _dequeue_with_window,
+    _legal_policy_softmax,
     _load_checkpoint,
     create_app,
 )
@@ -59,12 +60,16 @@ def test_prior_response_can_carry_full_player_distribution() -> None:
 
 def test_batch_window_collects_request_arriving_after_first_dequeue() -> None:
     queue: PriorQueue[PriorRequest] = PriorQueue()
-    queue.enqueue(PriorRequest(id="first", parent_state="state", priority=0))
+    queue.enqueue(
+        PriorRequest(id="first", parent_state="state", legal_policy_indices=[0], priority=0)
+    )
 
     async def collect() -> list[PriorRequest]:
         async def enqueue_second() -> None:
             await asyncio.sleep(0.0005)
-            queue.enqueue(PriorRequest(id="second", parent_state="state", priority=0))
+            queue.enqueue(
+                PriorRequest(id="second", parent_state="state", legal_policy_indices=[0], priority=0)
+            )
 
         producer = asyncio.create_task(enqueue_second())
         batch = await _dequeue_with_window(queue, batch_size=32, batch_window_ms=1.5)
@@ -151,6 +156,14 @@ def test_state_predict_returns_complete_policy_and_canonical_value() -> None:
     assert response.player_win_probabilities[0] == pytest.approx([0.880797, 0.119203])
     assert len(response.policy_probabilities[0]) == MINI_2P.policy_size
     assert sum(response.policy_probabilities[0]) == pytest.approx(1.0)
+
+
+def test_prior_softmax_excludes_illegal_logits_and_preserves_legal_order() -> None:
+    logits = torch.tensor([1000.0, 1.0, 0.0])
+
+    probabilities = _legal_policy_softmax(logits, [2, 1])
+
+    assert probabilities.tolist() == pytest.approx([0.268941, 0.731059], abs=1e-6)
 
 
 def test_leaf_predict_batches_requests_and_restores_boundaries() -> None:
@@ -329,10 +342,17 @@ def test_leaf_queue_cancellation_suppresses_in_flight_result() -> None:
     assert queue.collect_results() == []
 
 
-def test_full_state_prior_request_is_parent_state_only() -> None:
-    request = PriorRequest(id="node", parent_state="state", priority=1)
+def test_full_state_prior_request_includes_legal_policy_indices() -> None:
+    request = PriorRequest(
+        id="node", parent_state="state", legal_policy_indices=[2, 4], priority=1
+    )
 
-    assert set(request.model_dump()) == {"id", "parent_state", "priority"}
+    assert set(request.model_dump()) == {
+        "id",
+        "parent_state",
+        "legal_policy_indices",
+        "priority",
+    }
 
 
 def test_load_checkpoint_accepts_current_architecture(tmp_path: Path) -> None:

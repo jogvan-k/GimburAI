@@ -48,7 +48,10 @@ internal sealed class PriorClientBatchingTests
                 var body = await request.Content!.ReadAsStringAsync(cancellationToken);
                 using var document = JsonDocument.Parse(body);
                 foreach (var item in document.RootElement.GetProperty("requests").EnumerateArray())
+                {
                     QueuedIds.Add(item.GetProperty("id").GetString()!);
+                    Assert.That(item.GetProperty("legal_policy_indices").GetArrayLength(), Is.GreaterThan(0));
+                }
                 return Json(HttpStatusCode.Accepted, "{}");
             }
 
