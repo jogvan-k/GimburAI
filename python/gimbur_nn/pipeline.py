@@ -65,6 +65,10 @@ class SimulateConfig:
     max_consecutive_discards: int = 5
     greedy_prior: bool = True
     greedy_prior_uniform_mix: float = 0.25
+    root_dirichlet_alpha: float = 0.3
+    root_dirichlet_epsilon: float = 0.25
+    visit_temperature: float = 1.0
+    temperature_moves: int = 30
 
 
 @dataclass
@@ -334,6 +338,16 @@ def _load_config(path: Path) -> PipelineConfig:
         raise ValueError("FP16 inference requires inference.exportFp16=true.")
     if cfg.monitoring.interval_seconds <= 0:
         raise ValueError("monitoring.intervalSeconds must be positive.")
+    if (
+        not math.isfinite(cfg.simulate.root_dirichlet_alpha)
+        or cfg.simulate.root_dirichlet_alpha <= 0
+        or not math.isfinite(cfg.simulate.root_dirichlet_epsilon)
+        or not 0 <= cfg.simulate.root_dirichlet_epsilon <= 1
+        or not math.isfinite(cfg.simulate.visit_temperature)
+        or cfg.simulate.visit_temperature < 0
+        or cfg.simulate.temperature_moves < 0
+    ):
+        raise ValueError("Invalid self-play exploration configuration.")
     if cfg.gen0_milestones:
         if cfg.gen0_milestones != sorted(set(cfg.gen0_milestones)):
             raise ValueError("gen0Milestones must be strictly increasing and unique.")
@@ -1108,6 +1122,10 @@ def _step_simulate(
     sim_config["maxConsecutiveDiscards"] = sim.max_consecutive_discards
     sim_config["greedyPrior"] = gen == 0 and sim.greedy_prior
     sim_config["greedyPriorUniformMix"] = sim.greedy_prior_uniform_mix
+    sim_config["rootDirichletAlpha"] = sim.root_dirichlet_alpha
+    sim_config["rootDirichletEpsilon"] = sim.root_dirichlet_epsilon
+    sim_config["visitTemperature"] = sim.visit_temperature
+    sim_config["temperatureMoves"] = sim.temperature_moves
     if not sim.symmetries:
         sim_config["noSymmetries"] = True
     if sim.verbosity:

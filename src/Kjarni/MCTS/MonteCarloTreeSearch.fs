@@ -27,7 +27,10 @@ type MonteCarloTreeSearch(config: MCTSConfig) =
                 config.MaxTreeDepth,
                 config.MaxPendingEvaluations,
                 config.LeafEvaluationTimeoutMs,
-                config.DrainTimeoutMs
+                config.DrainTimeoutMs,
+                config.RootDirichletAlpha,
+                config.RootDirichletEpsilon,
+                config.ExplorationRandom
             )
 
         // search() handles per-search Flush internally so that it can

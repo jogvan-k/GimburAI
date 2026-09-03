@@ -880,6 +880,16 @@ type PriorSearchIntegrationTests() =
 type MCTSStatePriorsTests() =
 
     [<Test>]
+    member _.DirichletSamplesAreNormalizedAndRepeatable() =
+        let first = sampleDirichlet (Random(42)) 0.3 5
+        let second = sampleDirichlet (Random(42)) 0.3 5
+
+        first |> should equal second
+        first |> should haveLength 5
+        first |> Array.iter (fun value -> value |> should be (greaterThanOrEqualTo 0.))
+        Array.sum first |> should (equalWithin 0.000001) 1.
+
+    [<Test>]
     member _.Priors_DefaultsToNone() =
         let s = MCTSState(node(p1, 0, 0, 0))
         s.Priors |> should equal None

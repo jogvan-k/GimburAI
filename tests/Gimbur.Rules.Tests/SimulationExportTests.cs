@@ -394,6 +394,32 @@ public class SimulationExportTests
     }
 
     [Test]
+    public void VisitTemperatureSamplesOnlyVisitedActions()
+    {
+        var state = new CatanState(GameConfig.Mini, 2, new Random(42));
+        var root = new Kjarni.MCTS.Types.MCTSState((Kjarni.ICoreState)state);
+        root.ActionStats[0].CompletedVisits = 0;
+        root.ActionStats[1].CompletedVisits = 10;
+
+        var selected = SimulationRunner.SelectActionByVisitTemperature(root, 1.0, new Random(42));
+
+        Assert.That(selected, Is.EqualTo(1));
+    }
+
+    [Test]
+    public void ZeroVisitTemperatureUsesBestPath()
+    {
+        var state = new CatanState(GameConfig.Mini, 2, new Random(42));
+        var root = new Kjarni.MCTS.Types.MCTSState((Kjarni.ICoreState)state);
+        root.ActionStats[0].CompletedVisits = 3;
+        root.ActionStats[1].CompletedVisits = 7;
+
+        var selected = SimulationRunner.SelectActionByVisitTemperature(root, 0.0, new Random(42));
+
+        Assert.That(selected, Is.EqualTo(1));
+    }
+
+    [Test]
     public void PlacementExport_SerializesSettlementAndRoadStagePolicyIndices()
     {
         var state = new CatanState(GameConfig.Mini, 2, new Random(42));

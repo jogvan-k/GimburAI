@@ -111,7 +111,10 @@ app.MapPost("/choose-action", (ChooseActionRequest req) =>
             maxTreeDepth: int.MaxValue,
             maxPendingEvaluations: 32,
             leafEvaluationTimeoutMs: 500,
-            drainTimeoutMs: 1000);
+            drainTimeoutMs: 1000,
+            rootDirichletAlpha: 0.3,
+            rootDirichletEpsilon: 0.0,
+            explorationRandom: null);
 
         var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(mctsConfig);
         var mctsRoot = new Kjarni.MCTS.Types.MCTSState((ICoreState)state);

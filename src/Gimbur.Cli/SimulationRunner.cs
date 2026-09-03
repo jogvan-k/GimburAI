@@ -70,6 +70,10 @@ internal record SimulationOptions
     public ExportType ExportType { get; init; } = ExportType.GameState;
     public bool GreedyPrior { get; init; }
     public double GreedyPriorUniformMix { get; init; } = 0.25;
+    public double RootDirichletAlpha { get; init; } = 0.3;
+    public double RootDirichletEpsilon { get; init; }
+    public double VisitTemperature { get; init; }
+    public int TemperatureMoves { get; init; }
     public string Verbosity { get; init; } = "normal";
 
     /// <summary>
@@ -948,6 +952,39 @@ internal class SimulationRunner
         return (wins, rate, stats.CompletedVisits);
     }
 
+    internal static int SelectActionByVisitTemperature(
+        Kjarni.MCTS.Types.MCTSState root,
+        double temperature,
+        Random rng)
+    {
+        var bestPath = extractBestPath(root);
+        if (bestPath.IsEmpty)
+            return -1;
+        if (temperature <= 0 || root.ActionStats.Length == 1)
+            return bestPath.Head;
+
+        var inverseTemperature = 1.0 / temperature;
+        var logWeights = root.ActionStats.Select(stats => stats.CompletedVisits > 0
+            ? Math.Log(stats.CompletedVisits) * inverseTemperature
+            : double.NegativeInfinity).ToArray();
+        var maxLogWeight = logWeights.Max();
+        if (!double.IsFinite(maxLogWeight))
+            return bestPath.Head;
+
+        var weights = logWeights.Select(value => double.IsFinite(value)
+            ? Math.Exp(value - maxLogWeight)
+            : 0.0).ToArray();
+        var roll = rng.NextDouble() * weights.Sum();
+        var cumulative = 0.0;
+        for (var index = 0; index < weights.Length; index++)
+        {
+            cumulative += weights[index];
+            if (roll < cumulative)
+                return index;
+        }
+        return bestPath.Head;
+    }
+
     private static StateActionRecord CreateStateActionRecord(
         Kjarni.MCTS.Types.MCTSState mctsRoot,
         CoreAction action,
@@ -1389,7 +1426,10 @@ internal class SimulationRunner
             int.MaxValue,
             _options.MaxPendingEvaluations,
             _options.LeafEvaluationTimeoutMs,
-            _options.DrainTimeoutMs);
+            _options.DrainTimeoutMs,
+            _options.RootDirichletAlpha,
+            _options.RootDirichletEpsilon,
+            Microsoft.FSharp.Core.FSharpOption<Random>.Some(rng));
         var placementPhase = combined && state.TurnNumber == 0;
         var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(CreateMctsConfig(placementPhase));
         var states = new List<StateRecord>();
@@ -1402,6 +1442,7 @@ internal class SimulationRunner
         // actions (e.g., cyclic bank trades) where TurnNumber never increments.
         const int maxTotalActions = 10_000;
         var totalActions = 0;
+        var searchedDecisions = 0;
         var lastReportedTurn = -1;
 
         // Persistent MCTS root for tree reuse across actions.
@@ -1447,16 +1488,20 @@ internal class SimulationRunner
                 // Reuse the existing tree if available; otherwise create a fresh root.
                 mctsRoot ??= new Kjarni.MCTS.Types.MCTSState((ICoreState)state);
                 mcts.RunSimulation(mctsRoot);
-                var bestPath = extractBestPath(mctsRoot);
+                var temperature = searchedDecisions < _options.TemperatureMoves
+                    ? _options.VisitTemperature
+                    : 0.0;
+                var selectedActionIndex = SelectActionByVisitTemperature(mctsRoot, temperature, rng);
+                searchedDecisions++;
                 var logInfo = mcts.LatestLogInfo();
                 evaluationDiagnostics.Add(logInfo);
 
                 CatanState? selectedResult = null;
                 string? selectedOutcome = null;
-                if (!bestPath.IsEmpty && bestPath.Head < actions.Length)
+                if (selectedActionIndex >= 0 && selectedActionIndex < actions.Length)
                 {
-                    selectedResult = (CatanState)UnwrapCoreAction(actions[bestPath.Head]).DoCoreAction();
-                    if (UnwrapCoreAction(actions[bestPath.Head]) is CatanStochasticAction stochastic)
+                    selectedResult = (CatanState)UnwrapCoreAction(actions[selectedActionIndex]).DoCoreAction();
+                    if (UnwrapCoreAction(actions[selectedActionIndex]) is CatanStochasticAction stochastic)
                         selectedOutcome = DescribeOutcome(stochastic, selectedResult, outcomeIndex: 0);
                 }
 
@@ -1465,7 +1510,7 @@ internal class SimulationRunner
                     serialized,
                     mctsRoot,
                     logInfo,
-                    bestPath.IsEmpty ? -1 : bestPath.Head,
+                    selectedActionIndex,
                     selectedOutcome));
 
                 if (isPlacementPhase
@@ -1473,19 +1518,19 @@ internal class SimulationRunner
                         or TurnStage.PlaceSecondSettlement or TurnStage.PlaceSecondRoad)
                 {
                     placementStates!.Add(CreatePlacementStateRecord(
-                        state, actions, mctsRoot, logInfo, placementActionSerializer!, bestPath.Head));
+                        state, actions, mctsRoot, logInfo, placementActionSerializer!, selectedActionIndex));
                 }
 
                 // Apply the best action from MCTS and advance the tree.
-                if (!bestPath.IsEmpty && bestPath.Head < actions.Length)
+                if (selectedActionIndex >= 0 && selectedActionIndex < actions.Length)
                 {
                     // When the best action is a HorizonAction, the search has reached
                     // the expansion boundary — stop the game loop.
-                    if (mctsRoot.Actions[bestPath.Head].IsHorizonAction && !combined)
+                    if (mctsRoot.Actions[selectedActionIndex].IsHorizonAction && !combined)
                         break;
 
                     state = selectedResult!;
-                    mctsRoot = AdvanceMctsRoot(mctsRoot, bestPath.Head, (ICoreState)state);
+                    mctsRoot = AdvanceMctsRoot(mctsRoot, selectedActionIndex, (ICoreState)state);
                 }
                 else
                 {
@@ -1579,7 +1624,10 @@ internal class SimulationRunner
             int.MaxValue,
             _options.MaxPendingEvaluations,
             _options.LeafEvaluationTimeoutMs,
-            _options.DrainTimeoutMs);
+            _options.DrainTimeoutMs,
+            _options.RootDirichletAlpha,
+            _options.RootDirichletEpsilon,
+            Microsoft.FSharp.Core.FSharpOption<Random>.Some(rng));
         var mcts = new Kjarni.MCTS.AI.MonteCarloTreeSearch(mctsConfig);
         var placementStates = new List<PlacementStateRecord>();
         var evaluationDiagnostics = new EvaluationDiagnostics();

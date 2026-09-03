@@ -144,7 +144,10 @@ type MCTSConfig =
       /// Maximum pending neural evaluation groups per search.
       MaxPendingEvaluations: int
       LeafEvaluationTimeoutMs: int
-      DrainTimeoutMs: int }
+      DrainTimeoutMs: int
+      RootDirichletAlpha: float
+      RootDirichletEpsilon: float
+      ExplorationRandom: Random option }
 
     static member Default =
         { SearchTime = Unlimited
@@ -158,4 +161,7 @@ type MCTSConfig =
           MaxTreeDepth = System.Int32.MaxValue
           MaxPendingEvaluations = 32
           LeafEvaluationTimeoutMs = 500
-          DrainTimeoutMs = 1000 }
+          DrainTimeoutMs = 1000
+          RootDirichletAlpha = 0.3
+          RootDirichletEpsilon = 0.
+          ExplorationRandom = None }

@@ -266,6 +266,10 @@ internal static class RootCommandFactory
             var maxConsecutiveDiscards = 5;
             var greedyPrior = false;
             var greedyPriorUniformMix = 0.25;
+            var rootDirichletAlpha = 0.3;
+            var rootDirichletEpsilon = 0.0;
+            var visitTemperature = 0.0;
+            var temperatureMoves = 0;
 
             // ── Apply config file defaults for simulate ──────────────
             if (cfg.ValueKind == JsonValueKind.Object)
@@ -334,6 +338,10 @@ internal static class RootCommandFactory
                 maxConsecutiveDiscards = ConfigLoader.GetInt(cfg, "maxConsecutiveDiscards") ?? maxConsecutiveDiscards;
                 greedyPrior = ConfigLoader.GetBool(cfg, "greedyPrior") ?? greedyPrior;
                 greedyPriorUniformMix = ConfigLoader.GetDouble(cfg, "greedyPriorUniformMix") ?? greedyPriorUniformMix;
+                rootDirichletAlpha = ConfigLoader.GetDouble(cfg, "rootDirichletAlpha") ?? rootDirichletAlpha;
+                rootDirichletEpsilon = ConfigLoader.GetDouble(cfg, "rootDirichletEpsilon") ?? rootDirichletEpsilon;
+                visitTemperature = ConfigLoader.GetDouble(cfg, "visitTemperature") ?? visitTemperature;
+                temperatureMoves = ConfigLoader.GetInt(cfg, "temperatureMoves") ?? temperatureMoves;
                 if (!WasProvided(parseResult, "--verbosity", "-v") && !WasProvided(parseResult, "-q") && !WasProvided(parseResult, "--verbose"))
                     verbosity = ConfigLoader.GetString(cfg, "verbosity") ?? verbosity;
             }
@@ -345,6 +353,12 @@ internal static class RootCommandFactory
             // Auto-enable prior when --nn-url is explicitly provided.
             if (!prior && parseResult.Tokens.Any(t => t.Value == "--nn-url"))
                 prior = true;;
+
+            if (!double.IsFinite(rootDirichletAlpha) || rootDirichletAlpha <= 0
+                || !double.IsFinite(rootDirichletEpsilon) || rootDirichletEpsilon is < 0 or > 1
+                || !double.IsFinite(visitTemperature) || visitTemperature < 0
+                || temperatureMoves < 0)
+                throw new ArgumentException("Invalid self-play exploration configuration.");
 
             var options = new SimulationOptions
             {
@@ -380,6 +394,10 @@ internal static class RootCommandFactory
                 MaxConsecutiveDiscards = maxConsecutiveDiscards,
                 GreedyPrior = greedyPrior,
                 GreedyPriorUniformMix = greedyPriorUniformMix,
+                RootDirichletAlpha = rootDirichletAlpha,
+                RootDirichletEpsilon = rootDirichletEpsilon,
+                VisitTemperature = visitTemperature,
+                TemperatureMoves = temperatureMoves,
             };
 
             var runner = new SimulationRunner(options);

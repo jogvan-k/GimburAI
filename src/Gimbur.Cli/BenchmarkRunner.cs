@@ -812,7 +812,10 @@ internal class BenchmarkRunner
                 1,
                 32,
                 500,
-                1000),
+                1000,
+                0.3,
+                0.0,
+                null),
             reuseTree: false);
 
         return kind switch
@@ -831,7 +834,10 @@ internal class BenchmarkRunner
                 int.MaxValue,
                 32,
                 500,
-                1000)),
+                1000,
+                0.3,
+                0.0,
+                null)),
             AiKind.Nn => new NnPlayer(nnClient!),
             AiKind.NnPlacement => new PhaseSwitchingPlayer(
                 new NnPlayer(nnClient!), new GreedyPlayer()),

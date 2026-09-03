@@ -299,7 +299,7 @@ def test_train_config_loads_value_blending_and_state_sampling() -> None:
     assert config.victory_point_sampling_upper_percentage == 0.25
 
 
-def test_simulate_config_loads_parallelism() -> None:
+def test_simulate_config_loads_parallelism_and_exploration() -> None:
     config = _load_section(
         SimulateConfig,
         {
@@ -309,6 +309,10 @@ def test_simulate_config_loads_parallelism() -> None:
             "drainTimeoutMs": 750,
             "maxErrorsPerGame": 3,
             "maxDiscardRate": 0.1,
+            "rootDirichletAlpha": 0.4,
+            "rootDirichletEpsilon": 0.2,
+            "visitTemperature": 0.8,
+            "temperatureMoves": 24,
         },
     )
 
@@ -318,6 +322,10 @@ def test_simulate_config_loads_parallelism() -> None:
     assert config.drain_timeout_ms == 750
     assert config.max_errors_per_game == 3
     assert config.max_discard_rate == 0.1
+    assert config.root_dirichlet_alpha == 0.4
+    assert config.root_dirichlet_epsilon == 0.2
+    assert config.visit_temperature == 0.8
+    assert config.temperature_moves == 24
 
 
 def test_serve_config_loads_fractional_batch_window() -> None:
@@ -382,6 +390,10 @@ def test_step_simulate_writes_discard_policy_config(tmp_path, monkeypatch) -> No
     assert config["discardGamesWithFallbacks"] is True
     assert config["maxDiscardRate"] == 0.1
     assert config["greedyPrior"] is True
+    assert config["rootDirichletAlpha"] == 0.3
+    assert config["rootDirichletEpsilon"] == 0.25
+    assert config["visitTemperature"] == 1.0
+    assert config["temperatureMoves"] == 30
 
 
 def test_step_simulate_rejects_untracked_neural_data_precision(tmp_path) -> None:

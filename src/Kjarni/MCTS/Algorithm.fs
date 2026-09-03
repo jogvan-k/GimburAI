@@ -22,6 +22,40 @@ let explorationRate (explorationConstant: float) (parentVisitCount: int) (action
     * sqrt (float parentVisitCount)
     / (1. + float actionVisitCount)
 
+let rec private sampleGamma (rng: Random) shape =
+    if shape < 1. then
+        let u = max Double.Epsilon (rng.NextDouble())
+        sampleGamma rng (shape + 1.) * Math.Pow(u, 1. / shape)
+    else
+        let d = shape - 1. / 3.
+        let c = 1. / sqrt (9. * d)
+        let rec sample () =
+            let u1 = max Double.Epsilon (rng.NextDouble())
+            let u2 = rng.NextDouble()
+            let x = sqrt (-2. * log u1) * cos (2. * Math.PI * u2)
+            let vBase = 1. + c * x
+            if vBase <= 0. then sample ()
+            else
+                let v = vBase * vBase * vBase
+                let u = rng.NextDouble()
+                if u < 1. - 0.0331 * x * x * x * x
+                   || log (max Double.Epsilon u) < 0.5 * x * x + d * (1. - v + log v) then
+                    d * v
+                else sample ()
+        sample ()
+
+let sampleDirichlet (rng: Random) alpha count =
+    if not (Double.IsFinite alpha) || alpha <= 0. then
+        invalidArg "alpha" "Dirichlet alpha must be finite and positive."
+    if count <= 0 then Array.empty
+    else
+        let samples = Array.init count (fun _ -> sampleGamma rng alpha)
+        let total = Array.sum samples
+        if not (Double.IsFinite total) || total <= 0. then
+            Array.create count (1. / float count)
+        else
+            samples |> Array.map (fun value -> value / total)
+
 let winRate (state: MCTSState) (player: Player) =
     state.WinCounts[int player] / float state.Rollouts
 
@@ -38,13 +72,14 @@ let sampledWinRate outcomes player =
     else
         Array.sumBy (fun o -> float o.ProbabilityWeight * winRate o.State player) sampledOutcomes / denominator
 
-let actionEvaluator (explorationConstant: float) (state: MCTSState) (actionIndex: int) (l: Action) =
+let private actionEvaluatorWithPrior
+    (explorationConstant: float)
+    (prior: float)
+    (state: MCTSState)
+    (actionIndex: int)
+    (l: Action) =
     let actingPlayer = state.State.PlayerTurn
     let stats = state.ActionStats.[actionIndex]
-    let prior =
-        match state.Priors with
-        | Some p -> p.[actionIndex]
-        | None -> 1. / float state.Actions.Length
 
     match l with
     | Unexplored _ | DeterministicAction _ | HorizonAction _ | StochasticAction _ ->
@@ -55,6 +90,13 @@ let actionEvaluator (explorationConstant: float) (state: MCTSState) (actionIndex
             (stats.CompletedVisits + stats.PendingVisits)
             prior
     | Terminal win -> win.[int actingPlayer]
+
+let actionEvaluator (explorationConstant: float) (state: MCTSState) (actionIndex: int) (l: Action) =
+    let prior =
+        match state.Priors with
+        | Some p -> p.[actionIndex]
+        | None -> 1. / float state.Actions.Length
+    actionEvaluatorWithPrior explorationConstant prior state actionIndex l
 
 let rollStochasticAction(probWeights: int array) =
     let totalWeight = Array.sum probWeights
@@ -67,7 +109,11 @@ let rollStochasticAction(probWeights: int array) =
     i
 
 
-let rec recSelect (explorationConstant: float) (s: MCTSState, path: SelectionPath) =
+let rec private recSelectWithRootPriors
+    (explorationConstant: float)
+    (root: MCTSState)
+    (rootPriors: float array option)
+    (s: MCTSState, path: SelectionPath) =
     if Array.isEmpty s.Actions then
         Exhausted(path, oneHotOutcome(s.State.PlayerTurn, s.State.NumberOfPlayers))
     else
@@ -82,15 +128,19 @@ let rec recSelect (explorationConstant: float) (s: MCTSState, path: SelectionPat
                 available
                 |> Array.maxBy (fun (i, a) ->
                     let prior =
-                        match s.Priors with
-                        | Some priors -> priors.[i]
-                        | None -> 1. / float s.Actions.Length
-                    actionEvaluator explorationConstant s i a, prior)
+                        match rootPriors with
+                        | Some priors when Object.ReferenceEquals(s, root) -> priors.[i]
+                        | _ ->
+                            match s.Priors with
+                            | Some priors -> priors.[i]
+                            | None -> 1. / float s.Actions.Length
+                    actionEvaluatorWithPrior explorationConstant prior s i a, prior)
             match snd selectedAction with
             | Unexplored _ -> Candidate(path, fst selectedAction)
             | DeterministicAction ds ->
                 let edge = { Parent = s; ActionIndex = fst selectedAction }
-                recSelect explorationConstant (ds, { States = ds :: path.States; Edges = edge :: path.Edges })
+                recSelectWithRootPriors explorationConstant root rootPriors
+                    (ds, { States = ds :: path.States; Edges = edge :: path.Edges })
             | StochasticAction so ->
                 let i = rollStochasticAction (Array.map (fun o -> o.ProbabilityWeight) so)
                 let state = so.[i].State
@@ -98,7 +148,7 @@ let rec recSelect (explorationConstant: float) (s: MCTSState, path: SelectionPat
                 let nextPath = { States = state :: path.States; Edges = edge :: path.Edges }
                 if state.Rollouts = 0 // Unexplored outcome, return state
                 then StochasticCandidate(nextPath, i)
-                else recSelect explorationConstant (state, nextPath)
+                else recSelectWithRootPriors explorationConstant root rootPriors (state, nextPath)
             | Terminal outcome ->
                 let edge = { Parent = s; ActionIndex = fst selectedAction }
                 Exhausted({ path with Edges = edge :: path.Edges }, outcome)
@@ -107,7 +157,11 @@ let rec recSelect (explorationConstant: float) (s: MCTSState, path: SelectionPat
                 Horizon({ path with Edges = edge :: path.Edges }, hs)
 
 let select (explorationConstant: float) (root: MCTSState) =
-    recSelect explorationConstant (root, { States = [root]; Edges = [] })
+    recSelectWithRootPriors explorationConstant root None (root, { States = [root]; Edges = [] })
+
+let private selectWithRootPriors (explorationConstant: float) root rootPriors =
+    recSelectWithRootPriors explorationConstant root rootPriors
+        (root, { States = [root]; Edges = [] })
 
 let expand (leafBoundary: (ICoreState -> bool) option) (s: MCTSState, i) =
       match s.Actions.[i] with
@@ -536,7 +590,7 @@ let propagateTerminals (visitedStates: MCTSState list) =
 
     propagate visitedStates
 
-let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float, actionRolloutLimit: int, priorClient: IPriorClient option, leafEvaluator: ILeafEvaluator option, leafBoundary: (ICoreState -> bool) option, maxTreeDepth: int, maxPendingEvaluations: int, leafEvaluationTimeoutMs: int, drainTimeoutMs: int) =
+let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil: Int64 option, maxRolloutDepth: int, explorationConstant: float, actionRolloutLimit: int, priorClient: IPriorClient option, leafEvaluator: ILeafEvaluator option, leafBoundary: (ICoreState -> bool) option, maxTreeDepth: int, maxPendingEvaluations: int, leafEvaluationTimeoutMs: int, drainTimeoutMs: int, rootDirichletAlpha: float, rootDirichletEpsilon: float, explorationRandom: Random option) =
     // Normalise the option to guard against C# passing Some(null).
     let priorClient =
         match priorClient with
@@ -865,6 +919,18 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
             effectiveEvaluateUntil <- Some (deadline + timer.ElapsedTicks - waitStartTicks)
         | None -> ()
 
+    let rootSelectionPriors =
+        if rootDirichletEpsilon > 0. && root.Actions.Length > 1 then
+            let rng = defaultArg explorationRandom Random.Shared
+            let noise = sampleDirichlet rng rootDirichletAlpha root.Actions.Length
+            let basePriors =
+                match root.Priors with
+                | Some priors -> priors
+                | None -> Array.create root.Actions.Length (1. / float root.Actions.Length)
+            Some (Array.map2 (fun prior eta ->
+                (1. - rootDirichletEpsilon) * prior + rootDirichletEpsilon * eta) basePriors noise)
+        else None
+
     while root.Rollouts < maxSimulationCount
           && beforeDeadline ()
           && maxActionRollouts root < actionRolloutLimit
@@ -873,7 +939,7 @@ let search (root: MCTSState, maxSimulationCount, timer: Stopwatch, evaluateUntil
             let pendingCount = pendingEvaluations.Count + pendingPriorEvaluations.Count
             if pendingCount >= max 1 maxPendingEvaluations
                || pendingCount >= maxSimulationCount - root.Rollouts then Blocked
-            else select explorationConstant root
+            else selectWithRootPriors explorationConstant root rootSelectionPriors
         match selection with
         | Blocked ->
             collectPriors ()
