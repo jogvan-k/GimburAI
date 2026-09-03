@@ -495,8 +495,31 @@ def test_complete_mode_generates_state_sim_and_one_train_config(tmp_path, monkey
     assert state["data"] == [str(tmp_path / "data/gen0")]
     assert state["modelConfig"] == "small"
     assert state["batchSize"] == 22
+    assert state["maxGames"] == 1
     assert state["mctsValueWeightStart"] == 0.7
     assert "outputMode" not in state
+
+
+def test_promotion_training_caps_newest_generation_to_exact_target(tmp_path, monkeypatch) -> None:
+    cfg = PipelineConfig(
+        data_dir=str(tmp_path / "data"),
+        model_dir=str(tmp_path / "models"),
+        simulate=SimulateConfig(games=75),
+        train=TrainConfig(replay_generations=3),
+    )
+    monkeypatch.setattr("gimbur_nn.pipeline._run", lambda *args, **kwargs: None)
+
+    _step_train(cfg, 2, tmp_path, max_games_override=150, config_suffix="_attempt1")
+
+    train_config = json.loads(
+        (tmp_path / "models/.configs/train_gen2_attempt1.json").read_text()
+    )
+    assert train_config["maxGames"] == 150
+    assert train_config["data"] == [
+        str(tmp_path / "data/gen2"),
+        str(tmp_path / "data/gen1"),
+        str(tmp_path / "data/gen0"),
+    ]
 
 
 def test_complete_mode_resume_requires_shared_data_and_model(tmp_path) -> None:

@@ -1252,6 +1252,7 @@ def _step_train(
     out_path_override: Path | None = None,
     resume_path_override: Path | None = None,
     checkpoint_path_override: Path | None = None,
+    max_games_override: int | None = None,
     config_suffix: str = "",
 ) -> None:
     """Train the model for a generation. Skips if the checkpoint already exists."""
@@ -1273,7 +1274,7 @@ def _step_train(
         return
 
     replay_start = max(0, gen - max(1, tr.replay_generations) + 1)
-    data_paths = [_data_path(cfg, replay_gen) for replay_gen in range(replay_start, gen + 1)]
+    data_paths = [_data_path(cfg, replay_gen) for replay_gen in range(gen, replay_start - 1, -1)]
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Build config JSON for training.
@@ -1296,6 +1297,11 @@ def _step_train(
         "victoryPointSamplingStatistic": tr.victory_point_sampling_statistic,
         "victoryPointSamplingUpperPercentage": tr.victory_point_sampling_upper_percentage,
         "checkpointRetention": tr.checkpoint_retention,
+        "maxGames": max_games_override
+        if max_games_override is not None
+        else cfg.gen0_games
+        if gen == 0 and cfg.gen0_games is not None
+        else cfg.simulate.games,
     }
     # Enable per-epoch checkpointing if configured.
     if checkpoint_dir is not None:
@@ -1596,6 +1602,7 @@ def _train_promotion_candidate(
     attempt: int,
     project_root: Path,
     champion: dict[str, Any] | None,
+    training_games: int,
 ) -> None:
     destination = _candidate_model_path(cfg, gen, attempt)
     checkpoint_dir = destination.parent / "checkpoints"
@@ -1613,6 +1620,7 @@ def _train_promotion_candidate(
         out_path_override=destination,
         resume_path_override=resume,
         checkpoint_path_override=checkpoint_dir,
+        max_games_override=training_games,
         config_suffix=f"_attempt{attempt}",
     )
 
@@ -1765,7 +1773,7 @@ def _run_promoted_generation(
         finally:
             simulation_server.stop()
 
-        _train_promotion_candidate(cfg, gen, attempt, project_root, champion)
+        _train_promotion_candidate(cfg, gen, attempt, project_root, champion, target_games)
         if champion is None:
             decision = {"passed": True, "bootstrap": True, "gates": {}}
         else:
@@ -1897,6 +1905,7 @@ def _run_gen0_milestones(
             out_path_override=model_path,
             resume_path_override=None,
             checkpoint_path_override=_bootstrap_checkpoint_path(cfg, games),
+            max_games_override=games,
             config_suffix=f"_bootstrap_{games}",
         )
 

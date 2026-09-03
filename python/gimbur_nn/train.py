@@ -106,6 +106,7 @@ _CONFIG_KEYS: dict[str, str] = {
     "logInterval": "log_interval",
     "checkpointDir": "checkpoint_dir",
     "checkpointRetention": "checkpoint_retention",
+    "maxGames": "max_games",
     "valueLossWeight": "value_loss_weight",
     "policyLossWeight": "policy_loss_weight",
     "mctsValueWeightStart": "mcts_value_weight_start",
@@ -167,6 +168,19 @@ def _build_dataset(games: list[dict], game_cfg, args: argparse.Namespace) -> Sim
         victory_point_sampling_statistic=args.victory_point_sampling_statistic,
         victory_point_sampling_upper_percentage=args.victory_point_sampling_upper_percentage,
     )
+
+
+def _limit_games(games: list[dict], max_games: int | None) -> list[dict]:
+    """Return exactly the configured number of games when a limit is set."""
+    if max_games is None:
+        return games
+    if max_games <= 0:
+        raise ValueError("maxGames must be positive")
+    if len(games) < max_games:
+        raise ValueError(
+            f"requested exactly {max_games:,} games, but only {len(games):,} are available"
+        )
+    return games[:max_games]
 
 
 def parse_args() -> argparse.Namespace:
@@ -235,6 +249,12 @@ def parse_args() -> argparse.Namespace:
         help="Number of latest epoch checkpoints to retain (0 keeps all).",
     )
     parser.add_argument(
+        "--max-games",
+        type=int,
+        default=None,
+        help="Use exactly the first N loaded games; fail if fewer are available.",
+    )
+    parser.add_argument(
         "--epochs",
         type=int,
         default=0,
@@ -279,6 +299,7 @@ _ARG_DEFAULTS: dict[str, object] = {
     "resume": None,
     "checkpoint_dir": None,
     "checkpoint_retention": 2,
+    "max_games": None,
     "epochs": 0,
     "patience": 5,
     "batch_size": 64,
@@ -552,6 +573,13 @@ def main() -> None:
     all_games = load_games(args.data)
     elapsed = time.monotonic() - t0
     print(f"Loaded {len(all_games):,} games in {elapsed:.1f}s")
+
+    try:
+        all_games = _limit_games(all_games, args.max_games)
+    except ValueError as exc:
+        raise SystemExit(f"Error: {exc}.") from exc
+    if args.max_games is not None:
+        print(f"Using exactly {len(all_games):,} games")
 
     if not all_games:
         print("No games found — nothing to train on.")
