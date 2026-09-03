@@ -191,9 +191,16 @@ def _load_training_games(
         return _limit_games(load_games(data), max_games)
     if not data:
         return []
-    newest = _limit_games(load_games(data[0]), max_games)
-    replay = load_games(data[1:]) if len(data) > 1 else []
-    return [*newest, *replay]
+    selected: list[dict] = []
+    for index, path in enumerate(data):
+        games = load_games(path)
+        if index == 0:
+            selected.extend(_limit_games(games, max_games))
+        elif max_games is None:
+            selected.extend(games)
+        else:
+            selected.extend(games[:max_games])
+    return selected
 
 
 def parse_args() -> argparse.Namespace:
@@ -591,7 +598,11 @@ def main() -> None:
     print(f"Loaded {len(all_games):,} games in {elapsed:.1f}s")
     if args.max_games is not None:
         replay_games = len(all_games) - args.max_games
-        print(f"Using exactly {args.max_games:,} newest games plus {replay_games:,} replay games")
+        print(
+            f"Using exactly {args.max_games:,} newest games plus "
+            f"up to {args.max_games:,} games per replay generation "
+            f"({replay_games:,} replay games)"
+        )
 
     if not all_games:
         print("No games found — nothing to train on.")
