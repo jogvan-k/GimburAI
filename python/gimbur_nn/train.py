@@ -183,6 +183,19 @@ def _limit_games(games: list[dict], max_games: int | None) -> list[dict]:
     return games[:max_games]
 
 
+def _load_training_games(
+    data: str | Path | list[str | Path], max_games: int | None
+) -> list[dict]:
+    """Limit the newest input while retaining every configured replay generation."""
+    if not isinstance(data, list):
+        return _limit_games(load_games(data), max_games)
+    if not data:
+        return []
+    newest = _limit_games(load_games(data[0]), max_games)
+    replay = load_games(data[1:]) if len(data) > 1 else []
+    return [*newest, *replay]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train GimburTransformer on simulation data.")
     parser.add_argument(
@@ -570,16 +583,15 @@ def main() -> None:
     # ── Data ─────────────────────────────────────────────────────────
     print(f"Loading games from {args.data} ...")
     t0 = time.monotonic()
-    all_games = load_games(args.data)
-    elapsed = time.monotonic() - t0
-    print(f"Loaded {len(all_games):,} games in {elapsed:.1f}s")
-
     try:
-        all_games = _limit_games(all_games, args.max_games)
+        all_games = _load_training_games(args.data, args.max_games)
     except ValueError as exc:
         raise SystemExit(f"Error: {exc}.") from exc
+    elapsed = time.monotonic() - t0
+    print(f"Loaded {len(all_games):,} games in {elapsed:.1f}s")
     if args.max_games is not None:
-        print(f"Using exactly {len(all_games):,} games")
+        replay_games = len(all_games) - args.max_games
+        print(f"Using exactly {args.max_games:,} newest games plus {replay_games:,} replay games")
 
     if not all_games:
         print("No games found — nothing to train on.")

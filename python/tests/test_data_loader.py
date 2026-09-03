@@ -588,6 +588,20 @@ class TestExpandGames:
 
         torch.testing.assert_close(samples[0][1], torch.tensor([0.25, 0.75]))
 
+    def test_exact_value_with_zero_visit_action_keeps_value_only_sample(self) -> None:
+        game = _simple_game([25.0, 75.0])
+        state = game["states"][0]
+        state["valueTarget"] = [0.25, 0.75]
+        state["actions"] = [{"action": "Roll", "permutations": [], "visits": 0}]
+
+        samples = expand_games([game], MINI_2P)
+
+        assert len(samples) == 1
+        _, value, policy, legal_mask = samples[0]
+        torch.testing.assert_close(value, torch.tensor([0.25, 0.75]))
+        assert policy.sum() == 0
+        assert not legal_mask.any()
+
     def test_reached_terminal_without_exact_target_still_blends_rollouts(self) -> None:
         game = _simple_game([25.0, 75.0])
         game["winner"] = 1
