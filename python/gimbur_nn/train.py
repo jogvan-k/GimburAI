@@ -430,15 +430,25 @@ def _append_epoch_stats(
     epoch: int,
     train_loss: float,
     val_loss: float | None,
+    train_value_loss: float,
+    train_policy_loss: float,
+    val_value_loss: float | None,
+    val_policy_loss: float | None,
     is_best: bool,
     elapsed_s: float,
 ) -> None:
     entry: dict[str, object] = {
         "epoch": epoch,
         "train_loss": round(train_loss, 6),
+        "train_value_loss": round(train_value_loss, 6),
+        "train_policy_loss": round(train_policy_loss, 6),
     }
     if val_loss is not None:
         entry["val_loss"] = round(val_loss, 6)
+    if val_value_loss is not None:
+        entry["val_value_loss"] = round(val_value_loss, 6)
+    if val_policy_loss is not None:
+        entry["val_policy_loss"] = round(val_policy_loss, 6)
     entry["best"] = is_best
     entry["elapsed_s"] = round(elapsed_s, 2)
     with stats_path.open("a") as fh:
@@ -458,7 +468,7 @@ def _run_epoch(
     phase: str,
     value_loss_weight: float = 1.0,
     policy_loss_weight: float = 1.0,
-) -> float:
+) -> tuple[float, float, float]:
     """Run one epoch (train or eval).
 
     When *optimizer* is ``None`` the model runs in eval mode with no
@@ -474,6 +484,8 @@ def _run_epoch(
     model.train(is_train)
 
     total_loss = 0.0
+    total_value_loss = 0.0
+    total_policy_loss = 0.0
     total_samples = 0
     ctx = torch.no_grad() if not is_train else torch.enable_grad()
     with ctx:
@@ -499,6 +511,8 @@ def _run_epoch(
 
             batch_size = token_ids.shape[0]
             total_loss += loss.item() * batch_size
+            total_value_loss += value_loss.item() * batch_size
+            total_policy_loss += policy_loss.item() * batch_size
             total_samples += batch_size
 
             if is_train and log_interval > 0 and (batch_idx + 1) % log_interval == 0:
@@ -508,7 +522,13 @@ def _run_epoch(
                     f"loss {loss.item():.4f} (running avg {avg:.4f})"
                 )
 
-    return total_loss / total_samples if total_samples > 0 else 0.0
+    if total_samples == 0:
+        return 0.0, 0.0, 0.0
+    return (
+        total_loss / total_samples,
+        total_value_loss / total_samples,
+        total_policy_loss / total_samples,
+    )
 
 
 # ── Main ─────────────────────────────────────────────────────────────
@@ -667,7 +687,7 @@ def main() -> None:
 
         t_start = time.monotonic()
 
-        train_loss = _run_epoch(
+        train_loss, train_value_loss, train_policy_loss = _run_epoch(
             model,
             train_loader,
             device,
@@ -680,12 +700,17 @@ def main() -> None:
         )
 
         label = f"{epoch}/{max_epochs}" if max_epochs else str(epoch)
-        msg = f"Epoch {label} | train loss {train_loss:.4f}"
+        msg = (
+            f"Epoch {label} | train loss {train_loss:.4f} "
+            f"(value {train_value_loss:.4f}, policy {train_policy_loss:.4f})"
+        )
 
         is_best = False
         val_loss: float | None = None
+        val_value_loss: float | None = None
+        val_policy_loss: float | None = None
         if val_loader is not None:
-            val_loss = _run_epoch(
+            val_loss, val_value_loss, val_policy_loss = _run_epoch(
                 model,
                 val_loader,
                 device,
@@ -696,7 +721,10 @@ def main() -> None:
                 value_loss_weight=args.value_loss_weight,
                 policy_loss_weight=args.policy_loss_weight,
             )
-            msg += f" | val loss {val_loss:.4f}"
+            msg += (
+                f" | val loss {val_loss:.4f} "
+                f"(value {val_value_loss:.4f}, policy {val_policy_loss:.4f})"
+            )
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
@@ -722,7 +750,18 @@ def main() -> None:
             )
             _prune_epoch_checkpoints(checkpoint_dir, args.checkpoint_retention)
             assert stats_path is not None
-            _append_epoch_stats(stats_path, epoch, train_loss, val_loss, is_best, elapsed)
+            _append_epoch_stats(
+                stats_path,
+                epoch,
+                train_loss,
+                val_loss,
+                train_value_loss,
+                train_policy_loss,
+                val_value_loss,
+                val_policy_loss,
+                is_best,
+                elapsed,
+            )
 
         if val_loader is not None and epochs_without_improvement >= args.patience:
             print(f"Early stopping: no val loss improvement for {args.patience} epochs")
@@ -740,7 +779,7 @@ def main() -> None:
         # Reload best checkpoint for test evaluation (handles both legacy and new format).
         ckpt = _load_model_state(args.out, device)
         model.load_state_dict(ckpt["model_state_dict"])
-        test_loss = _run_epoch(
+        test_loss, test_value_loss, test_policy_loss = _run_epoch(
             model,
             test_loader,
             device,
@@ -751,7 +790,10 @@ def main() -> None:
             value_loss_weight=args.value_loss_weight,
             policy_loss_weight=args.policy_loss_weight,
         )
-        print(f"Test loss: {test_loss:.4f}")
+        print(
+            f"Test loss: {test_loss:.4f} "
+            f"(value {test_value_loss:.4f}, policy {test_policy_loss:.4f})"
+        )
 
     if checkpoint_dir is not None:
         (checkpoint_dir / "training_complete").write_text(f"{epoch}\n")
