@@ -27,7 +27,7 @@ public class SimulationExportTests
     }
 
     [Test]
-    public void GameStateExport_IncludesTurnStageAndScores()
+    public void GameStateExport_IncludesTurnStageScoresAndModelValue()
     {
         var game = new GameResult
         {
@@ -51,6 +51,7 @@ public class SimulationExportTests
                      SerializedState = "state",
                      Scores = [2.0, 3.0],
                      Wins = [1.0, 0.0],
+                     ModelValue = [0.25, 0.75],
                      Actions = [],
                 },
             ],
@@ -69,6 +70,9 @@ public class SimulationExportTests
             Assert.That(
                 state.GetProperty("scores").EnumerateArray().Select(value => value.GetDouble()),
                 Is.EqualTo(new[] { 2.0, 3.0 }));
+            Assert.That(
+                state.GetProperty("modelValue").EnumerateArray().Select(value => value.GetDouble()),
+                Is.EqualTo(new[] { 0.25, 0.75 }));
         });
     }
 
@@ -297,6 +301,7 @@ public class SimulationExportTests
                      SerializedState = "state",
                      Scores = [1.0, 1.0],
                      Wins = [0.0, 1.0],
+                     ModelValue = [0.4, 0.6],
                      Actions = [],
                 },
             ],
@@ -330,6 +335,9 @@ public class SimulationExportTests
             Assert.That(root.GetProperty("winner").GetInt32(), Is.EqualTo(2));
             Assert.That(root.GetProperty("states").GetArrayLength(), Is.EqualTo(1));
             Assert.That(root.GetProperty("states")[0].GetProperty("scores").GetArrayLength(), Is.EqualTo(2));
+            Assert.That(
+                root.GetProperty("states")[0].GetProperty("modelValue")[1].GetDouble(),
+                Is.EqualTo(0.6));
             Assert.That(root.GetProperty("placementStates").GetArrayLength(), Is.EqualTo(1));
             Assert.That(root.GetProperty("constraints").GetProperty("placementSearchTimeMs").GetInt32(), Is.EqualTo(16));
             Assert.That(root.GetProperty("constraints").GetProperty("mainGameSearchTimeMs").GetInt32(), Is.EqualTo(8));

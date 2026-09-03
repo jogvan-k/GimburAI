@@ -230,6 +230,9 @@ internal record StateRecord
     /// <summary>Exact resolved value distribution when available.</summary>
     public double[]? ValueTarget { get; init; }
 
+    /// <summary>NN value distribution for this state, indexed by player.</summary>
+    public double[]? ModelValue { get; init; }
+
     /// <summary>Per-action MCTS diagnostics at this root.</summary>
     public required List<StateActionRecord> Actions { get; init; }
 
@@ -1197,6 +1200,9 @@ internal class SimulationRunner
             WinRate = winRate,
             Wins = winCounts,
             ValueTarget = resolvedTarget,
+            ModelValue = mctsRoot.ValueEstimates is { } values
+                ? (double[])values.Value.Clone()
+                : null,
             Actions = CreateStateActionRecords(
                 state.Actions(), mctsRoot, playerIndex, selectedActionIndex, selectedOutcome),
             ReachedTerminal = logInfo.reachedTerminal,
@@ -1929,6 +1935,7 @@ internal class SimulationRunner
                  s.WinRate,
                 s.Wins,
                 s.ValueTarget,
+                s.ModelValue,
                  actions = s.Actions.Select(a => new
                  {
                      a.Action,
@@ -2137,8 +2144,9 @@ internal class SimulationRunner
                 s.Simulations,
                 s.ElapsedMs,
                  s.WinRate,
-                 s.Wins,
-                 s.ValueTarget,
+                  s.Wins,
+                  s.ValueTarget,
+                  s.ModelValue,
                  actions = s.Actions.Select(a => new
                  {
                      a.Action,
