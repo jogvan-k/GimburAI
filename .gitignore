@@ -75,3 +75,4 @@ nunit-*.xml
 pipeline/
 Pipelines/
 trainingdata/
+agent-journal.md
